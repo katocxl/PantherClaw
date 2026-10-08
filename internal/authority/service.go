@@ -29,6 +29,7 @@ import (
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
+	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
 
 // JOSE types of Authority-signed artifacts (PAP-1 §7.2, §9).
@@ -237,18 +238,18 @@ func (s *Service) finalize(ctx context.Context, gw Gateway, p actionir.Parsed, r
 		res.Receipt = receipt
 
 		if o.Decision.Permits() {
-			// Budget last: the hot row is locked only for the rest of this
-			// transaction (ARCHITECTURE §6.3).
+			if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
+				OrgID: gw.Org, ID: ids.NewV7(), BudgetID: budget.ID, TransactionID: txnID, Kind: "reserve", Amount: o.Amount.Amount,
+			}); err != nil {
+				return err
+			}
+			// Budget last: the reservation is the final statement, so the hot
+			// row is locked only until COMMIT (ARCHITECTURE §6.3).
 			if err := db.ExpectOneRow(q.ReserveBudget(ctx, dbq.ReserveBudgetParams{
 				Amount: o.Amount.Amount, OrgID: gw.Org, ID: budget.ID, Currency: string(o.Amount.Currency),
 			})); errors.Is(err, db.ErrLostRace) {
 				return errBudgetLost
 			} else if err != nil {
-				return err
-			}
-			if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
-				OrgID: gw.Org, ID: ids.NewV7(), BudgetID: budget.ID, TransactionID: txnID, Kind: "reserve", Amount: o.Amount.Amount,
-			}); err != nil {
 				return err
 			}
 		}
@@ -444,22 +445,30 @@ func (s *Service) RecordExecution(ctx context.Context, gw Gateway, e Execution) 
 		switch e.Outcome {
 		case Accepted:
 			kind = "commit"
-			err = db.ExpectOneRow(q.CommitReservation(ctx, row.Amount, gw.Org, row.BudgetID))
 		case Failed:
 			kind = "release"
-			err = db.ExpectOneRow(q.ReleaseReservation(ctx, row.Amount, gw.Org, row.BudgetID))
 		case Unknown:
-		}
-		if err != nil {
-			return fmt.Errorf("authority: budget %s: %w", kind, err)
 		}
 		if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
 			OrgID: gw.Org, ID: ids.NewV7(), BudgetID: row.BudgetID, TransactionID: row.TransactionID, Kind: kind, Amount: row.Amount,
 		}); err != nil {
 			return err
 		}
-		receipt, err = s.writeExecutionReceipt(ctx, tx, gw, row.TransactionID, e)
-		return err
+		if receipt, err = s.writeExecutionReceipt(ctx, tx, gw, row.TransactionID, e); err != nil {
+			return err
+		}
+		// Budget last, as in Authorize: the hot row is locked only until COMMIT.
+		switch e.Outcome {
+		case Accepted:
+			err = db.ExpectOneRow(q.CommitReservation(ctx, row.Amount, gw.Org, row.BudgetID))
+		case Failed:
+			err = db.ExpectOneRow(q.ReleaseReservation(ctx, row.Amount, gw.Org, row.BudgetID))
+		case Unknown:
+		}
+		if err != nil {
+			return fmt.Errorf("authority: budget %s: %w", kind, err)
+		}
+		return nil
 	})
 	return receipt, err
 }
@@ -518,15 +527,23 @@ func (s *Service) SweepOrg(ctx context.Context, org ids.OrgID, staleAfter time.D
 		if err != nil {
 			return err
 		}
+		type sum struct {
+			amount money.Decimal
+			count  int32
+		}
+		perBudget := map[ids.UUID]sum{}
 		for _, p := range released {
-			if err := db.ExpectOneRow(q.ReleaseReservation(ctx, p.Amount, org, p.BudgetID)); err != nil {
-				return fmt.Errorf("authority: sweep release: %w", err)
-			}
 			if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
 				OrgID: org, ID: ids.NewV7(), BudgetID: p.BudgetID, TransactionID: p.TransactionID, Kind: "release", Amount: p.Amount,
 			}); err != nil {
 				return err
 			}
+			s := perBudget[p.BudgetID]
+			if s.amount, err = s.amount.Add(p.Amount); err != nil {
+				return err
+			}
+			s.count++
+			perBudget[p.BudgetID] = s
 		}
 		unknown, err := q.MarkStaleDispatchingUnknown(ctx, org, staleAfter.Seconds())
 		if err != nil {
@@ -537,6 +554,15 @@ func (s *Service) SweepOrg(ctx context.Context, org ids.OrgID, staleAfter time.D
 				OrgID: org, ID: ids.NewV7(), BudgetID: p.BudgetID, TransactionID: p.TransactionID, Kind: "hold_unknown", Amount: p.Amount,
 			}); err != nil {
 				return err
+			}
+		}
+		// Budget last: one release per budget, so the hot rows are locked
+		// once and only until COMMIT, however many permits expired.
+		for budget, s := range perBudget {
+			if err := db.ExpectOneRow(q.ReleaseReservations(ctx, dbq.ReleaseReservationsParams{
+				Amount: s.amount, Count: s.count, OrgID: org, ID: budget,
+			})); err != nil {
+				return fmt.Errorf("authority: sweep release: %w", err)
 			}
 		}
 		r = SweepResult{Released: len(released), Unknown: len(unknown)}
