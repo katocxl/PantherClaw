@@ -176,6 +176,14 @@ go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
 
 Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
 
+**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+
+```bash
+go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
+  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
+# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+```
+
 ---
 
 ## 5. Repository layout

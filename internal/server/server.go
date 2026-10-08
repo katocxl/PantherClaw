@@ -17,12 +17,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/billing"
 	"github.com/katocxl/pantherclaw/internal/billing/licence"
 	"github.com/katocxl/pantherclaw/internal/evidence/chainer"
@@ -48,6 +50,8 @@ Usage:
   pantherclaw-server db bootstrap --admin-url-file F --app-password-file F --migrator-password-file F --audit-password-file F
                                                      create roles and schema once, as the database owner
   pantherclaw-server keys gen-kek --out FILE          write a new key-encryption key (0600)
+  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
+                                                     DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
 
 Configuration: JSON file plus PC_* environment variables; secrets only as file paths.
@@ -75,6 +79,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		err = cmdDB(ctx, args[1:], stdout, stderr)
 	case "keys":
 		err = cmdKeys(args[1:], stdout, stderr)
+	case "dev":
+		err = cmdDev(ctx, args[1:], stdout, stderr, env)
 	default:
 		_, _ = fmt.Fprint(stderr, usage)
 		return 2
@@ -145,9 +151,22 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		return err
 	}
 
+	svc, err := newAuthority(cfg, pool, reg, log)
+	if err != nil {
+		return err
+	}
+
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
-		handler, err := apiHandler(pool, reg, log)
+		auth, err := devGatewayAuth(cfg)
+		if err != nil {
+			return err
+		}
+		if auth != nil {
+			log.WarnContext(ctx, "server.dev_gateway_enabled", slog.String("gateway_id", cfg.DevGateway.ID),
+				slog.String("org", cfg.DevGateway.Org), slog.String("note", "development only; not for production"))
+		}
+		handler, err := apiHandler(pool, reg, log, svc, auth)
 		if err != nil {
 			return err
 		}
@@ -183,9 +202,12 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := chainer.Register(jreg, pool); err != nil {
 			return err
 		}
+		if err := authority.RegisterSweeper(jreg, pool, svc, cfg.Authority.StaleDispatch.D()); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: chainer.PeriodicJobs(),
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs()),
 			Logger:       log,
 		})
 		if err != nil {
@@ -231,16 +253,20 @@ func listen(ctx context.Context, cfg *Config, handler http.Handler, log *slog.Lo
 	return srv, ln, nil
 }
 
-// apiHandler mounts the RPC services, health endpoints and the JWKS.
-func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger) (http.Handler, error) {
+// apiHandler mounts the RPC services, health endpoints and the JWKS. auth
+// is nil unless the development gateway is enabled; AuthorityService then
+// refuses every call.
+func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *authority.Service, auth rpc.Authenticator) (http.Handler, error) {
 	rs, err := rpc.NewServer(rpc.Options{
-		Logger: log,
-		Public: []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure},
+		Logger:       log,
+		Public:       []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure},
+		Authenticate: auth,
 	})
 	if err != nil {
 		return nil, err
 	}
 	pantherclawv1connect.RegisterSystemServiceHandler(rs, systemService{})
+	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
