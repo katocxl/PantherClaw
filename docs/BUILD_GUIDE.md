@@ -192,6 +192,15 @@ curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000
 
 The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
 
+**Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
+
+```bash
+go run ./cmd/pantherclaw-sim load --workload 01920000-0000-7000-8000-0000000000c1 --rate 1000 --duration 30s --warmup 5s --out perf.json
+k6 run -e WORKLOAD=01920000-0000-7000-8000-0000000000c1 -e RATE=1000 test/load/refund.js   # Linux/nightly; thresholds are the SLOs
+```
+
+Results and the machines they were measured on are recorded in `docs/perf/M1.5.md`.
+
 ---
 
 ## 5. Repository layout
