@@ -1,0 +1,420 @@
+# PantherClaw — Build Guide
+
+**The authoritative guide for building PantherClaw from an empty repository to a production-ready v1.0 backend.**
+Version 1.0 · 2026-10-08 · Owner: Joshua Kato · Approved at G0 (M0).
+
+> PantherClaw is an AI Agent Identity & Runtime Authorization Firewall — an *agent transaction firewall*. It gives agents useful authority, makes every consequential action explainable, and stops that authority when it is no longer appropriate.
+
+---
+
+## 0. How to use this guide
+
+**Who reads it:** the founder and the AI coding assistant (Claude) that implements milestones. Every coding session starts by reading §0–§4 and the current milestone in §8.
+
+**Document map and precedence** (higher wins on conflict):
+
+1. [security/HARDENING_RULES.md](security/HARDENING_RULES.md) — binding rules `HR-###`, each with tests.
+2. [protocol/PAP-1.md](protocol/PAP-1.md) — identity & authority protocol, wire formats.
+3. [ARCHITECTURE.md](ARCHITECTURE.md) — components, flows, layering, data architecture.
+4. [security/SECURITY_BASELINES.md](security/SECURITY_BASELINES.md) — auth, crypto, logging, dependencies, checks.
+5. **This guide** — process, conventions, milestones, tests, definition of done.
+6. [FEATURES.md](FEATURES.md) — what to build (pillars, phases, editions, F-/PN- IDs).
+7. [reference/](reference/) — original product specification (F001–F802) for detailed behavior.
+
+Also: [THREAT_MODEL.md](security/THREAT_MODEL.md) (`T-###`), [GATES_AND_REVIEW.md](security/GATES_AND_REVIEW.md) (gates, exceptions, briefs), [OWASP_CWE_MAPPING.md](security/OWASP_CWE_MAPPING.md), [DEPENDENCY_POLICY.md](security/DEPENDENCY_POLICY.md), [adr/](adr/), [UPGRADES.md](UPGRADES.md), [IP_PROTECTION.md](IP_PROTECTION.md), [runbooks/](runbooks/).
+
+**Working loop per milestone** (SG01, SG08–SG12):
+
+```
+G0 brief (GATES_AND_REVIEW §5) → protos/migrations/contracts first → tests named by ID first
+→ implement (domain → app → adapters → cmd) → task check → PR → ci-ok + 2 AI reviews → founder G1 → squash merge
+→ update traceability (FEATURES status, HR/T test links) → next slice
+```
+
+Rules for the AI implementer:
+- Implement only what the current G0 brief covers; surface missing security decisions instead of guessing.
+- Never weaken an `HR-###` rule, an invariant, or a test to make something pass. If a rule seems wrong, stop and propose an ADR.
+- Never add a dependency that is not in DEPENDENCY_POLICY §3 without adding the justification row in the same PR.
+- Keep PRs small (≤ ~600 lines of non-generated diff) and single-purpose.
+
+---
+
+## 1. Day-0 checklist (founder actions the AI cannot perform)
+
+| # | Action | Why | Status |
+|---|---|---|---|
+| 1 | Install the **CodeRabbit** GitHub App on `katocxl/pantherclaw` (free for public repos) | Second, independent AI reviewer (SG11) | ☐ |
+| 2 | Add `~/.ssh/id_ed25519.pub` to GitHub as a **Signing key**; start the Windows OpenSSH agent and `ssh-add` the key; then `git config commit.gpgsign true` and `gpg.ssh.program "C:/Windows/System32/OpenSSH/ssh-keygen.exe"` | Verified local commits (EX-002) | ☐ |
+| 3 | Run `claude setup-token` and save it as repository secret `CLAUDE_CODE_OAUTH_TOKEN` | Claude AI security review in CI | ☐ |
+| 4 | Reserve package names: PyPI pending trusted publisher `pantherclaw` (workflow `release.yml`, environment `release`); npm organization `@pantherclaw` | Prevent name squatting; OIDC publishing | ☐ |
+| 5 | Optional: install Task (`winget install Task.Task`) for shorter commands; install `uv` (`winget install astral-sh.uv`) before SDK work (M8). All other tools are pinned under `tools/pins/` and run via `go tool` | Local tooling | ☐ |
+| 6 | (M1) Run `pclaw-admin keygen --purpose licence` and `--purpose packages` on an offline-capable machine; store private keys on two offline media; commit only the public keys | Licence and package trust roots (HR-063) | ☐ |
+| 7 | Optional: create `%UserProfile%\.wslconfig` with `memory=8GB` | Docker stability with Keycloak + LGTM | ☐ |
+| 8 | Before accepting outside PRs: install CLA Assistant (cla-assistant.io) linked to `CLA.md` | Keep relicensing rights | ☐ |
+| 9 | Optional: create fine-grained PAT (public repos, read-only) as secret `CANARY_SEARCH_TOKEN` | Copy detection workflow | ☐ |
+
+---
+
+## 2. Product in one page
+
+**Unit of security:** an agent action performed under a specific grant of authority. **Durable record:** the *transaction* (exact logical request, authority, decision, human requirements, attempts, effects).
+
+**Six primary objects:** Agent · Run · Resource · Grant · Policy · Action. Supporting: people/services, tools, connections, approvals, incidents, automations, teams/environments, action definitions, consequence rules, coverage records, receipts.
+
+**Twelve invariants:** see [ARCHITECTURE §1](ARCHITECTURE.md#1-product-invariants-non-negotiable). Tests in `test/invariants/` are named `TestINV01_…` … `TestINV12_…`.
+
+**Twenty commercial pillars** ([FEATURES.md](FEATURES.md)): Inventory · Discovery · Lifecycle · Identity & Authority Protocol · Authorization · Non-bypassable Transaction Boundary · Agent Waitlist · Agent Controls · Sessions · Containment · Monitoring · Threat Detection · Investigation · Breach Radius · Proof · Coverage & Bypass Resistance · Adversarial Sandbox · Deployments · Performance · Management.
+
+**Editions:** Community (BSL free grant: ≤ 5 agents, 1 org) · Team · Business · Enterprise (private repo + licence keys).
+
+---
+
+## 3. Engineering rules
+
+### 3.1 Go conventions
+- Go toolchain pinned in `go.mod` (`toolchain go1.27.1`); `GOFLAGS=-mod=readonly`.
+- Formatting: gofumpt (via golangci-lint formatters). Imports grouped std / third-party / local.
+- Packages are nouns (`grants`, `budgets`), no `util`/`common`/`helpers`.
+- **Context first** for anything doing I/O; never store contexts in structs.
+- **Errors:** wrap with `%w`; domain errors are typed (`errors.Is/As`); API errors map to stable codes in `internal/platform/errors` (never leak internal messages); security failures return the precise decision (`DENY`, `CANNOT_AUTHORIZE`) not generic 500s.
+- **No panics** across package boundaries; recover only at server edges.
+- **Time:** inject `clock.Clock`; deadlines that guard security use the DB clock inside transactions.
+- **IDs:** typed IDs (`type OrgID uuid.UUID` etc.) — never raw strings/UUIDs across layers; UUIDv7.
+- **Money/amounts:** `decimal` type in `internal/platform/money` (string-backed, fixed scale, no floats).
+- **JSON:** `encoding/json/v2` + `jsontext` only in core.
+- **Concurrency:** `errgroup` for fan-out; every goroutine has an owner and a stop path; no unbounded channels/queues.
+- **Config:** typed struct loaded once at start (env + file), validated; secrets loaded through `KeyProvider`/file mounts, wrapped in `Secret[T]`.
+- **Logging:** `slog` via `internal/platform/log`; event names dotted (`authz.decision`); never `fmt.Print*`.
+- **Headers:** every source file starts with SPDX + copyright (see [IP_PROTECTION.md](IP_PROTECTION.md)); `task license:fix` adds them.
+
+### 3.2 API & contract rules
+- Change protos first; run `task gen`; commit generated code in the same PR.
+- Every request message has protovalidate rules (lengths, patterns, enums, required).
+- Every RPC declares its required permission in a comment `// permission: <name>` checked by a test that walks the service registry.
+- List endpoints are paginated (cursor), filtered by tenant first, with maximum page size 200.
+- Idempotent mutations accept an `idempotency_key`.
+- No breaking changes without a new package version (`v2`).
+
+### 3.3 Database rules
+- Migrations: `migrations/NNNN_name.sql` (goose, up + down), reviewed by squawk; never edit a merged migration.
+- Every tenant table: `org_id uuid NOT NULL`, composite PK `(org_id, id)`, composite FKs, RLS ENABLE + FORCE, policy using `(SELECT NULLIF(current_setting('app.org_id', true), '')::uuid)`.
+- Immutable revision tables for anything versioned; append-only evidence (UPDATE/DELETE revoked).
+- Queries live in `queries/*.sql` (sqlc); repositories take `OrgID` explicitly and run inside `db.InTenantTx(ctx, orgID, fn)`.
+- State changes are conditional updates (`WHERE state = $expected`).
+- Avoid reserved words as column names (`limit_amount`, not `limit`).
+- Every new table gets a cross-tenant negative test (generated table list check).
+
+### 3.4 Security rules quick list (full list: HARDENING_RULES)
+Fail closed · never trust agent claims · never trust the gateway's org/identity assertions · no secrets in logs/job args/receipts · re-serialize outbound requests · egress guards on every outbound client · CEL fail-closed · conditional state transitions · approvals humans-only · cooperative modes labeled PARTIAL · tenancy twice (typed OrgID + RLS).
+
+### 3.5 Testing rules
+| Kind | Location | Tooling | Naming |
+|---|---|---|---|
+| Unit | next to code | `testing`, table-driven | `TestXxx` |
+| Property | next to code / `test/invariants` | `pgregory.net/rapid` | `TestINV##_…`, `TestPropXxx` |
+| Hardening rule | anywhere | — | `TestHR###_…` |
+| Threat negative test | `test/…` | — | `TestT###_…` |
+| Integration (DB) | `*_integration_test.go`, build tag `integration` | pgtestdb template DBs, connect as `pc_app` | `TestIntXxx` |
+| Tenancy | `test/tenancy` | generated per-table checks | `TestTenancy_<table>` |
+| Race | `test/race` (+ `-race` everywhere on Linux) | goroutine storms | `TestRace_…` |
+| Fuzz | `test/fuzz` + package-level | `go test -fuzz` | `FuzzXxx` |
+| E2E scenarios | `test/e2e` | compose stack + simulators | `TestE2E_S##_…` |
+| SDK conformance | `test/conformance` (JSON fixtures shared by Go/Python/TS) | each SDK's runner | fixture ids |
+| Load | `test/load` | k6 | script names |
+| Adversarial | `redteam/scenarios` | scenario engine | `RT-###` |
+
+Rules: tests first for security behavior; no sleeps (use clocks/conditions); no network except to test containers/simulators bound to 127.0.0.1; golden files are LF and marked `-text`; deterministic randomness via `testing/cryptotest.SetGlobalRandom` where needed.
+
+### 3.6 Definition of done (every PR)
+- [ ] Linked G0 brief and requirement IDs (F/PN/HR/T) in the PR description.
+- [ ] Tests for new behavior incl. negative/abuse cases; `task check` green; `ci-ok` green.
+- [ ] Both AI reviews addressed (fixed, or disagreement recorded with reason).
+- [ ] Threat model / hardening rules / ADR updated if boundaries, identity, data flow or dependencies changed.
+- [ ] Docs updated (API docs from protos, FEATURES status).
+- [ ] No secrets, no TODOs without an issue link, no disabled tests/linters without an exception record.
+- [ ] Founder G1 approval comment after cooling-off.
+
+---
+
+## 4. Development environment
+
+**Prerequisites:** Go 1.27 (toolchain auto-downloads 1.27.1), Docker Desktop (WSL2), optional Task (otherwise `go tool -modfile=tools/pins/task/go.mod task`), uv (M8), Node 24 + Corepack (pnpm pinned per package), Git with `core.autocrlf=false` for this repo.
+
+**Windows specifics:** LF line endings (`.gitattributes`); servers in tests bind `127.0.0.1`; race/integration/signal tests run in Linux via `task test:linux` (container) — CI is canonical; Postgres uses named volumes; file-permission checks are skipped on NTFS; Claude Code integration must cover both Bash and PowerShell tools.
+
+**Tasks** (`Taskfile.yml`):
+
+| Task | Does |
+|---|---|
+| `task setup` | set `core.hooksPath=.githooks` (pre-commit, pre-push), build pinned tools |
+| `task check` | fmt check, licence headers, lint (all Go modules), workflow lint (actionlint), unit tests, secret scan |
+| `task lint:workflows` | actionlint over `.github/workflows` |
+| `task fmt` / `task lint` / `task test` | individual steps |
+| `task test:linux` | race + integration tests inside a Linux container |
+| `task gen` | buf generate + sqlc generate (M1+) |
+| `task license:check` / `task license:fix` | SPDX/copyright headers |
+| `task build` | build all binaries into `bin/` |
+| `task up` / `task down` | compose stack (profile via `PROFILE=core`) |
+| `task vuln` | govulncheck |
+
+---
+
+## 5. Repository layout
+
+```
+cmd/                     pantherclaw-server, pantherclaw-gateway, pclaw, pantherclaw-sim, pclaw-admin
+proto/pantherclaw/v1/    API contracts (buf)
+internal/gen/            generated Go (committed)
+internal/platform/       config, log, otel, db, crypto, keys, ids, clock, errors, httpx, rpc, money, extension, edition, version
+internal/<module>/       {domain, app, adapters} — see §6
+internal/gateway/        mcp, httpproxy, sdk, dispatch, egress, broker, runtime
+migrations/  queries/    goose SQL, sqlc queries
+policies/templates/      built-in task templates (support, refund, diagnostics, release, analysis)
+packages/                signed tool packages (mock-payments, mock-crm, mock-git, github, stripe, slack, postgres)
+sdk/go | sdk/python | sdk/typescript   Apache-2.0 SDKs (separate modules/packages)
+integrations/claude-code Apache-2.0 plugin + hooks
+deploy/                  compose (profiles), helm, keycloak realm, cloudflared
+redteam/scenarios/       adversarial scenarios (YAML)
+test/                    invariants, race, tenancy, e2e, fuzz, load, conformance
+tools/                   go.mod with tool directives + Go helper programs (licence check, traceability check)
+docs/                    this guide and companions
+```
+
+---
+
+## 6. Module map
+
+| Module | Responsibility | Key types | First milestone |
+|---|---|---|---|
+| `platform/*` | Cross-cutting infrastructure | `Clock`, `OrgID`, `Secret[T]`, `KeyProvider`, `Signer`, `AEAD`, `TenantTx` | M1 |
+| `tenancy` | Orgs, BUs, teams, environments, users, memberships, roles, SoD | `Org`, `Membership`, `Permission`, `RoleBinding` | M2 |
+| `authn` | OIDC RP, device flow, sessions, WebAuthn, service accounts, API keys | `Principal`, `Session`, `StepUp` | M2/M5 |
+| `agents` | Inventory, ownership, lifecycle, change history | `Agent`, `LifecycleState` | M3 |
+| `identity` | PAP/1: enrollment, instances, workload tokens, proofs, nonces, attestation | `Instance`, `WorkloadToken`, `Proof`, `AttLevel` | M3 |
+| `runs` | Runs, launcher vs principal, child runs | `Run` | M3 |
+| `definitions` | Tool packages, action definitions, consequence rules, ActionIR mapping | `Package`, `ActionDefinition`, `ActionIR` | M4 |
+| `grants` | Envelopes, grants, revisions, lattice constraints, delegation, revocation | `Grant`, `Constraint`, `Lineage` | M4 |
+| `budgets` | Budgets, counters, ledger, reservations | `Budget`, `Reservation` | M4 |
+| `facts` | Trusted fact providers, freshness | `Fact`, `Provider` | M4 |
+| `policy` | Structured rules, CEL compile/eval, templates, tests, simulation, rollout | `Rule`, `Bundle`, `Evaluation` | M4/M11 |
+| `authority` | Decision pipeline, finalization, permits, BeginDispatch, RecordExecution | `Decision`, `Checklist`, `Permit` | M1.5/M4/M6 |
+| `approvals` | Approval requests/responses, binding, eligibility, two-person | `ApprovalRequest`, `Binding` | M5 |
+| `waitlist` | Unified decision queue, wait handles, escalation | `Entry`, `Handle` | M3/M5 |
+| `transactions` | Execution attempts, effects, verifiers, reconciliation | `Attempt`, `Effect`, `Reconciliation` | M6/M7 |
+| `credentials` | Sealed credentials, broker key registry, access modes | `SealedCredential`, `AccessMode` | M6 |
+| `connections` | Connections, routes, capability manifests, health | `Connection`, `Route` | M6 |
+| `coverage` | Coverage snapshots, states, invalidation, probes | `Snapshot`, `CoverageState` | M9 |
+| `evidence` | Receipts, ledger, chainer, checkpoints, anchoring, packs, replay, retention, platform audit | `Receipt`, `LedgerEntry`, `Checkpoint` | M1/M7 |
+| `detections` | CEL detection rules, windows, mappings | `DetectionRule`, `Hit` | M10 |
+| `incidents` | Alerts, incidents, cases, findings, suppressions | `Case`, `Finding` | M10 |
+| `response` | Containment actions, epochs, kill switch, restoration | `ContainmentAction`, `Epoch` | M6/M10 |
+| `reach` | Effective reach, blast radius, exposure graphs | `ReachGraph` | M10 |
+| `search` | Structured + FTS search, saved queries (permission-safe) | `Query` | M10 |
+| `automations` | Definitions, schedules, triggers, executor | `Automation`, `Schedule` | M11 |
+| `notifications` / `exports` | Channels (log, SMTP, Slack, webhook), OCSF export, Standard Webhooks | `Notification`, `Delivery` | M5/M10 |
+| `discovery` | Shadow agent discovery (gateway-observed, `pclaw scan`, GitHub org scan) | `Discovery` | M3/M8 |
+| `billing` | Editions, licence verification, entitlements, metering | `Licence`, `Entitlement` | M1/M13 |
+| `redteam` | Scenario engine, assurance reports | `Scenario`, `Report` | M12 |
+
+---
+
+## 7. Data model by milestone
+
+| MS | Tables (all `org_id` + RLS unless noted) |
+|---|---|
+| M1 | `orgs` (root, RLS on id), `ledger_entries`, `ledger_heads`, `keys` (public material + wrapped private refs), `deks`, `licence_state` (global), River tables (no RLS) |
+| M1.5 | `transactions`, `decision_receipts`, `permits`, `execution_attempts`, `budgets`, `budget_ledger`, `org_containment` |
+| M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes` |
+| M3 | `agents`, `agent_owners`, `agent_changes`, `agent_instances`, `enrollment_tokens`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries` |
+| M4 | `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `envelopes`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `facts`, `policies`, `policy_versions`, `idempotency` (or columns on `transactions`) |
+| M5 | `sessions`, `webauthn_credentials`, `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
+| M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
+| M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
+| M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
+| M10 | `detection_rules`, `detection_state`, `alerts`, `incidents`, `cases`, `case_notes`, `findings`, `suppressions`, `containment_actions`, `export_destinations`, `saved_queries` |
+| M11 | `policy_tests`, `policy_simulations`, `policy_rollouts`, `exceptions`, `automations`, `automation_versions`, `schedules`, `triggers`, `executions`, `step_executions` |
+| M12 | `redteam_runs`, `redteam_results` |
+| M13 | `entitlements`, `usage_meters`, `support_access_grants`, `data_requests` |
+
+---
+
+## 8. Milestones
+
+Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AND_REVIEW.md) §7 and ends when its exit criteria pass in CI. Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M8**; **v1.0 after M13**.
+
+### M0 — Bootstrap (done when CI is green)
+- Docs set (this guide and companions), IP/legal files, repo security settings, rulesets, `release` environment.
+- Skeleton: Go module, `cmd/*` stubs, `internal/platform/version` with tests, Taskfile, `.githooks`, pinned tools (`tools/pins/*`: golangci-lint, govulncheck, gitleaks, osv-scanner, actionlint, task), licence-header checker (`tools/licensecheck`), golangci config, Semgrep rules, `.gitattributes`, devcontainer, compose (Postgres), workflows (ci, scorecard, nightly, release, ai-review, pr-hygiene, canary-watch), Dependabot, GoReleaser config.
+- **Exit:** `ci-ok` green on `main`; Scorecard runs; settings verified via API; G0(M1) recorded.
+
+### M1 — Platform foundation
+**Threat slice:** T-003, T-016, T-034, T-041 · **HR:** HR-004, HR-050..057, HR-062, HR-063, HR-104.
+- `platform/config` (typed, validated), `platform/log` (slog JSON, `Secret[T]`, `Sensitive[T]`, ReplaceAttr denylist, field caps), `platform/otel`, `platform/clock`, `platform/ids` (typed UUIDv7), `platform/errors` (codes), `platform/money` (decimal).
+- `platform/db`: pgx pool (AfterConnect timeouts, AfterRelease `RESET ALL`), `InTenantTx`, `InGlobalTx` (restricted), goose runner, role bootstrap migration (`pc_migrator`, `pc_app`, `pc_audit_ro`), audited cross-org lister function.
+- `platform/crypto`: AEAD envelope (AES-256-GCM, AAD builder), Ed25519 signer/verifier (go-jose JWS with allowlist), HPKE seal/open (X-Wing), hashing helpers; `platform/keys`: `KeyProvider` (file implementation), key registry, JWKS document.
+- `platform/httpx`: hardened server (timeouts, limits, headers, recovery), hardened outbound client factory (`egress` defaults: no redirects, dial-time IP check, no proxy env) — shared with the gateway.
+- `platform/rpc`: connect v2 server setup, interceptors (request id, logging, otel, protovalidate, panic recovery, auth placeholder), health (`grpchealth`).
+- River setup (migrations imported into goose), job registry, `InsertTx` helper.
+- `evidence` (part 1): `ledger_entries` (unchained insert), per-org chainer job, platform audit API (`audit.Record(ctx, tx, event)`).
+- `billing` (part 1): licence document format, Ed25519 verification against embedded public key, edition limits (Community: 5 agents, 1 org), `cmd/pclaw-admin keygen|licence sign`.
+- `cmd/pantherclaw-server`: config, migrations (`migrate up` subcommand), API + worker roles, health endpoints.
+- **Tests:** RLS suite as `pc_app` (missing setting matches nothing; cross-tenant read/write/FK oracle fail); crypto known-answer and tamper tests (AAD swap fails — HR-062); redaction tests (no secret in any log output); licence tamper/expiry tests; chainer correctness (gaps, concurrent inserts, rollback); `TestHR004_*` state transition helper.
+- **Exit:** suites green; `v0.0.1` pre-release exercises the release pipeline.
+
+### M1.5 — Walking skeleton (thin end-to-end slice)
+**Purpose:** validate latency, chaining and budget designs before building on them. **HR:** HR-001, HR-003, HR-009, HR-070..075, HR-110.
+- `pantherclaw-sim payments` (refund endpoint, fault injection flags).
+- Gateway minimal: HTTP proxy for one hard-coded connection/route, static workload identity (dev only, clearly flagged), ActionIR for `payments.refund.create`, Authorize → permit → `BeginDispatch` → re-serialized dispatch → `RecordExecution`.
+- Authority minimal: hard-coded grant (max $100, one refund), budget reservation, decision receipt, permit lifecycle with epoch, sweeper.
+- k6 script: 1k rps allow path; budget race script.
+- **Exit:** measured p99 vs SLOs recorded in `docs/perf/M1.5.md`; zero overspend under 1,000 concurrent reservations; crash-mid-dispatch test yields UNKNOWN (no release); ADR updated if the design must change.
+
+### M2 — Tenancy & service authentication
+**Threat slice:** T-003, T-032, T-037, T-043 · **HR:** HR-095.
+- Org → BU → team → environment hierarchy; users (from OIDC), memberships, invitations (signed, expiring), roles and permission catalog; SoD primitives.
+- OIDC RP for CLI device flow (browser sessions arrive in M5); `pclaw login`.
+- Service accounts with `private_key_jwt`; API keys (`pck_`), scopes, expiry; auth interceptor; bootstrap admin token (printed once, single use).
+- Keycloak dev realm (`deploy/keycloak`) + mock-oauth2-server for CI.
+- **Tests:** alg `none`/HS256 rejected, wrong `aud`/`iss`, expired/revoked/substituted tokens, mix-up, replayed client assertion; permission catalog test (every RPC declares a permission); IDOR tests.
+- **Exit:** authenticated, authorized CRUD for tenancy via Connect + CLI.
+
+### M3 — Agents & PAP/1 identity
+**Threat slice:** T-001, T-004, T-032, T-033, T-035 · **HR:** HR-022, HR-090..094 · **F:** F015–F037, F224–F236 · **PN:** PN-001 (part), PN-002, PN-004 (ADMISSION).
+- Agents inventory, owners/backup, purpose, environment, lifecycle state machine, change history.
+- Enrollment tokens, instance key registration, ADMISSION waitlist entries, fingerprint confirmation.
+- Workload tokens, proofs, server nonces, replay store (partitioned), attestation L1 + L2 (GitHub OIDC, Kubernetes TokenReview).
+- Runs (server-minted, launcher vs represented principal, child runs).
+- Discovery: gateway-observed unknown workloads → unclaimed queue.
+- **Tests:** replay, stolen token without key, wrong `htu`/`bh`, stale nonce, GitHub fork/`pull_request_target` rejection, name-collision instances not inheriting authority.
+
+### M4 — Authority core
+**Threat slice:** T-001, T-008, T-011, T-012, T-018, T-020, T-023, T-036 · **HR:** HR-005..007, HR-023, HR-040..049, HR-100..103, HR-123, HR-124 · **F:** F038–F130.
+- Tool packages: format (YAML), signature verification (package root), TUF-style metadata, per-org pins (monotonic), action definitions (operation, target identity, material params with types/units, effects, reversibility, constraints, prerequisites, retry semantics, verifier, approval template, dedupe key).
+- ActionIR mapping from MCP tool calls and HTTP routes (CEL extraction), strict canonicalization, hashing.
+- Grants: envelopes (org guardrails), lattice constraints, revisions, delegation (depth/fan-out caps, expiry ceiling), revocation cascade, budgets per grouping with ancestor debiting, counters.
+- Facts providers (trusted sources, freshness), CEL environment (decimal/money types, cost limits), structured rules (FORBID, REQUIRE_APPROVAL, REQUIRE_STEP_UP, CONSTRAIN, ANNOTATE), fail-closed evaluation.
+- Decision pipeline (10 steps), checklist/explanations, decision receipts, idempotency semantics.
+- **Tests:** 12 invariant property tests; 1,000-goroutine budget race; delegation lattice properties; CEL fail-closed + mutation tests; canonicalizer fuzzing; golden tests for packages; the six policy scenario tests from F193.
+
+### M5 — Human approvals, step-up & Agent Waitlist
+**Threat slice:** T-002, T-005, T-006, T-007, T-026, T-027 · **HR:** HR-030..039 · **F:** F139–F171 · **PN:** PN-004, PN-020.
+- Browser sessions (OIDC auth code + PKCE), CSRF defenses, WebAuthn registration/assertion, transaction-bound step-up.
+- Approval requests with binding hash, eligibility (role/scope/independence), two-person rule, expiry, invalidation (material change, role removal, revocation), decline with reason, request evidence, propose narrower action.
+- Minimal server-rendered approval page (template-only rendering, untrusted box, strict CSP) — the only HTML before the UI phase.
+- Agent Waitlist: all entry types, priority, deadlines, escalation chains, wait handles (long-poll + SSE), batch review for homogeneous low-risk entries, SLA metrics.
+- Notifications: log, SMTP, Slack (deep-link only), webhook (Standard Webhooks signatures).
+- **Tests:** replay/theft by sibling run, self-approval, API-key approval refused, sock-puppet (same WebAuthn cred), TOCTOU after approval, variant-shopping cap, delivery failure ≠ approval.
+
+### M6 — Gateway & non-bypassable boundary
+**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..086, HR-113 · **PN:** PN-003, PN-005, PN-013, PN-014, PN-015.
+- Gateway enrollment + mTLS (internal CA), org binding; Authorize/BeginDispatch/RecordExecution clients; revocation/containment stream with heartbeat and cold-start snapshot.
+- MCP proxy (2026-07-28 stateless + 2025-11-25 stateful), tasks extension for HOLD, reviewed descriptions, elicitation/sampling gating; `pclaw mcp proxy` stdio shim.
+- HTTP proxy (route matching from packages), outbound re-serialization, egress transport; credential broker (sealed creds, per-tenant keys, AAD binding), `pclaw seal`.
+- Connector runtime (customer-hosted only) with isolation; circuit breaker; monitor vs enforce mode per route.
+- Kill switch (asymmetric) and containment epoch bumps.
+- Claude Code plugin (PreToolUse for Bash + PowerShell, path normalization) — dogfooded on PantherClaw development.
+- **Exit — refund scenario table (`test/e2e`):**
+
+| ID | Scenario | Expected |
+|---|---|---|
+| S01 | $30 refund within grant | ALLOW → dispatched → accepted |
+| S02 | $85 refund (policy: approval > $50) | HOLD → approve (WebAuthn) → resubmit → dispatched |
+| S03 | $125 refund (grant max $100) | DENY even if a manager tries to approve |
+| S04 | Revoke grant while held | Pending approval invalidated; resubmit → DENY |
+| S05 | Change amount after approval | Material change → new decision; old approval unusable |
+| S06 | Two concurrent refunds against one-refund budget | Exactly one succeeds |
+| S07 | Target timeout | UNKNOWN; reservation held; no auto-retry; reconciliation entry |
+| S08 | Gateway killed between BeginDispatch and Record | UNKNOWN, not released |
+| S09 | Authority unavailable | CANNOT_AUTHORIZE; nothing dispatched |
+| S10 | Child agent with narrowed grant | Child cannot exceed parent; parent revocation cascades |
+| S11 | Direct call to simulator bypassing gateway | Route labeled uncontrolled; coverage PARTIAL |
+| S12 | SSRF/rebinding/redirect payloads | Blocked by egress guards |
+| S13 | Kill switch engaged mid-run | All subsequent dispatches refused < 1 s |
+
+### M7 — Effects, reconciliation & proof
+**HR:** HR-110..112 · **F:** F461–F533 · **PN:** PN-007.
+- Verifiers (follow-up reads), effect state machine, verification levels (required vs achieved), deadlines, conflicting evidence, reconciliation queue with owners, compensation linking.
+- Execution/effect receipts, Merkle tiles, signed checkpoints, Rekor v2 anchoring (global root, RFC 3161), `pclaw verify` (offline), decision replay (non-executing; proposed-policy replay; difference explanation), evidence packs (signed), retention categories, restricted payload capture profile, optional ML-DSA co-signing.
+- **Tests:** tampering detected (row edit, deletion, re-signing without witness), replay never dispatches, pack completeness incl. uncertain states.
+
+### M8 — SDKs, integrations & real connectors → v0.1.0 preview
+**PN:** PN-014, PN-016, PN-017.
+- `sdk/go` (client + target verifier middleware), `sdk/python` (async + sync, LangChain/LangGraph, OpenAI Agents SDK, CrewAI on py3.13), `sdk/typescript` (Vercel AI SDK, MCP TS); cross-language conformance fixtures.
+- Claude Agent SDK `canUseTool` integration; `pclaw init` (detect framework/MCP config, enroll, rewrite config with backup, apply template).
+- Connectors: GitHub App (installation tokens, PR/merge, branch protection facts), Stripe test mode (refunds, idempotency keys), Slack (approval deep links, notifications), Postgres query (read-only, row limits, field filtering).
+- §43 coding-agent scenario on a sandbox GitHub repo: merge requires independent reviewer; deployment consequence requires release approver.
+
+### M9 — Coverage & containment sandbox
+**HR:** HR-024, HR-086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
+- Routes inventory, coverage snapshots (UNKNOWN/OBSERVE_ONLY/PARTIAL/ENFORCED), invalidation events, freshness contract, closure evidence, access-mode disclosure, credential-overreach findings.
+- `pclaw sandbox run`: egress-locked Docker network (gateway only; IPv6/ICMP/DNS blocked), no creds, read-only FS, non-root, optional gVisor; trusted sidecar probes + external canary; expiring ENFORCED promotion.
+
+### M10 — Detect, investigate, respond
+**F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018.
+- Detection engine (CEL rules over outbox events, windowed counters with cardinality caps, ATLAS/OWASP mapping), attention levels, grouping, suppression with scope/expiry.
+- Alerts → incidents → cases (facts, hypotheses, open questions, lenses, closure requirements), posture findings and lifecycle.
+- Breach radius: observed vs effective vs credential/bypass reach, dependency previews, exposure matrix.
+- Containment actions with per-path verification, restoration workflow; OCSF 1.9 export, Standard Webhooks, delivery health; permission-safe search & saved queries; live operations stream (SSE).
+
+### M11 — Policy lifecycle & governed automations (MVP subset)
+**F:** F172–F210, F652–F754 (subset).
+- Templates (support, refund, diagnostics, release, analysis), policy tests with expected reasons, historical simulation (newly denied/held/constrained/allowed/unevaluable), shadow evaluation, pilot cohorts, per-target rollout states, rollback, exceptions, behavioral diffs.
+- Automations: definitions (When/If/Under authority/Do/Wait/If fails/Finish), schedules (timezone, DST, missed-run policy), event/manual triggers, linear steps with waits and approvals, bounded retries, loop detection via ancestry, shadow mode, execution inspector data. Full branching engine = Next.
+
+### M12 — Adversarial range
+**HR:** HR-120 · **PN:** PN-009.
+- Scenario engine (YAML), ≥ 30 attacks (see FEATURES pillar 17), simulator-only enforcement, assurance reports (signed), CI regression gate on every PR touching authority/gateway.
+
+### M13 — Commercial & production hardening → v1.0
+**PN:** PN-010, PN-011, PN-012, PN-019.
+- Entitlements & metering per edition, rate limits/quotas, support access (task-bound, customer-approved, audited), data export/deletion, Helm chart, backup/restore + DR drill, FIPS build variant, k6 at SLOs, Schemathesis clean, threat-model refresh (G4), docs site.
+
+### UI phase (after backend)
+Next.js console over generated Connect clients: seven surfaces (Operations, Agents, Policies, Approvals, Investigations, Connections, Automations) + universal search; accessibility and comprehension tests (F001–F014, F643–F651).
+
+---
+
+## 9. CI/CD summary
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | PR, push `main` | Path-filtered Go/proto/SQL/Python/TS/security/product suites; single required check `ci-ok` |
+| `scorecard.yml` | weekly, push `main` | OpenSSF Scorecard |
+| `nightly.yml` | schedule | E2E compose scenarios, fuzzing, Schemathesis, k6, OSV image scan, re-scan of released versions |
+| `release.yml` | push of a `v*` tag (founder) | Verify tagged commit → `release` environment approval (G2/G3) → GoReleaser draft (binaries, SBOMs, checksums, changelog) → build-provenance attestations → publish (immutable) |
+| `ai-review.yml` | PR (same-repo) | Claude security review (advisory) using the review brief |
+| `pr-hygiene.yml` | PR | Semantic title, size labels |
+| `canary-watch.yml` | weekly | Copy detection |
+
+Hardening: SHA-pinned actions (repo policy), `permissions: {}` default, `persist-credentials: false`, no `pull_request_target`, harden-runner (audit; block on release), concurrency cancel-in-progress, Dependabot with 7-day cooldown.
+
+---
+
+## 10. Demo scenarios (investor / design partner)
+
+1. **Refund firewall** (M6): S01–S09 live, with evidence explorer showing decision/execution/effect receipts.
+2. **Coding agent to production** (M8): merge vs deployment consequence; independent reviewer + release approver; effect verification on the target branch; partial deployment.
+3. **Shadow agent discovery** (M8): `pclaw scan` on a laptop finds MCP configs and keys; claims → ADMISSION waitlist.
+4. **Kill switch** (M6): engage → gateways refuse within 1 s → restore with two people.
+5. **Prove it** (M12): red-team range report against the demo tenant; sandbox closure evidence promotes coverage to ENFORCED.
+
+All demo data is synthetic and labeled `SIMULATED` (F630).
+
+---
+
+## 11. Glossary
+
+| Term | Meaning |
+|---|---|
+| Task grant | Bounded authority for a run/task (AuthorizationEnvelope / DelegationGrant) |
+| Envelope | Org/BU/team guardrail ceiling within which grants are issued |
+| Action definition | Reviewed meaning of an operation (ActionIR schema, effects, constraints) |
+| Tool package | Signed, versioned bundle of action definitions and mappings (SemanticPackage) |
+| ActionIR | Canonical representation of one requested action |
+| Permit | Single-use, short-lived authorization to dispatch one finalized action |
+| BeginDispatch | Server-side commit point immediately before dispatch |
+| Containment epoch | Per-org counter incremented by every containment change |
+| Coverage | Scoped evidence that equivalent routes are mediated or blocked |
+| Receipts | Decision, execution and effect evidence records |
+| Waitlist | Unified queue of agents/actions awaiting a security decision |
+| PAP/1 | PantherClaw Authority Protocol, version 1 |

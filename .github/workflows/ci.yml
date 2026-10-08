@@ -1,0 +1,365 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Pull-request and main-branch gate. The ONLY required status check is `ci-ok`,
+# which fails if any job failed or was cancelled (skipped jobs are fine).
+# Hardening: SHA-pinned actions, no token persistence, least-privilege
+# per-job permissions, no pull_request_target (HR-130).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOFLAGS: -mod=readonly
+  TASK: go tool -modfile=tools/pins/task/go.mod task
+
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.filter.outputs.go == 'true' || github.event_name != 'pull_request' }}
+      workflows: ${{ steps.filter.outputs.workflows == 'true' || github.event_name != 'pull_request' }}
+      python: ${{ steps.filter.outputs.python == 'true' || github.event_name != 'pull_request' }}
+      typescript: ${{ steps.filter.outputs.typescript == 'true' || github.event_name != 'pull_request' }}
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '.golangci.yml'
+              - 'Taskfile.yml'
+              - 'tools/**'
+              - 'proto/**'
+              - 'migrations/**'
+              - 'queries/**'
+            workflows:
+              - '.github/**'
+            python:
+              - 'sdk/python/**'
+            typescript:
+              - 'sdk/typescript/**'
+              - 'integrations/claude-code/**'
+
+  go-static:
+    name: go / format, headers, lint
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: Verify modules
+        run: |
+          for m in . sdk/go tools; do (cd "$m" && go mod verify && go mod tidy -diff); done
+      - name: Format
+        run: $TASK fmt:check
+      - name: Licence headers
+        run: $TASK license:check
+      - name: Lint
+        run: $TASK lint
+
+  go-test:
+    name: go / test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        if: runner.os == 'Linux'
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: Unit tests (race detector on Linux)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then $TASK test:race; else $TASK test; fi
+      - name: Build all binaries
+        shell: bash
+        run: $TASK build
+
+  go-vuln:
+    name: go / govulncheck
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: govulncheck (reachability)
+        run: $TASK vuln
+
+  secrets:
+    name: security / secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: gitleaks (working tree)
+        run: $TASK secrets
+
+  semgrep:
+    name: security / semgrep
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      - name: Semgrep CE (project rules)
+        run: uvx --from 'semgrep==1.178.0' semgrep scan --config tools/semgrep --error --metrics=off --disable-version-check
+
+  osv:
+    name: security / osv-scanner
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.python == 'true' || needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: OSV-Scanner (product lockfiles; dev-tool pins are covered by govulncheck in nightly)
+        run: go tool -modfile=tools/pins/osv-scanner/go.mod osv-scanner scan source --recursive --experimental-exclude=tools/pins .
+
+  dependency-review:
+    name: security / dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: never
+          allow-licenses: >-
+            Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, Unicode-DFS-2016,
+            Unicode-3.0, CC0-1.0, 0BSD, BlueOak-1.0.0, Python-2.0, PSF-2.0, Zlib
+
+  workflows:
+    name: security / workflows (zizmor)
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            tools/pins/actionlint/go.sum
+      - name: actionlint
+        run: $TASK lint:workflows
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          persona: regular
+          min-severity: low
+
+  python-sdk:
+    name: sdk / python
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect Python SDK
+        id: detect
+        run: echo "present=$([ -f sdk/python/pyproject.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: steps.detect.outputs.present == 'true'
+        with:
+          enable-cache: false
+      - name: Lint, type-check, test (Python 3.13 and 3.14)
+        if: steps.detect.outputs.present == 'true'
+        working-directory: sdk/python
+        run: |
+          for py in 3.13 3.14; do
+            uv sync --locked --python "$py"
+            uv run --python "$py" ruff check .
+            uv run --python "$py" ruff format --check .
+            uv run --python "$py" mypy --strict src
+            uv run --python "$py" pytest -q
+          done
+      - name: No Python SDK yet
+        if: steps.detect.outputs.present != 'true'
+        run: echo "::notice::sdk/python has no pyproject.toml yet (delivered in M8)"
+
+  typescript-sdk:
+    name: sdk / typescript
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect TypeScript SDK
+        id: detect
+        run: echo "present=$([ -f sdk/typescript/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.detect.outputs.present == 'true'
+        with:
+          package_json_file: sdk/typescript/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 24
+      - name: Lint, type-check, test
+        if: steps.detect.outputs.present == 'true'
+        working-directory: sdk/typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run lint
+          pnpm run typecheck
+          pnpm run test
+      - name: No TypeScript SDK yet
+        if: steps.detect.outputs.present != 'true'
+        run: echo "::notice::sdk/typescript has no package.json yet (delivered in M8)"
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - changes
+      - go-static
+      - go-test
+      - go-vuln
+      - secrets
+      - semgrep
+      - osv
+      - dependency-review
+      - workflows
+      - python-sdk
+      - typescript-sdk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every job to succeed or be skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'to_entries | map(.value.result) | all(. == "success" or . == "skipped")' > /dev/null

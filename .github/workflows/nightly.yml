@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Nightly assurance (SG09): deeper checks on main and re-assessment of
+# released versions when new vulnerability data appears. Later milestones add
+# compose e2e scenarios, fuzzing, Schemathesis and k6 load tests here.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  GOFLAGS: -mod=readonly
+  TASK: go tool -modfile=tools/pins/task/go.mod task
+
+jobs:
+  race-and-vuln:
+    name: race tests + govulncheck (main)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: Race tests (repeated, shuffled)
+        run: |
+          for m in . sdk/go tools; do go -C "$m" test -race -shuffle=on -count=3 ./...; done
+      - name: govulncheck (product modules)
+        run: $TASK vuln
+      - name: OSV scan of pinned dev tools (not shipped; findings are warnings)
+        run: |
+          go tool -modfile=tools/pins/osv-scanner/go.mod osv-scanner scan source --recursive tools/pins \
+            || echo "::warning::vulnerabilities reported in pinned dev tools (not shipped) — review and bump pins"
+
+  released-versions:
+    name: re-scan latest release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: govulncheck at the latest release tag
+        run: |
+          tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$tag" ]; then echo "::notice::no release tags yet"; exit 0; fi
+          git checkout --quiet "$tag"
+          git checkout --quiet "$GITHUB_SHA" -- tools/pins
+          go tool -modfile=tools/pins/govulncheck/go.mod govulncheck ./...

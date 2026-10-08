@@ -1,0 +1,15 @@
+# Default owner for everything. Security-critical paths are listed explicitly so
+# that review rules can be tightened when a second reviewer joins (EX-001).
+*                                   @katocxl
+
+/docs/security/                     @katocxl
+/docs/protocol/                     @katocxl
+/internal/authority/                @katocxl
+/internal/gateway/                  @katocxl
+/internal/platform/crypto/          @katocxl
+/internal/platform/keys/            @katocxl
+/migrations/                        @katocxl
+/.github/                           @katocxl
+/tools/pins/                        @katocxl
+/LICENSE                            @katocxl
+/NOTICE                             @katocxl

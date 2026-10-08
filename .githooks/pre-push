@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Installed by `task setup` (git config core.hooksPath .githooks).
+set -e
+if command -v task >/dev/null 2>&1; then
+  exec task hooks:pre-push
+fi
+exec go tool -modfile=tools/pins/task/go.mod task hooks:pre-push

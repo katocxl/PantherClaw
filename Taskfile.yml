@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Cross-platform developer tasks (Windows, macOS, Linux). Every third-party
+# tool is pinned in tools/pins/<tool>/go.mod and run with `go tool`, so the
+# same versions run locally and in CI. If Task is not installed globally:
+#   go tool -modfile=tools/pins/task/go.mod task <name>
+version: "3"
+
+vars:
+  PINS: "{{.ROOT_DIR}}/tools/pins"
+  GOLANGCI: go tool -modfile={{.PINS}}/golangci-lint/go.mod golangci-lint
+  GITLEAKS: go tool -modfile={{.PINS}}/gitleaks/go.mod gitleaks
+  GOVULNCHECK: go tool -modfile={{.PINS}}/govulncheck/go.mod govulncheck
+  GO_MODULES: ". sdk/go tools"
+  GOLANG_IMAGE: golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66
+  COMPOSE: docker compose -f deploy/compose/compose.yaml
+
+tasks:
+  default:
+    cmds:
+      - "{{.TASK_EXE}} --list"
+
+  setup:
+    desc: Configure git hooks and pre-build the pinned tools
+    cmds:
+      - git config core.hooksPath .githooks
+      - git config core.autocrlf false
+      - "{{.GOLANGCI}} version"
+      - "{{.GITLEAKS}} version"
+      - "{{.GOVULNCHECK}} -version"
+
+  check:
+    desc: Everything required before a push (format, headers, lint, tests, secrets)
+    cmds:
+      - task: fmt:check
+      - task: license:check
+      - task: lint
+      - task: lint:workflows
+      - task: test
+      - task: secrets
+
+  fmt:
+    desc: Format Go code (gofumpt + goimports)
+    cmds:
+      - "{{.GOLANGCI}} fmt"
+
+  fmt:check:
+    desc: Fail if Go code is not formatted
+    cmds:
+      - "{{.GOLANGCI}} fmt --diff"
+
+  lint:
+    desc: Lint all Go modules
+    cmds:
+      - for: { var: GO_MODULES }
+        cmd: cd "{{.ROOT_DIR}}/{{.ITEM}}" && {{.GOLANGCI}} run ./...
+
+  lint:workflows:
+    desc: Lint GitHub Actions workflows (actionlint)
+    cmds:
+      - go tool -modfile={{.PINS}}/actionlint/go.mod actionlint -color=false
+
+  test:
+    desc: Unit tests for all Go modules (shuffled, uncached)
+    cmds:
+      - for: { var: GO_MODULES }
+        cmd: go -C "{{.ITEM}}" test -shuffle=on -count=1 ./...
+
+  test:race:
+    desc: Tests with the race detector (needs cgo; Linux/macOS — CI runs this)
+    platforms: [linux, darwin]
+    cmds:
+      - for: { var: GO_MODULES }
+        cmd: go -C "{{.ITEM}}" test -race -shuffle=on -count=1 ./...
+
+  test:linux:
+    desc: Run race-enabled tests inside a pinned Linux container (use on Windows)
+    cmds:
+      - >-
+        docker run --rm
+        --mount type=bind,source="{{.ROOT_DIR}}",target=/src
+        --mount type=volume,source=pantherclaw-gomod,target=/go/pkg/mod
+        -w /src {{.GOLANG_IMAGE}}
+        sh -c "go test -race -shuffle=on -count=1 ./... && go -C sdk/go test -race -count=1 ./... && go -C tools test -race -count=1 ./..."
+
+  license:check:
+    desc: Verify SPDX + copyright headers on every source file
+    cmds:
+      - go -C tools run ./licensecheck -root ..
+
+  license:fix:
+    desc: Add missing SPDX + copyright headers
+    cmds:
+      - go -C tools run ./licensecheck -root .. -fix
+
+  secrets:
+    desc: Scan the working tree for secrets (gitleaks)
+    cmds:
+      - "{{.GITLEAKS}} dir . --redact --no-banner"
+
+  vuln:
+    desc: Reachability-aware vulnerability scan of all Go modules
+    cmds:
+      - for: { var: GO_MODULES }
+        cmd: cd "{{.ROOT_DIR}}/{{.ITEM}}" && {{.GOVULNCHECK}} ./...
+
+  build:
+    desc: Build all binaries into bin/
+    cmds:
+      - go build -trimpath -o bin/ ./cmd/...
+
+  up:
+    desc: Start the local stack (PROFILE=core by default)
+    cmds:
+      - "{{.COMPOSE}} --profile {{.PROFILE | default \"core\"}} up -d"
+
+  down:
+    desc: Stop the local stack (volumes are kept)
+    cmds:
+      - "{{.COMPOSE}} --profile {{.PROFILE | default \"core\"}} down"
+
+  hooks:pre-commit:
+    desc: Fast checks run by the git pre-commit hook (< 5 s once tools are built)
+    cmds:
+      - task: fmt:check
+      - task: license:check
+      - "{{.GITLEAKS}} git --pre-commit --staged --redact --no-banner"
+
+  hooks:pre-push:
+    desc: Checks run by the git pre-push hook
+    cmds:
+      - task: lint
+      - task: test

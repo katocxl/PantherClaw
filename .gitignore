@@ -1,0 +1,49 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+/.task/
+
+# Local secrets and keys — never commit (SB-7)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jwk
+*-key.json
+/secrets/
+/.pclaw/
+*.licence
+*.license.json
+
+# Dependencies and caches
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pnpm-store/
+
+# Editors and OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.swp
+
+# Temporary
+/tmp/
+*.log
+
+# Claude Code local (per-machine) settings
+.claude/settings.local.json

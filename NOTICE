@@ -1,0 +1,44 @@
+PantherClaw
+Copyright (c) 2026 Joshua Kato. All rights reserved where not licensed below.
+
+PantherClaw(TM) and the PantherClaw logo are trademarks of Joshua Kato.
+No license to any trademark is granted by any license in this repository.
+See TRADEMARKS.md.
+
+Licensing of this repository
+============================
+
+Unless a directory contains its own LICENSE file, all files in this
+repository are licensed under the Business Source License 1.1 (see LICENSE),
+with the Additional Use Grant, Change Date and Change License stated there.
+
+Separately Licensed Components (Apache License, Version 2.0)
+-------------------------------------------------------------
+The following directories are licensed under the Apache License, Version 2.0
+(see the LICENSE file in each directory) so that customers can embed them in
+their own agents and target systems:
+
+  sdk/go/                  Go SDK, PAP/1 client and target-side verifier
+  sdk/python/              Python SDK and framework integrations
+  sdk/typescript/          TypeScript SDK and framework integrations
+  integrations/claude-code/ Claude Code plugin and Agent SDK integration
+  docs/protocol/           PantherClaw Authority Protocol (PAP/1) specification
+
+Reference documents
+-------------------
+docs/reference/ contains the product specification and feature catalog
+(requirements traceability sources), licensed with the rest of the
+repository under the Business Source License 1.1.
+
+Third-party software
+====================
+Third-party dependencies are listed in go.mod/go.sum and the SDK lockfiles,
+and in the SBOM attached to every official release. Their licenses are
+reproduced in release artifacts as required.
+
+Official builds
+===============
+Only release artifacts that carry a valid GitHub artifact attestation from
+github.com/katocxl/pantherclaw (and, for container images, a Sigstore
+signature) are official PantherClaw builds. Source fingerprint:
+pcfp-37609359f35b52c36816

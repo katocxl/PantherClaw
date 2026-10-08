@@ -1,0 +1,21 @@
+# Normalize all text to LF (canonical hashes, golden files, containers).
+* text=auto eol=lf
+
+# Byte-exact fixtures: never convert.
+**/testdata/** -text
+*.golden -text
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff2 binary
+
+# Generated code (collapsed in diffs).
+internal/gen/** linguist-generated=true
+**/go.sum linguist-generated=true
+**/uv.lock linguist-generated=true
+**/pnpm-lock.yaml linguist-generated=true

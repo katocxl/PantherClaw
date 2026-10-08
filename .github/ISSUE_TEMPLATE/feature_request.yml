@@ -1,0 +1,18 @@
+name: Feature request
+description: Propose a capability or improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Which agent workflow or security job is hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Reference pillars or IDs from docs/FEATURES.md where possible.
+    validations:
+      required: true

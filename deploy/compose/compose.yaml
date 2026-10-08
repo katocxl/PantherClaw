@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Local stack for development and demos. Profiles grow per milestone:
+#   core          PostgreSQL (M0) + server, gateway, simulators (M1–M6)
+#   identity      Keycloak dev realm (M2)
+#   observability grafana/otel-lgtm (M1)
+#   full-demo     everything, seeded synthetic data (M6+)
+#   sandbox       egress-locked agent containers (M9)
+# Ports bind to 127.0.0.1 only. Never use these settings in production.
+name: pantherclaw
+
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    profiles: ["core", "full-demo"]
+    environment:
+      POSTGRES_DB: pantherclaw
+      POSTGRES_USER: pc_owner
+      POSTGRES_PASSWORD: ${PC_PG_PASSWORD:?set PC_PG_PASSWORD in deploy/compose/.env (copy .env.example)}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+    command:
+      - postgres
+      - -c
+      - log_connections=on
+      - -c
+      - password_encryption=scram-sha-256
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pc_owner -d pantherclaw"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pgdata:

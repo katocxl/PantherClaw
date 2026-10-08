@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# GoReleaser v2 — reproducible, static, trimmed binaries + SBOMs + checksums.
+# Container images (distroless, multi-arch, signed) are added in M1 with the
+# first runnable server. Provenance attestations are created by release.yml.
+version: 2
+
+project_name: pantherclaw
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - &build
+    id: pantherclaw-server
+    main: ./cmd/pantherclaw-server
+    binary: pantherclaw-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/katocxl/pantherclaw/internal/platform/version.version={{ .Version }}
+      - -X github.com/katocxl/pantherclaw/internal/platform/version.commit={{ .FullCommit }}
+      - -X github.com/katocxl/pantherclaw/internal/platform/version.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+  - <<: *build
+    id: pantherclaw-gateway
+    main: ./cmd/pantherclaw-gateway
+    binary: pantherclaw-gateway
+  - <<: *build
+    id: pclaw
+    main: ./cmd/pclaw
+    binary: pclaw
+  - <<: *build
+    id: pantherclaw-sim
+    main: ./cmd/pantherclaw-sim
+    binary: pantherclaw-sim
+  - <<: *build
+    id: pclaw-admin
+    main: ./cmd/pclaw-admin
+    binary: pclaw-admin
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - COMMERCIAL_LICENSE.md
+      - TRADEMARKS.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archives
+    artifacts: archive
+  - id: source
+    artifacts: source
+
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Security
+      regexp: '^.*?sec(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+
+release:
+  github:
+    owner: katocxl
+    name: pantherclaw
+  draft: true
+  replace_existing_draft: true
+  prerelease: auto
+  footer: |
+    **Verify this release:** `gh attestation verify <file> --repo katocxl/pantherclaw`
+    Licensed under the Business Source License 1.1 (core) and Apache-2.0 (SDKs); see LICENSE and NOTICE.

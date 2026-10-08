@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Weekly copy detection (docs/IP_PROTECTION.md §4): searches public GitHub code
+# for PantherClaw source fingerprints outside this repository and opens an
+# issue when copies appear. Needs secret CANARY_SEARCH_TOKEN (fine-grained,
+# public read-only); skipped gracefully when absent.
+name: canary-watch
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  search:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: Search for fingerprints outside this repository
+        env:
+          SEARCH_TOKEN: ${{ secrets.CANARY_SEARCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SEARCH_TOKEN" ]; then
+            echo "::notice::CANARY_SEARCH_TOKEN not configured; skipping."
+            exit 0
+          fi
+          hits="$(GH_TOKEN="$SEARCH_TOKEN" gh api -X GET search/code -f q='"pcfp-37609359f35b52c36816"' \
+            --jq '.items[].repository.full_name' | sort -u | grep -v -i -x "$REPO" || true)"
+          if [ -z "$hits" ]; then echo "No copies found."; exit 0; fi
+          if [ -n "$(gh issue list --repo "$REPO" --state open --search 'Possible copies of PantherClaw source in:title' --json number --jq '.[].number')" ]; then
+            echo "::warning::Copies found; an open tracking issue already exists."
+            printf '%s\n' "$hits"
+            exit 0
+          fi
+          title="Possible copies of PantherClaw source detected ($(date -u +%F))"
+          body="$(printf 'Repositories containing PantherClaw fingerprints:\n\n%s\n\nFollow docs/runbooks/dmca-takedown.md.' "$(printf '%s\n' "$hits" | sed 's/^/- /')")"
+          gh issue create --repo "$REPO" --title "$title" --body "$body"

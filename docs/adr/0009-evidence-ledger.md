@@ -1,0 +1,9 @@
+# ADR-0009 — Evidence ledger: unchained writes, per-org chainer, Merkle checkpoints, Rekor
+
+**Status:** Accepted (2026-10-08)
+
+**Context.** Chaining receipts inside the authorization transaction would serialize all decisions of an org on one hot row, and Postgres sequences leave gaps on rollback.
+
+**Decision.** Receipts and platform audit events are inserted **unchained** in their business transaction. A per-org chainer job (advisory lock) assigns sequence numbers and hashes to rows older than `pg_snapshot_xmin(pg_current_snapshot())`. Merkle tiles and Ed25519-signed checkpoints are produced per time window; one global root across all orgs is anchored to Sigstore Rekor v2 (shard discovered from the TUF signing config) with an RFC 3161 timestamp. `pclaw verify` validates signatures, chain continuity and consistency proofs offline. Platform audit uses the same mechanism (one evidence system).
+
+**Consequences.** Authorization throughput is not limited by chaining; integrity becomes provable after a short delay (seconds). Insider re-signing is detectable through external witnesses. The ledger proves integrity, not completeness.

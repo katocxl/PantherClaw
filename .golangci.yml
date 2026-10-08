@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# golangci-lint v2 configuration. Enforces layering (ARCHITECTURE §4), banned
+# APIs (SECURITY_BASELINES SB-1/SB-3) and formatting. Run via `task lint`.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - durationcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocheckcompilerdirectives
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - predeclared
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    depguard:
+      rules:
+        crypto-hygiene:
+          files: ["$all"]
+          deny:
+            - pkg: "math/rand$"
+              desc: "use crypto/rand (SB-3)"
+            - pkg: "math/rand/v2"
+              desc: "use crypto/rand (SB-3)"
+            - pkg: "crypto/md5"
+              desc: "weak hash (SB-3)"
+            - pkg: "crypto/sha1"
+              desc: "weak hash (SB-3)"
+            - pkg: "crypto/des"
+              desc: "weak cipher (SB-3)"
+            - pkg: "crypto/rc4"
+              desc: "weak cipher (SB-3)"
+            - pkg: "github.com/golang-jwt/jwt"
+              desc: "use github.com/go-jose/go-jose/v4 with algorithm allowlists (ADR-0012)"
+            - pkg: "github.com/aquasecurity"
+              desc: "Trivy is excluded (supply-chain compromise, ADR-0008)"
+        strict-json:
+          files: ["**/internal/**", "!$test"]
+          deny:
+            - pkg: "encoding/json$"
+              desc: "use encoding/json/v2 + encoding/json/jsontext (ADR-0011)"
+        gateway-has-no-database:
+          files: ["**/internal/gateway/**"]
+          deny:
+            - pkg: "github.com/jackc/pgx"
+              desc: "the gateway has no database access (ADR-0002)"
+            - pkg: "database/sql"
+              desc: "the gateway has no database access (ADR-0002)"
+            - pkg: "github.com/katocxl/pantherclaw/internal/platform/db"
+              desc: "the gateway has no database access (ADR-0002)"
+        domain-is-pure:
+          files: ["**/internal/*/domain/**"]
+          deny:
+            - pkg: "net/http"
+              desc: "domain packages are pure (ARCHITECTURE §4)"
+            - pkg: "database/sql"
+              desc: "domain packages are pure (ARCHITECTURE §4)"
+            - pkg: "github.com/jackc/pgx"
+              desc: "domain packages are pure (ARCHITECTURE §4)"
+            - pkg: "connectrpc.com"
+              desc: "domain packages are pure (ARCHITECTURE §4)"
+            - pkg: "os/exec"
+              desc: "domain packages are pure (ARCHITECTURE §4)"
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: "log via internal/platform/log (slog); write CLI output with fmt.Fprint to an io.Writer"
+        - pattern: '^print(ln)?$'
+          msg: "builtin print is not allowed"
+        - pattern: '^log\.(Print|Fatal|Panic)(f|ln)?$'
+          msg: "use slog via internal/platform/log"
+        - pattern: '^http\.(Get|Head|Post|PostForm)$'
+          msg: "use the hardened clients from internal/platform/httpx (SB-8, HR-070..074)"
+        - pattern: '^http\.DefaultClient$'
+          msg: "use the hardened clients from internal/platform/httpx (SB-8, HR-070..074)"
+        - pattern: '^http\.ListenAndServe(TLS)?$'
+          msg: "use internal/platform/httpx servers (timeouts, limits, headers)"
+
+    exhaustive:
+      default-signifies-exhaustive: false
+
+    gosec:
+      excludes:
+        - G104 # duplicate of errcheck
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    misspell:
+      locale: US
+      ignore-rules:
+        - licence # British spelling used in docs/product text
+
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters: [gosec, unparam, noctx]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+    goimports:
+      local-prefixes:
+        - github.com/katocxl/pantherclaw
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

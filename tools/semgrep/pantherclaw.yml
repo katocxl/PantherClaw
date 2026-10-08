@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Project-specific Semgrep rules (run in CI with Semgrep CE; see SB-6).
+# Each rule references the hardening rule or baseline it protects.
+rules:
+  - id: pc-tls-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    message: "TLS certificate verification must never be disabled (SB-3)."
+    pattern: |
+      tls.Config{..., InsecureSkipVerify: true, ...}
+
+  - id: pc-tenant-setting-must-use-set-config
+    languages: [go]
+    severity: ERROR
+    message: "Set tenant context only with set_config('app.org_id', $1, true) (HR-051); never SET or string-built SQL."
+    pattern-regex: '(?i)"\s*SET\s+(LOCAL\s+)?app\.'
+
+  - id: pc-sql-built-with-sprintf
+    languages: [go]
+    severity: ERROR
+    message: "SQL must be static and parameterized (sqlc); never build queries with fmt.Sprintf or concatenation (A05/CWE-89)."
+    patterns:
+      - pattern-either:
+          - pattern: $DB.Exec($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.Query($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.QueryRow($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.Exec($CTX, $A + $B, ...)
+          - pattern: $DB.Query($CTX, $A + $B, ...)
+          - pattern: $DB.QueryRow($CTX, $A + $B, ...)
+
+  - id: pc-exec-through-shell
+    languages: [go]
+    severity: ERROR
+    message: "Never execute through a shell; pass an argument vector (SB-1, CWE-78)."
+    pattern-either:
+      - pattern: exec.Command("sh", "-c", ...)
+      - pattern: exec.Command("bash", "-c", ...)
+      - pattern: exec.Command("cmd", "/c", ...)
+      - pattern: exec.Command("powershell", ...)
+      - pattern: exec.CommandContext($CTX, "sh", "-c", ...)
+      - pattern: exec.CommandContext($CTX, "bash", "-c", ...)
+      - pattern: exec.CommandContext($CTX, "cmd", "/c", ...)
+      - pattern: exec.CommandContext($CTX, "powershell", ...)
+
+  - id: pc-domain-uses-wall-clock
+    languages: [go]
+    severity: ERROR
+    message: "Domain packages must not read the wall clock; inject platform/clock (ARCHITECTURE §4)."
+    paths:
+      include:
+        - "internal/*/domain/"
+    pattern: time.Now()
+
+  - id: pc-jose-alg-none
+    languages: [go]
+    severity: ERROR
+    message: "The JOSE 'none' algorithm is never acceptable (HR-095)."
+    paths:
+      exclude:
+        - "*_test.go" # negative tests deliberately construct alg=none tokens
+    pattern-regex: '(?i)"alg"\s*:\s*"none"|jose\.SignatureAlgorithm\("none"\)'
+
+  - id: pc-http-client-follows-redirects
+    languages: [go]
+    severity: WARNING
+    message: "Outbound clients must come from internal/platform/httpx (no redirects, dial-time IP checks) (HR-070..074)."
+    paths:
+      include:
+        - "internal/gateway/"
+    pattern: "&http.Client{...}"
