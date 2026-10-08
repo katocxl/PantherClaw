@@ -223,7 +223,7 @@ docs/                    this guide and companions
 
 | MS | Tables (all `org_id` + RLS unless noted) |
 |---|---|
-| M1 | `orgs` (root, RLS on id), `ledger_entries`, `ledger_heads`, `keys` (public material + wrapped private refs), `deks`, `licence_state` (global), River tables (no RLS) |
+| M1 | `orgs` (root, RLS on id), `cross_org_list_audit` (global), `ledger_entries`, `ledger_chain` (insert-only links), `ledger_heads`, `keys` (public material + wrapped private refs), `deks`, `licence_state` (global), River tables (no RLS; River's migrations run as goose Go migrations) |
 | M1.5 | `transactions`, `decision_receipts`, `permits`, `execution_attempts`, `budgets`, `budget_ledger`, `org_containment` |
 | M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes` |
 | M3 | `agents`, `agent_owners`, `agent_changes`, `agent_instances`, `enrollment_tokens`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries` |

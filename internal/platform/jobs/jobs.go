@@ -31,6 +31,9 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 )
 
+// TxType is the transaction type River is instantiated with.
+type TxType = pgx.Tx
+
 // Client is the River client type used throughout PantherClaw.
 type Client = river.Client[pgx.Tx]
 

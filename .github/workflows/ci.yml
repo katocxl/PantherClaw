@@ -88,6 +88,8 @@ jobs:
       - name: Verify modules
         run: |
           for m in . sdk/go tools; do (cd "$m" && go mod verify && go mod tidy -diff); done
+      - name: Generated code is up to date (sqlc)
+        run: $TASK gen:check
       - name: Format
         run: $TASK fmt:check
       - name: Licence headers
