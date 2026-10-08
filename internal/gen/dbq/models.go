@@ -12,7 +12,32 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
+
+type PcBudget struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	Name          string
+	Currency      string
+	LimitAmount   money.Decimal
+	Reserved      money.Decimal
+	Spent         money.Decimal
+	MaxCount      *int32
+	ReservedCount int32
+	SpentCount    int32
+	CreatedAt     time.Time
+}
+
+type PcBudgetLedger struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	BudgetID      ids.UUID
+	TransactionID ids.UUID
+	Kind          string
+	Amount        money.Decimal
+	CreatedAt     time.Time
+}
 
 type PcCrossOrgListAudit struct {
 	ID       int64
@@ -20,6 +45,14 @@ type PcCrossOrgListAudit struct {
 	MaxRows  int32
 	Caller   string
 	CalledAt time.Time
+}
+
+type PcDecisionReceipt struct {
+	OrgID         ids.OrgID
+	TransactionID ids.UUID
+	ReceiptJws    string
+	LedgerEntryID ids.UUID
+	CreatedAt     time.Time
 }
 
 type PcDek struct {
@@ -30,6 +63,18 @@ type PcDek struct {
 	KekID      string
 	State      string
 	CreatedAt  time.Time
+}
+
+type PcExecutionAttempt struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	PermitID       ids.UUID
+	TransactionID  ids.UUID
+	Outcome        string
+	TargetStatus   *int32
+	ResponseDigest []byte
+	DispatchMs     *int32
+	RecordedAt     time.Time
 }
 
 type PcKey struct {
@@ -89,4 +134,42 @@ type PcOrg struct {
 	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type PcOrgContainment struct {
+	OrgID      ids.OrgID
+	Epoch      int64
+	KillSwitch bool
+	UpdatedAt  time.Time
+}
+
+type PcPermit struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	TransactionID ids.UUID
+	GatewayID     string
+	Epoch         int64
+	State         string
+	BudgetID      ids.UUID
+	Amount        money.Decimal
+	IssuedAt      time.Time
+	ExpiresAt     time.Time
+	DispatchingAt *time.Time
+	FinishedAt    *time.Time
+}
+
+type PcTransaction struct {
+	OrgID      ids.OrgID
+	ID         ids.UUID
+	RunID      ids.UUID
+	ActionID   ids.UUID
+	ActionHash []byte
+	Operation  string
+	Decision   string
+	ReasonCode string
+	BudgetID   *ids.UUID
+	Amount     *money.Decimal
+	Currency   *string
+	GatewayID  string
+	CreatedAt  time.Time
 }
