@@ -239,3 +239,26 @@ func TestRecordValues(t *testing.T) {
 		t.Fatal("zero limits must be refused")
 	}
 }
+
+func TestFieldsReportsWhatAnExpressionReads(t *testing.T) {
+	e := testEnv(t, DefaultLimits)
+	for src, want := range map[string]string{
+		`d.a == 1 && has(d.b) && d.?c.orValue(0) == 2 && d["e"] == 3`: "a,b,c,e",
+		`action.name == "x"`:    "",
+		`size(d) > 0`:           "opaque",
+		`d.exists(k, k == "a")`: "opaque",
+	} {
+		p, err := e.Compile(src, cel.BoolType)
+		if err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		fields, ok := p.Fields("d")
+		got := strings.Join(fields, ",")
+		if !ok {
+			got = "opaque"
+		}
+		if got != want {
+			t.Errorf("%s: Fields = %q, want %q", src, got, want)
+		}
+	}
+}

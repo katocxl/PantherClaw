@@ -24,6 +24,7 @@ import (
 
 	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/checker"
+	"cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/interpreter"
@@ -117,6 +118,7 @@ type Program struct {
 	out      *types.Type
 	maxCost  uint64
 	estimate uint64
+	ast      *ast.AST
 }
 
 // Source returns the expression.
@@ -159,7 +161,7 @@ func (e *Env) Compile(src string, want *types.Type) (*Program, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCompile, err)
 	}
-	return &Program{src: src, prg: prg, out: out, maxCost: e.limits.MaxCost, estimate: est.Max}, nil
+	return &Program{src: src, prg: prg, out: out, maxCost: e.limits.MaxCost, estimate: est.Max, ast: a.NativeRep()}, nil
 }
 
 // Eval evaluates the program and returns its value and actual cost. Any
