@@ -22,6 +22,30 @@ type PcCrossOrgListAudit struct {
 	CalledAt time.Time
 }
 
+type PcDek struct {
+	OrgID      ids.OrgID
+	Purpose    string
+	Version    int32
+	WrappedKey []byte
+	KekID      string
+	State      string
+	CreatedAt  time.Time
+}
+
+type PcKey struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	Kid               string
+	Purpose           string
+	Algorithm         string
+	PublicKey         []byte
+	WrappedPrivateKey []byte
+	KekID             string
+	State             string
+	CreatedAt         time.Time
+	StateChangedAt    time.Time
+}
+
 type PcLedgerChain struct {
 	OrgID     ids.OrgID
 	Seq       int64
