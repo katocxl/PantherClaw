@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
+	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -124,6 +126,7 @@ func (c *Config) Validate() error {
 	}
 	errs = append(errs, c.validateAuthority()...)
 	errs = append(errs, c.validateAuth()...)
+	errs = append(errs, c.validateOIDC()...)
 	return errors.Join(errs...)
 }
 
@@ -218,6 +221,8 @@ type AuthConfig struct {
 	// APIKeyEnv is the pck_ key environment this deployment accepts and
 	// mints: dev, test or live.
 	APIKeyEnv string `json:"api_key_env" env:"PC_AUTH_API_KEY_ENV"`
+	// OIDCProviders are the identity providers for pclaw login.
+	OIDCProviders []OIDCProviderConfig `json:"oidc_providers"`
 }
 
 func (c *Config) validateAuth() []error {
@@ -242,3 +247,62 @@ func (c *Config) validateAuth() []error {
 // oauthRateLimit bounds requests per client IP per minute to the
 // unauthenticated OAuth endpoints (SB-2 brute-force limits).
 const oauthRateLimit = 120
+
+// OIDCProviderConfig configures one OpenID provider PantherClaw signs people
+// in with (ADR-0016). Register <public_url>/oauth2/callback/<name> as its
+// redirect URI.
+type OIDCProviderConfig struct {
+	Name             string   `json:"name"`
+	Issuer           string   `json:"issuer"`
+	ClientID         string   `json:"client_id"`
+	ClientSecretFile string   `json:"client_secret_file"`
+	Scopes           []string `json:"scopes"`
+	// TrustEmail accepts the email claim without email_verified (for an
+	// administered directory such as Entra ID).
+	TrustEmail bool `json:"trust_email"`
+	// AllowInsecureLoopback allows an http:// issuer on a loopback host
+	// (local Keycloak). Development only.
+	AllowInsecureLoopback bool `json:"allow_insecure_loopback"`
+}
+
+func (c *Config) validateOIDC() []error {
+	var errs []error
+	seen := map[string]bool{}
+	for i, p := range c.Auth.OIDCProviders {
+		at := fmt.Sprintf("auth.oidc_providers[%d]", i)
+		if seen[p.Name] {
+			errs = append(errs, fmt.Errorf("%s: duplicate name %q", at, p.Name))
+		}
+		seen[p.Name] = true
+		if p.ClientSecretFile == "" {
+			errs = append(errs, fmt.Errorf("%s: client_secret_file is required", at))
+		}
+		if _, err := oidcrp.New(oidcrp.Config{
+			Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: pclog.NewSecret([]byte("x")),
+			AllowInsecureLoopback: p.AllowInsecureLoopback,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", at, err))
+		}
+	}
+	return errs
+}
+
+// oidcProviders builds the configured providers, reading their secrets.
+func (c *Config) oidcProviders() ([]authnapp.IdP, error) {
+	var out []authnapp.IdP
+	for _, p := range c.Auth.OIDCProviders {
+		secret, err := config.ReadSecretFile(p.ClientSecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("oidc provider %q: %w", p.Name, err)
+		}
+		prov, err := oidcrp.New(oidcrp.Config{
+			Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: secret, Scopes: p.Scopes,
+			TrustEmail: p.TrustEmail, AllowInsecureLoopback: p.AllowInsecureLoopback,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, prov)
+	}
+	return out, nil
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
@@ -182,12 +183,23 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		idps, err := cfg.oidcProviders()
+		if err != nil {
+			return err
+		}
+		limiter := httpx.NewLimiter(oauthRateLimit, time.Minute, nil)
+		device, err := devicehttp.New(authnapp.NewDevice(pool, tokens, cfg.Auth.PublicURL, idps, clock.System{}, log),
+			cfg.Auth.PublicURL, limiter, log)
+		if err != nil {
+			return err
+		}
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
 			auth:      rpcauth.New(authn, procedurePermissions, gw),
 			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
 			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
-				cfg.Auth.PublicURL, httpx.NewLimiter(oauthRateLimit, time.Minute, nil)),
+				cfg.Auth.PublicURL, limiter),
+			device: device,
 		})
 		if err != nil {
 			return err
@@ -293,6 +305,7 @@ type apiDeps struct {
 	auth      rpc.Authenticator
 	apiKeyEnv credential.Env
 	oauth     *oauthhttp.Handler
+	device    *devicehttp.Handler
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -314,6 +327,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)
+	d.device.Mount(mux, d.oauth)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
