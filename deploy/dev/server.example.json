@@ -13,5 +13,18 @@
     "migrator_password_file": "deploy/dev/secrets/pc_migrator.pw"
   },
   "kek_files": ["deploy/dev/secrets/kek"],
-  "worker_concurrency": 4
+  "worker_concurrency": 4,
+  "authority": {
+    "grant_max_per_action": "100",
+    "grant_currency": "USD",
+    "budget_name": "dev-refunds",
+    "permit_ttl": "5s",
+    "stale_dispatch_after": "30s"
+  },
+  "dev_gateway": {
+    "enabled": false,
+    "gateway_id": "gw-dev-1",
+    "org": "",
+    "token_file": "deploy/dev/secrets/gateway.token"
+  }
 }

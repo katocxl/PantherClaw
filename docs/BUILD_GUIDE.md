@@ -176,6 +176,31 @@ go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
 
 Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
 
+**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+
+```bash
+go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
+  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
+# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
+# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000-8000-0000000000c1' \
+  -H "PC-Run-Id: $(uuidgen)" -H "PC-Action-Id: $(uuidgen)" \
+  -d '{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}'
+```
+
+The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
+
+**Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
+
+```bash
+go run ./cmd/pantherclaw-sim load --workload 01920000-0000-7000-8000-0000000000c1 --rate 1000 --duration 30s --warmup 5s --out perf.json
+k6 run -e WORKLOAD=01920000-0000-7000-8000-0000000000c1 -e RATE=1000 test/load/refund.js   # Linux/nightly; thresholds are the SLOs
+```
+
+Results and the machines they were measured on are recorded in `docs/perf/M1.5.md`.
+
 ---
 
 ## 5. Repository layout
