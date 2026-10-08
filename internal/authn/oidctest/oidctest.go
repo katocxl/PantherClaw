@@ -208,7 +208,8 @@ func (p *Provider) idToken(g grant) string {
 	enc := base64.RawURLEncoding.EncodeToString
 	switch k.Alg {
 	case "none":
-		return enc([]byte(`{"alg":"none","kid":"k1"}`)) + "." + enc(payload) + "."
+		// Test support: forges an unsigned token so tests prove it is rejected (HR-095).
+		return enc([]byte(`{"alg":"none","kid":"k1"}`)) + "." + enc(payload) + "." // nosemgrep: tools.semgrep.pc-jose-alg-none
 	case "HS256":
 		head := enc([]byte(`{"alg":"HS256","kid":"k1"}`)) + "." + enc(payload)
 		mac := hmac.New(sha256.New, p.key.N.Bytes())
