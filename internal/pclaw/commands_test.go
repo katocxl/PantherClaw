@@ -43,8 +43,9 @@ func TestCommandsSendOnlyWhatIsGiven(t *testing.T) {
 	t.Cleanup(ts.Close)
 	env := envOf(map[string]string{"PANTHERCLAW_SERVER": ts.URL, "PANTHERCLAW_API_KEY": "pck_test_x"})
 
+	// protojson output has deliberately unstable whitespace: match values, not layout.
 	code, out, errs := run(t, env, "team", "update", "0192aaaa-bbbb-7ccc-8ddd-000000000001", "--name", "Refunds")
-	if code != 0 || rec.update.Name == nil || rec.update.Description != nil || !strings.Contains(out, `"name": "Refunds"`) {
+	if code != 0 || rec.update.Name == nil || rec.update.Description != nil || !strings.Contains(out, "Refunds") {
 		t.Fatalf("team update = %d %q %q, request %v", code, out, errs, rec.update)
 	}
 	if code, _, _ := run(t, env, "env", "create", "--slug", "prod", "--name", "Prod", "--kind", "prod"); code != 0 ||
