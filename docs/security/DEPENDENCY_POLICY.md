@@ -6,7 +6,7 @@
 2. **Pinned and verified.** Lockfiles are committed; installs are reproducible and verified against checksums.
 3. **Cooldown.** New upstream releases are not adopted for 7 days (malicious releases are usually caught within that window). Security fixes for actively exploited vulnerabilities may skip the cooldown with a recorded reason.
 4. **Reachability-aware.** Go vulnerabilities are judged by `govulncheck` call-graph reachability; unreachable findings are tracked, not ignored.
-5. **No copyleft in shipped artifacts.** Allowed licences for code linked into released binaries/SDKs: Apache-2.0, MIT, BSD-2/3-Clause, ISC, MPL-2.0 (file-level, unmodified), Unicode-DFS, CC0, 0BSD. Disallowed: GPL/AGPL/LGPL (except standalone dev tools never shipped, e.g. golangci-lint, k6), SSPL, BSL/FSL from others, unknown.
+5. **No copyleft in shipped artifacts.** Allowed licences for code linked into released binaries/SDKs: Apache-2.0, MIT, BSD-2/3-Clause, ISC, MPL-2.0 (file-level, unmodified), Unicode-DFS, CC0, 0BSD, and the Go project's additional patent grant (`PATENTS` file in `golang.org/x/*`, reported by scanners as `LicenseRef-scancode-google-patent-license-golang`). Disallowed: GPL/AGPL/LGPL (except standalone dev tools never shipped, e.g. golangci-lint, k6), SSPL, BSL/FSL from others, unknown.
 
 ## 2. Sources
 
