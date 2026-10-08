@@ -42,6 +42,7 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 | `github.com/google/uuid` | UUIDv7 | BSD-3 | Small, stable |
 | `golang.org/x/text` | Unicode (confusables/NFC helpers) | BSD-3 | Canonicalization |
 | `golang.org/x/sync` | errgroup/singleflight | BSD-3 | Concurrency helpers |
+| `go.yaml.in/yaml/v3` | YAML tool package files (`internal/definitions/manifest`) | MIT AND Apache-2.0 | Maintained by the YAML organisation (successor of `gopkg.in/yaml.v3`). Already in the module graph through protovalidate → cel-go, so it adds no module; v3.0.5 is from 2026-07-26 (outside the cooldown). Used only to build a node tree: anchors, aliases, merge keys, tags, floats, nulls, duplicate keys and multiple documents are rejected before the JSON is decoded with `encoding/json/v2` (HR-100). Alternatives: JSON-only packages (harder to review by hand); `github.com/goccy/go-yaml` (a new module for no gain) |
 
 Test-only: `github.com/testcontainers/testcontainers-go` (MIT), `github.com/peterldowns/pgtestdb` (MIT), `pgregory.net/rapid` (MPL-2.0, property tests).
 Dev tools (not shipped): golangci-lint (GPL-3.0, tool only), gofumpt, sqlc, buf, goose CLI, task, actionlint, govulncheck, osv-scanner, gitleaks, zizmor, Semgrep CE, goreleaser, syft, cosign, k6 (AGPL, tool only), schemathesis.

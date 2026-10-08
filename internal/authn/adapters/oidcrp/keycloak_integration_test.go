@@ -53,7 +53,8 @@ func TestIntKeycloakDevRealm(t *testing.T) {
 	}
 	jar, _ := cookiejar.New(nil)
 	b := &http.Client{Jar: jar, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	do := func(method, u string, form url.Values) (*http.Response, string) {
+	// do returns the redirect target and the page; the body is always closed.
+	do := func(method, u string, form url.Values) (string, string) {
 		var body io.Reader
 		if form != nil {
 			body = strings.NewReader(form.Encode())
@@ -68,17 +69,17 @@ func TestIntKeycloakDevRealm(t *testing.T) {
 		}
 		defer func() { _ = res.Body.Close() }()
 		page, _ := io.ReadAll(res.Body)
-		return res, string(page)
+		return res.Header.Get("Location"), string(page)
 	}
 	_, page := do(http.MethodGet, authURL, nil)
 	m := formAction.FindStringSubmatch(page)
 	if m == nil {
 		t.Fatalf("no Keycloak login form")
 	}
-	res, _ := do(http.MethodPost, html.UnescapeString(m[1]), url.Values{"username": {"alice"}, "password": {"alice-dev-only"}})
-	back, err := url.Parse(res.Header.Get("Location"))
+	location, _ := do(http.MethodPost, html.UnescapeString(m[1]), url.Values{"username": {"alice"}, "password": {"alice-dev-only"}})
+	back, err := url.Parse(location)
 	if err != nil || !strings.HasPrefix(back.String(), redirect) {
-		t.Fatalf("Keycloak redirected to %q", res.Header.Get("Location"))
+		t.Fatalf("Keycloak redirected to %q", location)
 	}
 	q := back.Query()
 	if q.Get("state") != state || q.Get("iss") != p.Issuer() {

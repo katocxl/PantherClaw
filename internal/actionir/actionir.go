@@ -234,6 +234,22 @@ func identifier(name, v string, required bool) error {
 	return nil
 }
 
+// ValidOperation reports whether s is a valid operation name.
+func ValidOperation(s string) bool { return operationPattern.MatchString(s) }
+
+// ValidRoute reports whether s is a valid route id.
+func ValidRoute(s string) bool { return routePattern.MatchString(s) }
+
+// ValidPackage reports whether s is a valid tool package name.
+func ValidPackage(s string) bool { return packagePattern.MatchString(s) }
+
+// ValidVersion reports whether s is a valid package version (MAJOR.MINOR.PATCH).
+func ValidVersion(s string) bool { return semverPattern.MatchString(s) }
+
+// CheckIdentifier applies the identifier rules (HR-102) to a required value.
+// The error wraps ErrAmbiguous.
+func CheckIdentifier(name, v string) error { return identifier(name, v, true) }
+
 // OrgID returns the org as a typed ID.
 func (a ActionIR) OrgID() (ids.OrgID, error) { return ids.Parse[ids.Org](a.Org) }
 

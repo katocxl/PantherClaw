@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Reviewed tool package for the simulated payments API (pantherclaw-sim
+# payments). Every effect is SIMULATED. Mappings are reviewed as code: a wrong
+# mapping is a total bypass (HR-124), so any change here needs the golden
+# tests in internal/definitions to be updated deliberately.
+format: 1
+name: pc.mock-payments
+version: 1.0.0
+publisher: pantherclaw
+summary: Simulated payments API (SIMULATED)
+
+definitions:
+  - operation: payments.refund.create
+    summary: Refund part or all of a charge
+    access: write
+    target:
+      type: payments.charge
+      id_pattern: '^ch_[A-Za-z0-9]{1,64}$'
+      account: none
+    params:
+      amount:
+        type: money
+        material: true
+        required: true
+        currencies: [USD, EUR]
+        max: "1000000"
+      reason:
+        type: enum
+        material: true
+        required: true
+        values: [duplicate, fraudulent, requested_by_customer]
+    effects:
+      - kind: funds.transfer
+        description: Returns funds from the merchant to the customer
+    reversibility: irreversible
+    dedupe_key: [target.id, params.amount]
+    constraints:
+      - kind: amount_max
+        param: amount
+    prerequisites:
+      - fact: payments.charge.refundable
+        max_age_seconds: 300
+    retry:
+      safe: false
+      on_unknown: reconcile
+      target_idempotency: true
+    verifier:
+      operation: payments.refund.get
+      establishes: refund.exists
+      within_seconds: 600
+    approval:
+      title: Refund {params.amount} on charge {target.id}
+      fields: [params.amount, params.reason, target.id]
+    assurance:
+      basis: declared
+      reviewed_by: [pantherclaw-maintainers]
+      valid_until: 2027-10-08
+    mappings:
+      - channel: http
+        method: POST
+        path: /v1/refunds
+        route: payments-refund
+        extract:
+          target_id: input.charge
+          params:
+            amount: money(input.amount, input.currency)
+            reason: input.reason
+      - channel: mcp
+        tool: create_refund
+        route: payments-refund
+        extract:
+          target_id: input.charge
+          params:
+            amount: money(input.amount, input.currency)
+            reason: input.reason
+
+  - operation: payments.refund.get
+    summary: Read one refund
+    access: read
+    target:
+      type: payments.refund
+      id_pattern: '^re_[A-Za-z0-9]{1,64}$'
+      account: none
+    params: {}
+    effects:
+      - kind: none
+        description: Reads only
+    reversibility: reversible
+    retry:
+      safe: true
+      on_unknown: fail
+    assurance:
+      basis: declared
+      reviewed_by: [pantherclaw-maintainers]
+      valid_until: 2027-10-08
+    mappings:
+      - channel: http
+        method: GET
+        path: /v1/refunds/{refund}
+        route: payments-refund-get
+        extract:
+          target_id: path.refund
+          params: {}
+      - channel: mcp
+        tool: get_refund
+        route: payments-refund-get
+        extract:
+          target_id: input.refund
+          params: {}

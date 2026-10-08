@@ -48,7 +48,7 @@ Rules for the AI implementer:
 | 3 | Run `claude setup-token` and save it as repository secret `CLAUDE_CODE_OAUTH_TOKEN` | Claude AI security review in CI | ☐ |
 | 4 | Reserve package names: PyPI pending trusted publisher `pantherclaw` (workflow `release.yml`, environment `release`); npm organization `@pantherclaw` | Prevent name squatting; OIDC publishing | ☐ |
 | 5 | Optional: install Task (`winget install Task.Task`) for shorter commands; install `uv` (`winget install astral-sh.uv`) before SDK work (M8). All other tools are pinned under `tools/pins/` and run via `go tool` | Local tooling | ☐ |
-| 6 | (M1) On an offline-capable machine: `go build -o pclaw-admin ./cmd/pclaw-admin`, then `pclaw-admin keygen --purpose licence --out-dir <offline media> --passphrase-file <file>` (and the same with `--purpose packages`). Copy each `*-root.key` to a second offline medium. Commit only the public key: paste the key from `licence-root.pub.json` into `internal/billing/licence/roots.json`. Until then every licence is rejected and servers run with Community limits | Licence and package trust roots (HR-063) | ☐ |
+| 6 | (M1) On an offline-capable machine: `go build -o pclaw-admin ./cmd/pclaw-admin`, then `pclaw-admin keygen --purpose licence --out-dir <offline media> --passphrase-file <file>` (and the same with `--purpose packages`). Copy each `*-root.key` to a second offline medium. Commit only the public keys: paste the key from `licence-root.pub.json` into `internal/billing/licence/roots.json`, and (M4) the key from `packages-root.pub.json` into `internal/definitions/trust/roots.json`. Until then every licence is rejected and servers run with Community limits, and no tool package verifies. (M4) Then sign the reviewed packages, still offline: `pclaw-admin packages sign --key <offline media>/packages-root.key --passphrase-file <file> --version 1 --expires-days <days> --out targets.jws packages/mock-payments/package.yaml` (180 days recommended, G0 M4 open decision 1), and check it with `pclaw-admin packages verify --roots internal/definitions/trust/roots.json --targets targets.jws packages/mock-payments/package.yaml` | Licence and package trust roots (HR-063) | ☐ |
 | 7 | Optional: create `%UserProfile%\.wslconfig` with `memory=8GB` | Docker stability with Keycloak + LGTM | ☐ |
 | 8 | Before accepting outside PRs: install CLA Assistant (cla-assistant.io) linked to `CLA.md` | Keep relicensing rights | ☐ |
 | 9 | Optional: create fine-grained PAT (public repos, read-only) as secret `CANARY_SEARCH_TOKEN` | Copy detection workflow | ☐ |
@@ -335,7 +335,7 @@ Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AN
 
 ### M2 — Tenancy & service authentication
 **Threat slice:** T-003, T-032, T-037, T-043 · **HR:** HR-095.
-- Org → BU → team → environment hierarchy; users (from OIDC), memberships, invitations (signed, expiring), roles and permission catalog; SoD primitives.
+- Org → BU → team → environment hierarchy; users (from OIDC), memberships, invitations (single-use, expiring random tokens stored as hashes; ADR-0016), roles and permission catalog; SoD primitives.
 - OIDC RP for CLI device flow (browser sessions arrive in M5); `pclaw login`.
 - Service accounts with `private_key_jwt`; API keys (`pck_`), scopes, expiry; auth interceptor; bootstrap admin token (printed once, single use).
 - Keycloak dev realm (`deploy/keycloak`) + mock-oauth2-server for CI.

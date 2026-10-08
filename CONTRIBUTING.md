@@ -18,7 +18,7 @@ All changes follow [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) and the gates in [
 
 ## Development setup
 
-Windows, macOS and Linux are supported for development. Requirements: Go (toolchain pinned in `go.mod`), [Task](https://taskfile.dev), Docker, and for SDK work `uv` (Python) and `pnpm` via Corepack (TypeScript). Race detector, integration and signal tests run on Linux (`task test:linux` uses a container; CI is canonical).
+Windows, macOS and Linux are supported for development. Requirements: Go (toolchain pinned in `go.mod`) and Docker; [Task](https://taskfile.dev) is optional (a pinned copy runs via `go tool -modfile=tools/pins/task/go.mod task`); and for SDK work `uv` (Python) and `pnpm` via Corepack (TypeScript). Race detector, integration and signal tests run on Linux (`task test:linux` uses a container; CI is canonical).
 
 ```bash
 task setup    # configure git hooks (.githooks) and build the pinned dev tools

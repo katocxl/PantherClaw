@@ -4,6 +4,8 @@
 # Byte-exact fixtures: never convert.
 **/testdata/** -text
 *.golden -text
+# Signed tool packages: the targets metadata hashes the exact bytes.
+packages/** -text
 
 # Binary assets.
 *.png binary

@@ -82,9 +82,29 @@ func TestSignRefusesPackageRootAndBadClaims(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"nope"}, {"licence"}, {"keygen"}, {"keygen", "--purpose", "admin", "--out-dir", "."}} {
+	for _, args := range [][]string{
+		nil,
+		{"nope"},
+		{"licence"},
+		{"keygen"},
+		{"keygen", "--purpose", "admin", "--out-dir", "."},
+		{"packages"},
+		{"packages", "sign", "--key", "k", "--version", "1", "--out", "o", "p.yaml"},                          // no expiry
+		{"packages", "sign", "--key", "k", "--version", "0", "--expires-days", "180", "--out", "o", "p.yaml"}, // version 0
+		{"packages", "sign", "--key", "k", "--version", "1", "--expires-days", "180", "--out", "o"},           // no files
+		{"packages", "verify", "--roots", "r", "p.yaml"},
+	} {
 		if code, _, _ := run(t, args...); code != exitUsage {
 			t.Errorf("%v: exit %d, want usage", args, code)
+		}
+	}
+	_, _, errs := run(t)
+	for _, want := range []string{
+		"packages sign --key FILE [--passphrase-file FILE] --version N --expires-days D --out FILE PACKAGE.yaml...",
+		"packages verify --roots FILE --targets FILE PACKAGE.yaml...",
+	} {
+		if !strings.Contains(errs, want) {
+			t.Errorf("usage text lacks %q:\n%s", want, errs)
 		}
 	}
 	if code, out, _ := run(t, "version"); code != 0 || !strings.HasPrefix(out, "pclaw-admin ") {
