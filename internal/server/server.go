@@ -44,6 +44,8 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
+	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
+	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -151,7 +153,8 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err := keystore.LoadSigningKeys(ctx, pool, kp, reg); err != nil {
 		return err
 	}
-	if err := applyLicence(ctx, cfg, pool, log); err != nil {
+	bill, err := applyLicence(ctx, cfg, pool, log)
+	if err != nil {
 		return err
 	}
 
@@ -178,7 +181,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
-		handler, err := apiHandler(pool, reg, log, svc, rpcauth.New(authn, procedurePermissions, gw))
+		handler, err := apiHandler(apiDeps{
+			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
+			auth: rpcauth.New(authn, procedurePermissions, gw),
+		})
 		if err != nil {
 			return err
 		}
@@ -271,20 +277,33 @@ func publicProcedures() []string {
 	return []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure}
 }
 
-// apiHandler mounts the RPC services, health endpoints and the JWKS. auth
-// authenticates users, service accounts and API keys, and delegates
-// AuthorityService to the development gateway (refused when it is off).
-func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *authority.Service, auth rpc.Authenticator) (http.Handler, error) {
+// apiDeps are the API role's dependencies. auth authenticates users,
+// service accounts and API keys, and delegates AuthorityService to the
+// development gateway (refused when it is off).
+type apiDeps struct {
+	pool      *db.Pool
+	reg       *keys.Registry
+	log       *slog.Logger
+	authority *authority.Service
+	billing   *billing.Service
+	auth      rpc.Authenticator
+}
+
+// apiHandler mounts the RPC services, health endpoints and the JWKS.
+func apiHandler(d apiDeps) (http.Handler, error) {
+	pool, reg, log := d.pool, d.reg, d.log
 	rs, err := rpc.NewServer(rpc.Options{
 		Logger:       log,
 		Public:       publicProcedures(),
-		Authenticate: auth,
+		Authenticate: d.auth,
 	})
 	if err != nil {
 		return nil, err
 	}
 	pantherclawv1connect.RegisterSystemServiceHandler(rs, systemService{})
-	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
+	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(d.authority))
+	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
+	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
@@ -321,30 +340,30 @@ func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *author
 // startupActor records start-up actions in the audit log.
 var startupActor = evdomain.Actor{Type: "system", ID: "server-startup"}
 
-func applyLicence(ctx context.Context, cfg *Config, pool *db.Pool, log *slog.Logger) error {
+func applyLicence(ctx context.Context, cfg *Config, pool *db.Pool, log *slog.Logger) (*billing.Service, error) {
 	roots, err := licence.EmbeddedRoots()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	svc := billing.New(pool, roots, clock.System{}, log)
 	if cfg.LicenceFile != "" {
 		doc, err := os.ReadFile(cfg.LicenceFile)
 		if err != nil {
-			return fmt.Errorf("server: licence file: %w", err)
+			return nil, fmt.Errorf("server: licence file: %w", err)
 		}
 		// An invalid licence is recorded and audited, and the server keeps
 		// running with Community limits (founder decision 2026-10-08).
 		if _, err := svc.Install(ctx, doc, startupActor); err != nil && !errors.Is(err, licence.ErrInvalid) {
-			return err
+			return nil, err
 		}
 	}
 	e, err := svc.Current(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	log.InfoContext(ctx, "licence.status", slog.String("edition", string(e.Edition)), slog.String("status", string(e.Status)),
 		slog.Int("max_agents", e.Limits.MaxAgents), slog.Int("max_orgs", e.Limits.MaxOrgs))
-	return nil
+	return svc, nil
 }
 
 func cmdMigrate(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {
