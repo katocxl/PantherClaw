@@ -81,10 +81,7 @@ func TestHR110_EntriesAreChainedAfterTheBusinessTransaction(t *testing.T) {
 	if c := count(t, p, org, "chain"); c != 0 {
 		t.Fatalf("entries were chained inside the business transaction (%d links)", c)
 	}
-	n, err := ledger.ChainAll(context.Background(), p, org, 2)
-	if err != nil || n != 3 {
-		t.Fatalf("chained %d, %v; want 3", n, err)
-	}
+	chainEventually(t, p, org, 3, 2)
 	head, err := ledger.Verify(context.Background(), p, org)
 	if err != nil || head.Seq != 3 {
 		t.Fatalf("verify = %+v, %v", head, err)
@@ -106,9 +103,7 @@ func TestIntRollbackLeavesNoGap(t *testing.T) {
 		return boom
 	})
 	appendN(t, p, org, 1)
-	if _, err := ledger.ChainAll(ctx, p, org, 10); err != nil {
-		t.Fatal(err)
-	}
+	chainEventually(t, p, org, 2, 10)
 	head, err := ledger.Verify(ctx, p, org)
 	if err != nil || head.Seq != 2 {
 		t.Fatalf("verify = %+v, %v; want seq 2 with no gap", head, err)
@@ -146,9 +141,7 @@ func TestIntInFlightTransactionsAreDeferred(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if n, err := ledger.ChainAll(ctx, p, org, 10); err != nil || n != 2 {
-		t.Fatalf("after commit chained %d, %v; want 2", n, err)
-	}
+	chainEventually(t, p, org, 2, 10)
 	if head, err := ledger.Verify(ctx, p, org); err != nil || head.Seq != 2 {
 		t.Fatalf("verify = %+v, %v", head, err)
 	}
@@ -178,9 +171,7 @@ func TestIntConcurrentAppendsAndChainers(t *testing.T) {
 	writers.Wait()
 	cancel()
 	chainers.Wait()
-	if _, err := ledger.ChainAll(context.Background(), p, org, 50); err != nil {
-		t.Fatal(err)
-	}
+	chainEventually(t, p, org, 200, 50)
 	head, err := ledger.Verify(context.Background(), p, org)
 	if err != nil || head.Seq != 200 {
 		t.Fatalf("verify = %+v, %v; want 200 contiguous entries", head, err)
@@ -202,9 +193,7 @@ func TestT029_DatabaseTamperingIsDetected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			org := newOrg(t, p)
 			appendN(t, p, org, 3)
-			if _, err := ledger.ChainAll(context.Background(), p, org, 10); err != nil {
-				t.Fatal(err)
-			}
+			chainEventually(t, p, org, 3, 10)
 			d.AdminExec(t, tamper, org) // a superuser/insider rewrites history
 			if _, err := ledger.Verify(context.Background(), p, org); !errors.Is(err, domain.ErrChainBroken) {
 				t.Fatalf("tampering not detected: %v", err)
@@ -218,9 +207,7 @@ func TestHR055_EvidenceIsAppendOnlyForApp(t *testing.T) {
 	p := d.AppPool(t)
 	org := newOrg(t, p)
 	appendN(t, p, org, 1)
-	if _, err := ledger.ChainAll(context.Background(), p, org, 10); err != nil {
-		t.Fatal(err)
-	}
+	chainEventually(t, p, org, 1, 10)
 	for _, stmt := range []string{
 		"UPDATE pc.ledger_entries SET kind = 'test.changed'",
 		"DELETE FROM pc.ledger_entries",
@@ -308,4 +295,26 @@ func TestIntChainerJobsChainEveryOrg(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("chainer jobs did not chain both orgs within 30s (a=%d b=%d)", count(t, p, a, "chain"), count(t, p, b, "chain"))
+}
+
+// chainEventually chains org until want links exist. The chainer links only
+// entries below the cluster-wide snapshot xmin, so open transactions in other
+// databases (parallel test packages) can defer chaining; wait for the
+// condition instead of assuming one pass suffices (ADR-0009).
+func chainEventually(t *testing.T, p *db.Pool, org ids.OrgID, want, batch int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := ledger.ChainAll(context.Background(), p, org, batch); err != nil {
+			t.Fatal(err)
+		}
+		got := count(t, p, org, "chain")
+		if got >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d entries chained within 30s", got, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
