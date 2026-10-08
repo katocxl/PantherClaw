@@ -150,3 +150,38 @@ func tests(cond ast.Expr, p string, negated bool) bool {
 	}
 	return false
 }
+
+// Fields returns the top-level fields of a map variable that the program
+// reads, by plain selection (v.f), optional selection (v.?f), presence test
+// (has(v.f)) or constant index (v["f"]). ok is false when the variable is
+// used in any other way, for example passed whole to a function or
+// iterated: then the set of fields read cannot be known.
+func (p *Program) Fields(variable string) (fields []string, ok bool) {
+	for _, e := range ast.MatchDescendants(ast.NavigateAST(p.ast), ast.KindMatcher(ast.IdentKind)) {
+		if e.AsIdent() != variable {
+			continue
+		}
+		parent, found := e.Parent()
+		if !found {
+			return nil, false
+		}
+		switch parent.Kind() { //nolint:exhaustive // any other use of the variable is opaque
+		case ast.SelectKind:
+			fields = append(fields, parent.AsSelect().FieldName())
+			continue
+		case ast.CallKind:
+			call := parent.AsCall()
+			args := call.Args()
+			if (call.FunctionName() == operators.OptSelect || call.FunctionName() == operators.Index) &&
+				len(args) == 2 && args[0].ID() == e.ID() && args[1].Kind() == ast.LiteralKind {
+				if s, isStr := args[1].AsLiteral().Value().(string); isStr {
+					fields = append(fields, s)
+					continue
+				}
+			}
+		}
+		return nil, false
+	}
+	slices.Sort(fields)
+	return slices.Compact(fields), true
+}
