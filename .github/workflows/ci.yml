@@ -88,6 +88,10 @@ jobs:
       - name: Verify modules
         run: |
           for m in . sdk/go tools; do (cd "$m" && go mod verify && go mod tidy -diff); done
+      - name: Traceability (every HR/T due by the last completed milestone has a test)
+        run: $TASK trace
+      - name: Generated code is up to date (buf, sqlc)
+        run: $TASK gen:check
       - name: Format
         run: $TASK fmt:check
       - name: Licence headers
@@ -127,6 +131,44 @@ jobs:
       - name: Build all binaries
         shell: bash
         run: $TASK build
+
+  go-integration:
+    name: go / integration (postgres)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pc-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            **/go.sum
+      - name: Integration tests as pc_app (race detector)
+        env:
+          PC_TEST_REQUIRE_DB: "1"
+          PC_TEST_PG_ADMIN_URL: postgres://postgres:pc-ci-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5433/postgres?sslmode=disable
+        run: go test -race -tags integration -shuffle=on -count=1 ./...
 
   go-vuln:
     name: go / govulncheck
@@ -231,9 +273,27 @@ jobs:
         with:
           fail-on-severity: moderate
           comment-summary-in-pr: never
+          # LicenseRef-scancode-google-patent-license-golang is the PATENTS grant
+          # shipped with every golang.org/x module (BSD-3-Clause code plus a
+          # permissive patent licence); see DEPENDENCY_POLICY section 1.
           allow-licenses: >-
             Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, Unicode-DFS-2016,
-            Unicode-3.0, CC0-1.0, 0BSD, BlueOak-1.0.0, Python-2.0, PSF-2.0, Zlib
+            Unicode-3.0, CC0-1.0, 0BSD, BlueOak-1.0.0, Python-2.0, PSF-2.0, Zlib,
+            LicenseRef-scancode-google-patent-license-golang
+          # rivershared is MPL-2.0 with an MIT-licensed levenshtein subpackage; the
+          # scanner reports the pair as LicenseRef-bad-mit-mpl-2.0. Both licences
+          # are allowed (DEPENDENCY_POLICY section 1).
+          # The others are dependencies of the buf and sqlc dev-tool pins only,
+          # never linked into shipped artifacts; their extra licences cover
+          # documentation (CC-BY), the DCO, MIT-0 and the PostgreSQL licence
+          # (DEPENDENCY_POLICY, dev tools).
+          allow-dependencies-licenses: >-
+            pkg:golang/github.com/riverqueue/river/rivershared,
+            pkg:golang/github.com/opencontainers/go-digest,
+            pkg:golang/github.com/opencontainers/image-spec,
+            pkg:golang/github.com/segmentio/asm,
+            pkg:golang/github.com/fatih/structtag,
+            pkg:golang/github.com/pganalyze/pg_query_go/v6
 
   workflows:
     name: security / workflows (zizmor)
@@ -345,6 +405,7 @@ jobs:
       - changes
       - go-static
       - go-test
+      - go-integration
       - go-vuln
       - secrets
       - semgrep

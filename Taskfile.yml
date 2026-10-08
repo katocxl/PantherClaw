@@ -74,6 +74,15 @@ tasks:
       - for: { var: GO_MODULES }
         cmd: go -C "{{.ITEM}}" test -race -shuffle=on -count=1 ./...
 
+  test:integration:
+    desc: Database integration tests (start the throwaway cluster first with `task up PROFILE=test`)
+    dotenv: ["deploy/compose/.env"]
+    cmds:
+      - >-
+        PC_TEST_REQUIRE_DB=1
+        PC_TEST_PG_ADMIN_URL="postgres://postgres:${PC_PG_TEST_PASSWORD}@127.0.0.1:5433/postgres?sslmode=disable"
+        go test -tags integration -shuffle=on -count=1 ./...
+
   test:linux:
     desc: Run race-enabled tests inside a pinned Linux container (use on Windows)
     cmds:
@@ -83,6 +92,27 @@ tasks:
         --mount type=volume,source=pantherclaw-gomod,target=/go/pkg/mod
         -w /src {{.GOLANG_IMAGE}}
         sh -c "go test -race -shuffle=on -count=1 ./... && go -C sdk/go test -race -count=1 ./... && go -C tools test -race -count=1 ./..."
+
+  gen:
+    desc: Regenerate committed code (buf protos, sqlc queries) and add licence headers
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go tool -modfile={{.PINS}}/buf/go.mod buf lint
+      - go tool -modfile={{.PINS}}/buf/go.mod buf generate
+      - go tool -modfile={{.PINS}}/sqlc/go.mod sqlc generate
+      - go -C tools run ./licensecheck -root .. -fix
+
+  gen:check:
+    desc: Fail if generated code is out of date
+    cmds:
+      - task: gen
+      - git diff --exit-code -- internal/gen
+
+  trace:
+    desc: Fail if a hardening rule or threat due by MILESTONE has no test (default M1)
+    cmds:
+      - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M1"}}
 
   license:check:
     desc: Verify SPDX + copyright headers on every source file
@@ -95,9 +125,12 @@ tasks:
       - go -C tools run ./licensecheck -root .. -fix
 
   secrets:
-    desc: Scan the working tree for secrets (gitleaks)
+    desc: Scan the working tree for secrets (gitleaks) and refuse tracked .env files
     cmds:
       - "{{.GITLEAKS}} dir . --redact --no-banner"
+      - cmd: >-
+          test -z "$(git ls-files -- ':(glob)**/.env' ':(glob)**/.env.*' ':(exclude,glob)**/.env.example')"
+          || (echo "tracked .env file found; local secrets must stay git-ignored (SB-7)" && exit 1)
 
   vuln:
     desc: Reachability-aware vulnerability scan of all Go modules
