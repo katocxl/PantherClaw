@@ -523,6 +523,31 @@ func (q *Queries) ReleaseReservation(ctx context.Context, amount money.Decimal, 
 	return q.db.Exec(ctx, releaseReservation, amount, orgID, iD)
 }
 
+const releaseReservations = `-- name: ReleaseReservations :execresult
+UPDATE pc.budgets
+SET reserved = reserved - $1, reserved_count = reserved_count - $2::int4
+WHERE org_id = $3 AND id = $4
+  AND reserved >= $1 AND reserved_count >= $2::int4
+`
+
+type ReleaseReservationsParams struct {
+	Amount money.Decimal
+	Count  int32
+	OrgID  ids.OrgID
+	ID     ids.UUID
+}
+
+// ReleaseReservations releases several reservations of one budget in one
+// statement, so a sweep locks the hot row once.
+func (q *Queries) ReleaseReservations(ctx context.Context, arg ReleaseReservationsParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, releaseReservations,
+		arg.Amount,
+		arg.Count,
+		arg.OrgID,
+		arg.ID,
+	)
+}
+
 const reserveBudget = `-- name: ReserveBudget :execresult
 UPDATE pc.budgets
 SET reserved = reserved + $1, reserved_count = reserved_count + 1
