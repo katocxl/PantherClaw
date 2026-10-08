@@ -315,7 +315,7 @@ Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AN
 
 ### M2 — Tenancy & service authentication
 **Threat slice:** T-003, T-032, T-037, T-043 · **HR:** HR-095.
-- Org → BU → team → environment hierarchy; users (from OIDC), memberships, invitations (signed, expiring), roles and permission catalog; SoD primitives.
+- Org → BU → team → environment hierarchy; users (from OIDC), memberships, invitations (single-use, expiring random tokens stored as hashes; ADR-0016), roles and permission catalog; SoD primitives.
 - OIDC RP for CLI device flow (browser sessions arrive in M5); `pclaw login`.
 - Service accounts with `private_key_jwt`; API keys (`pck_`), scopes, expiry; auth interceptor; bootstrap admin token (printed once, single use).
 - Keycloak dev realm (`deploy/keycloak`) + mock-oauth2-server for CI.
