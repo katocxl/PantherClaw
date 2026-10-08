@@ -87,7 +87,7 @@ func ParseForm(w http.ResponseWriter, r *http.Request) (url.Values, error) {
 }
 
 func (h *Handler) token(w http.ResponseWriter, r *http.Request) {
-	if !h.limiter.Allow(httpx.ClientIP(r)) {
+	if !h.limiter.AllowRequest(r) {
 		WriteError(w, &authnapp.OAuthError{Code: "slow_down", Description: "too many requests", Status: http.StatusTooManyRequests})
 		return
 	}

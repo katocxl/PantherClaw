@@ -194,6 +194,16 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			return err
 		}
 		limiter := httpx.NewLimiter(oauthRateLimit, time.Minute, nil)
+		proxies, err := cfg.trustedProxies()
+		if err != nil {
+			return err
+		}
+		if len(proxies) > 0 {
+			limiter.WithClientIP(httpx.TrustedProxyClientIP(proxies))
+		} else if cfg.HTTP.PlaintextBehindProxy {
+			log.WarnContext(ctx, "server.no_trusted_proxies", slog.String("note",
+				"behind a proxy without http.trusted_proxies: sign-in rate limits are shared by all clients of the proxy"))
+		}
 		device, err := devicehttp.New(authnapp.NewDevice(pool, tokens, cfg.Auth.PublicURL, idps, clock.System{}, log),
 			cfg.Auth.PublicURL, limiter, log)
 		if err != nil {

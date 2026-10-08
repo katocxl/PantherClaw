@@ -58,6 +58,10 @@ type HTTPConfig struct {
 	TLSCertFile          string `json:"tls_cert_file" env:"PC_HTTP_TLS_CERT_FILE"`
 	TLSKeyFile           string `json:"tls_key_file" env:"PC_HTTP_TLS_KEY_FILE"`
 	PlaintextBehindProxy bool   `json:"plaintext_behind_proxy" env:"PC_HTTP_PLAINTEXT_BEHIND_PROXY"`
+	// TrustedProxies are the reverse proxies (IPs or CIDRs) whose
+	// X-Forwarded-For header names the client, for per-client rate limits.
+	// Forwarding headers from any other peer are ignored.
+	TrustedProxies []string `json:"trusted_proxies" env:"PC_HTTP_TRUSTED_PROXIES"`
 }
 
 // DBConfig configures PostgreSQL access.
@@ -127,6 +131,9 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateAuthority()...)
 	errs = append(errs, c.validateAuth()...)
 	errs = append(errs, c.validateOIDC()...)
+	if _, err := c.trustedProxies(); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -303,6 +310,24 @@ func (c *Config) oidcProviders() ([]authnapp.IdP, error) {
 			return nil, err
 		}
 		out = append(out, prov)
+	}
+	return out, nil
+}
+
+// trustedProxies parses http.trusted_proxies (single addresses become
+// host prefixes).
+func (c *Config) trustedProxies() ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(c.HTTP.TrustedProxies))
+	for _, s := range c.HTTP.TrustedProxies {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("http.trusted_proxies: %q is not an IP address or CIDR", s)
+		}
+		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
 	}
 	return out, nil
 }
