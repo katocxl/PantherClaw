@@ -33,6 +33,11 @@ sql:
             go_type: github.com/katocxl/pantherclaw/internal/platform/ids.OrgID
           - column: "pc.orgs.id"
             go_type: github.com/katocxl/pantherclaw/internal/platform/ids.OrgID
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
           - db_type: timestamptz
             go_type: time.Time
           - db_type: timestamptz
@@ -40,6 +45,17 @@ sql:
             go_type:
               import: time
               type: Time
+              pointer: true
+          - db_type: pg_catalog.numeric
+            nullable: true
+            go_type:
+              import: github.com/katocxl/pantherclaw/internal/platform/money
+              type: Decimal
+              pointer: true
+          - db_type: pg_catalog.int4
+            nullable: true
+            go_type:
+              type: int32
               pointer: true
           - db_type: numeric
             go_type: github.com/katocxl/pantherclaw/internal/platform/money.Decimal

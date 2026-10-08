@@ -29,10 +29,10 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 | `github.com/jackc/pgx/v5` | PostgreSQL driver + pool | MIT | De-facto standard; needed for COPY-free, typed, context-aware access |
 | `github.com/pressly/goose/v3` | Migrations | MIT | Embedded SQL migrations, simple, no DSL |
 | `github.com/riverqueue/river` (+ `riverpgxv5`) | Postgres job queue / outbox | MPL-2.0 | Transactional enqueue (InsertTx) |
-| `connectrpc.com/connect/v2` (+ `otelconnect`, `grpchealth`, `validate`) | RPC framework | Apache-2.0 | One handler for gRPC/Connect JSON |
+| `connectrpc.com/connect/v2` (+ `otelconnect`, `grpchealth`, `validate`) | RPC framework | Apache-2.0 | One handler for gRPC/Connect JSON. Pinned to `v2.0.0-rc.1` until `v2.0.0` (2026-10-07) clears the 7-day cooldown (founder decision 2026-10-08). `otelconnect`, `grpchealth` and `validate` are not used yet: the OTel and protovalidate interceptors are in `platform/rpc` and health uses plain HTTP endpoints |
 | `buf.build/go/protovalidate` | Contract validation (CEL) | Apache-2.0 | Declarative input validation |
 | `google.golang.org/protobuf` | Protobuf runtime | BSD-3 | Required by Connect |
-| `github.com/google/cel-go` | Policy/detection expressions | Apache-2.0 | Safe, typed, cost-bounded expressions |
+| `cel.dev/cel-go` (formerly `github.com/google/cel-go`) | Policy/detection expressions | Apache-2.0 | Safe, typed, cost-bounded expressions. Now published under `cel.dev`; first pulled in by protovalidate v1.4.0 |
 | `github.com/go-jose/go-jose/v4` (≥ 4.1.5) | JWS/JWT/JWK, thumbprints | Apache-2.0 | Algorithm allowlists; RFC 7638 |
 | `github.com/coreos/go-oidc/v3` | OIDC relying party | Apache-2.0 | ID token verification, discovery |
 | `golang.org/x/oauth2` | OAuth2 flows | BSD-3 | Auth code, device flow |
