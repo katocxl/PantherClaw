@@ -183,7 +183,14 @@ go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json
   --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
 # copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
+# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000-8000-0000000000c1' \
+  -H "PC-Run-Id: $(uuidgen)" -H "PC-Action-Id: $(uuidgen)" \
+  -d '{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}'
 ```
+
+The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
 
 ---
 
