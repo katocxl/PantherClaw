@@ -117,7 +117,7 @@ func (h *Handler) token(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	WriteJSON(w, http.StatusOK, res)
 }
 
 // WriteError writes an OAuth error response. Anything that is not an
@@ -130,10 +130,11 @@ func WriteError(w http.ResponseWriter, err error) {
 	if oe.Status == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_client"`)
 	}
-	writeJSON(w, oe.Status, map[string]string{"error": oe.Code, "error_description": oe.Description})
+	WriteJSON(w, oe.Status, map[string]string{"error": oe.Code, "error_description": oe.Description})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// WriteJSON writes a JSON response that is never cached.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		status, b = http.StatusInternalServerError, []byte(`{"error":"server_error"}`)
@@ -149,7 +150,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // client libraries can find the token endpoint and the supported methods.
 func (h *Handler) metadata(w http.ResponseWriter, _ *http.Request) {
 	grants := append([]string{GrantClientCredentials}, slices.Sorted(maps.Keys(h.extra))...)
-	writeJSON(w, http.StatusOK, map[string]any{
+	WriteJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                h.issuer,
 		"token_endpoint":                        h.issuer + authnapp.TokenPath,
 		"grant_types_supported":                 grants,

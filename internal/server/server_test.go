@@ -58,6 +58,22 @@ func TestConfigValidation(t *testing.T) {
 		"public url userinfo": func(c *Config) { c.Auth.PublicURL = "https://u:p@pc.example.com" },
 		"public url relative": func(c *Config) { c.Auth.PublicURL = "pc.example.com" },
 		"api key env":         func(c *Config) { c.Auth.APIKeyEnv = "prod" },
+		"oidc http issuer": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "http://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}}
+		},
+		"oidc http not loopback": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "http://idp.example.com", ClientID: "pc", ClientSecretFile: "s", AllowInsecureLoopback: true}}
+		},
+		"oidc no secret": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "https://idp.example.com", ClientID: "pc"}}
+		},
+		"oidc bad name": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "Key Cloak", Issuer: "https://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}}
+		},
+		"oidc duplicate": func(c *Config) {
+			p := OIDCProviderConfig{Name: "kc", Issuer: "https://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}
+			c.Auth.OIDCProviders = []OIDCProviderConfig{p, p}
+		},
 	} {
 		cc := c
 		mutate(&cc)
@@ -158,5 +174,17 @@ func TestServeRefusesInvalidConfigWithoutTouchingTheDatabase(t *testing.T) {
 	}
 	if code := Run(context.Background(), []string{"serve"}, &bytes.Buffer{}, &errb, env); code != 1 || !strings.Contains(errb.String(), "role must be") {
 		t.Fatalf("serve with bad role: %d %s", code, errb.String())
+	}
+}
+
+func TestOIDCProviderConfigAccepted(t *testing.T) {
+	c := DefaultConfig()
+	c.DB.AppPasswordFile, c.KEKFiles = "pw", []string{"kek"}
+	c.Auth.OIDCProviders = []OIDCProviderConfig{
+		{Name: "okta", Issuer: "https://acme.okta.com", ClientID: "pc", ClientSecretFile: "s"},
+		{Name: "keycloak", Issuer: "http://127.0.0.1:8180/realms/pantherclaw", ClientID: "pc", ClientSecretFile: "s", AllowInsecureLoopback: true},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
