@@ -24,6 +24,8 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
@@ -56,6 +58,10 @@ Usage:
   pantherclaw-server db bootstrap --admin-url-file F --app-password-file F --migrator-password-file F --audit-password-file F
                                                      create roles and schema once, as the database owner
   pantherclaw-server keys gen-kek --out FILE          write a new key-encryption key (0600)
+  pantherclaw-server org create --name N [--admin-email E] [--config FILE]
+                                                     create an organization and print its one-time admin token
+  pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
+                                                     issue a new one-time admin token (recovery)
   pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
                                                      DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
@@ -85,6 +91,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		err = cmdDB(ctx, args[1:], stdout, stderr)
 	case "keys":
 		err = cmdKeys(args[1:], stdout, stderr)
+	case "org":
+		err = cmdOrg(ctx, args[1:], stdout, stderr, env)
 	case "dev":
 		err = cmdDev(ctx, args[1:], stdout, stderr, env)
 	default:
@@ -181,9 +189,23 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		idps, err := cfg.oidcProviders()
+		if err != nil {
+			return err
+		}
+		limiter := httpx.NewLimiter(oauthRateLimit, time.Minute, nil)
+		device, err := devicehttp.New(authnapp.NewDevice(pool, tokens, cfg.Auth.PublicURL, idps, clock.System{}, log),
+			cfg.Auth.PublicURL, limiter, log)
+		if err != nil {
+			return err
+		}
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
-			auth: rpcauth.New(authn, procedurePermissions, gw),
+			auth:      rpcauth.New(authn, procedurePermissions, gw),
+			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
+			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
+				cfg.Auth.PublicURL, limiter),
+			device: device,
 		})
 		if err != nil {
 			return err
@@ -223,9 +245,12 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authority.RegisterSweeper(jreg, pool, svc, cfg.Authority.StaleDispatch.D()); err != nil {
 			return err
 		}
+		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs()),
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
 			Logger:       log,
 		})
 		if err != nil {
@@ -287,6 +312,9 @@ type apiDeps struct {
 	authority *authority.Service
 	billing   *billing.Service
 	auth      rpc.Authenticator
+	apiKeyEnv credential.Env
+	oauth     *oauthhttp.Handler
+	device    *devicehttp.Handler
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -304,8 +332,11 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(d.authority))
 	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
 	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
+	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
+	d.oauth.Mount(mux)
+	d.device.Mount(mux, d.oauth)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")

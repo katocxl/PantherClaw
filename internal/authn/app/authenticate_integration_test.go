@@ -223,3 +223,30 @@ func TestT032_CredentialsCannotCrossOrgs(t *testing.T) {
 }
 
 func hexOrg(o ids.OrgID) string { return strings.ReplaceAll(o.String(), "-", "") }
+
+func TestIntJanitorRemovesOnlyExpiredRows(t *testing.T) {
+	e := newEnv(t)
+	w := e.world(t, "janitor")
+	for i, age := range []string{"-2 minutes", "+2 minutes"} {
+		e.d.AdminExec(t, `INSERT INTO pc.auth_replay (org_id, issuer, jti, expires_at) VALUES ($1, 'sa:x', $2, now() + $3::interval)`,
+			w.org, "jti-"+string(rune('a'+i)), age)
+		e.d.AdminExec(t, `INSERT INTO pc.device_codes (org_id, id, code_hash, user_code, device_jkt, device_jwk, expires_at)
+			VALUES ($1, $2, $3, $4, repeat('j', 43), '{}', now() + $5::interval)`,
+			w.org, ids.NewV7(), []byte(strings.Repeat(string(rune('a'+i)), 32)), "BCDFGHJ"+string("KL"[i]), map[int]string{0: "-2 days", 1: "+5 minutes"}[i])
+	}
+	e.d.AdminExec(t, `UPDATE pc.cli_sessions SET state = 'REVOKED', revoked_at = now() - interval '31 days' WHERE org_id = $1`, w.org)
+	c, err := authnapp.CleanOrg(context.Background(), e.pool, w.org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Replay != 1 || c.DeviceCodes != 1 || c.Sessions != 1 {
+		t.Fatalf("cleaned %+v, want one of each", c)
+	}
+	var left int
+	err = e.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
+		return tx.QueryRow(ctx, "SELECT (SELECT count(*) FROM pc.auth_replay) + (SELECT count(*) FROM pc.device_codes)").Scan(&left)
+	})
+	if err != nil || left != 2 {
+		t.Fatalf("live rows left = %d (%v)", left, err)
+	}
+}
