@@ -49,16 +49,12 @@ func New(cfg *Config, log *slog.Logger) (*Gateway, error) {
 	authURL, _ := baseURL(cfg.Authority.URL)
 	target, _ := baseURL(cfg.Target.URL)
 	prefixes, _ := cfg.allowedPrefixes()
-	// The control-plane client is separate from the egress client (HR-074)
-	// and never uses proxies from the environment.
-	control := &http.Client{
+	// Control-plane clients are separate from the egress client (HR-074).
+	control := httpx.NewControlClient(httpx.ControlConfig{Timeout: cfg.Authority.Timeout.D()})
+	authed := httpx.NewControlClient(httpx.ControlConfig{
 		Timeout: cfg.Authority.Timeout.D(),
-		Transport: &http.Transport{
-			Proxy: nil, MaxIdleConns: 256, MaxIdleConnsPerHost: 256, IdleConnTimeout: 90 * time.Second,
-			ForceAttemptHTTP2: true,
-		},
-	}
-	authed := &http.Client{Timeout: control.Timeout, Transport: bearer{token: token, base: control.Transport}}
+		Wrap:    func(rt http.RoundTripper) http.RoundTripper { return bearer{token: token, base: rt} },
+	})
 	workloads := map[string]bool{}
 	for _, w := range cfg.DevWorkloads {
 		workloads[w] = true
