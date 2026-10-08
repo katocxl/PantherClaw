@@ -192,6 +192,26 @@ curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000
 
 The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
 
+**Sign in and administer (M2):** people sign in through an OpenID provider; locally that is the Keycloak development realm in `deploy/keycloak` (users `alice` / `alice-dev-only` and `bob` / `bob-dev-only`, development only). The server is the relying party; `pclaw` never talks to the provider.
+
+```bash
+task up PROFILE=identity                                   # Keycloak on 127.0.0.1:8180 (set KC_ADMIN_PASSWORD in deploy/compose/.env)
+printf 'pantherclaw-dev-only-client-secret' > deploy/dev/secrets/keycloak.secret
+# in your server config, add to "auth": "oidc_providers": [{"name": "keycloak",
+#   "issuer": "http://127.0.0.1:8180/realms/pantherclaw", "client_id": "pantherclaw",
+#   "client_secret_file": "deploy/dev/secrets/keycloak.secret", "allow_insecure_loopback": true}]
+go run ./cmd/pantherclaw-server org create --config deploy/dev/server.local.json --name acme   # prints the org id and a one-time admin token
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.local.json
+go run ./cmd/pclaw login --server http://127.0.0.1:8080 --org <org id> --invitation <pci_ token>   # sign in as alice in the browser
+go run ./cmd/pclaw whoami
+go run ./cmd/pclaw team create --slug payments --name Payments
+go run ./cmd/pclaw invite create --email bob@example.test --role viewer      # bob runs pclaw login with this token
+go run ./cmd/pclaw sa create --name ci && go run ./cmd/pclaw sa key-generate <sa id> --out ci-key.json
+go run ./cmd/pclaw sa token --key-file ci-key.json                          # private_key_jwt client credentials
+```
+
+The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
+
 **Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
 
 ```bash
@@ -268,7 +288,7 @@ docs/                    this guide and companions
 |---|---|
 | M1 | `orgs` (root, RLS on id), `cross_org_list_audit` (global), `ledger_entries`, `ledger_chain` (insert-only links), `ledger_heads`, `keys` (public material + wrapped private refs), `deks`, `licence_state` (global), River tables (no RLS; River's migrations run as goose Go migrations) |
 | M1.5 | `transactions`, `decision_receipts`, `permits`, `execution_attempts`, `budgets`, `budget_ledger`, `org_containment` |
-| M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes` |
+| M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes`, `cli_sessions` (CLI refresh tokens), `auth_replay` (client-assertion `jti`s) |
 | M3 | `agents`, `agent_owners`, `agent_changes`, `agent_instances`, `enrollment_tokens`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries` |
 | M4 | `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `envelopes`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `facts`, `policies`, `policy_versions`, `idempotency` (or columns on `transactions`) |
 | M5 | `sessions`, `webauthn_credentials`, `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |

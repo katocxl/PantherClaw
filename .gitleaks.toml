@@ -8,3 +8,7 @@ useDefault = true
 [[allowlists]]
 description = "Local, git-ignored compose secrets. Never committed: `task secrets` fails if any .env file other than .env.example is tracked."
 paths = ['''^deploy/compose/\.env$''']
+
+[[allowlists]]
+description = "Development-only Keycloak realm (bound to 127.0.0.1): its client secret and user passwords are published placeholders, never used outside local development."
+paths = ['''^deploy/keycloak/realm-pantherclaw\.json$''']
