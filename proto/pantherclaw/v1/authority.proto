@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+
+// AuthorityService is the Transaction Authority's gateway-facing API
+// (PAP-1 §7). Only authenticated gateways may call it; the org always comes
+// from the gateway's credential, never from the request.
+service AuthorityService {
+  // Authorize decides on one canonical action. On ALLOW it returns a
+  // single-use dispatch permit.
+  // permission: gateway.authorize
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+  // BeginDispatch is the commit point immediately before the gateway sends
+  // any byte to the target. Any error means: do not dispatch.
+  // permission: gateway.dispatch
+  rpc BeginDispatch(BeginDispatchRequest) returns (BeginDispatchResponse);
+  // RecordExecution records the outcome of one dispatched permit.
+  // permission: gateway.dispatch
+  rpc RecordExecution(RecordExecutionRequest) returns (RecordExecutionResponse);
+}
+
+// Decision is an authorization decision (PAP-1 §7.1).
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  DECISION_ALLOW = 1;
+  DECISION_ALLOW_WITH_OBLIGATIONS = 2;
+  DECISION_REQUIRE_APPROVAL = 3;
+  DECISION_REQUIRE_STEP_UP = 4;
+  DECISION_DENY = 5;
+  DECISION_CANNOT_AUTHORIZE = 6;
+}
+
+// Reason explains one checklist outcome.
+message Reason {
+  // Stable machine code, for example GRANT_AMOUNT_EXCEEDED.
+  string code = 1;
+  // Pipeline step that produced it.
+  string check = 2;
+  // Human-readable detail (never contains agent-supplied text).
+  string detail = 3;
+  // Whether this reason decided the outcome.
+  bool decisive = 4;
+}
+
+// AuthorizeRequest carries the action as canonical ActionIR JSON bytes, so
+// both sides hash exactly the same bytes.
+message AuthorizeRequest {
+  // RFC 8785 canonical ActionIR v1.
+  bytes action_ir = 1 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 1048576
+  }];
+}
+
+// AuthorizeResponse is the decision.
+message AuthorizeResponse {
+  // The decision.
+  Decision decision = 1;
+  // Server-minted transaction id (empty when the action could not be bound).
+  string transaction_id = 2;
+  // Hex SHA-256 of the canonical action.
+  string action_hash = 3;
+  // Decisive reason first.
+  repeated Reason reasons = 4;
+  // Dispatch permit JWS; only for a fresh ALLOW.
+  string permit = 5;
+  // Permit id (the permit's jti).
+  string permit_id = 6;
+  // Containment epoch the permit was issued under.
+  int64 epoch = 7;
+  // Signed decision receipt JWS.
+  string receipt = 8;
+}
+
+// BeginDispatchRequest moves a permit to DISPATCHING.
+message BeginDispatchRequest {
+  // Permit id from the permit's jti.
+  string permit_id = 1 [(buf.validate.field).string.uuid = true];
+  // Epoch carried by the permit.
+  int64 epoch = 2 [(buf.validate.field).int64.gt = 0];
+}
+
+// BeginDispatchResponse confirms the commit point.
+message BeginDispatchResponse {}
+
+// Outcome of a dispatch (PAP-1 §7.4).
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_ACCEPTED = 1;
+  OUTCOME_FAILED = 2;
+  OUTCOME_UNKNOWN = 3;
+}
+
+// RecordExecutionRequest reports what happened at the target.
+message RecordExecutionRequest {
+  // Permit id.
+  string permit_id = 1 [(buf.validate.field).string.uuid = true];
+  // Outcome; UNSPECIFIED is rejected.
+  Outcome outcome = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // HTTP status from the target, 0 when none was received.
+  int32 target_status = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 599
+  }];
+  // SHA-256 of the target response body, empty when none was received.
+  bytes response_digest = 4 [(buf.validate.field).bytes = {
+    max_len: 32
+  }];
+  // Time spent dispatching, in milliseconds.
+  int32 dispatch_ms = 5 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 600000
+  }];
+}
+
+// RecordExecutionResponse returns the execution receipt.
+message RecordExecutionResponse {
+  // Signed execution receipt JWS.
+  string receipt = 1;
+}

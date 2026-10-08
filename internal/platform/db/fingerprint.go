@@ -34,5 +34,11 @@ func SchemaFingerprint() string {
 		h.Write([]byte{0})
 		h.Write(b)
 	}
+	goFP, err := migrations.Fingerprint()
+	if err != nil {
+		goFP = "unavailable:" + err.Error()
+	}
+	h.Write([]byte{0})
+	h.Write([]byte(goFP))
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

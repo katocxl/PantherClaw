@@ -36,9 +36,9 @@ func migrateFS(ctx context.Context, c Config, fsys fs.FS) ([]MigrationResult, er
 		return nil, err
 	}
 	defer func() { _ = sqlDB.Close() }()
-	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fsys)
+	p, err := newProvider(sqlDB, fsys)
 	if err != nil {
-		return nil, fmt.Errorf("db: migrations: %w", err)
+		return nil, err
 	}
 	res, err := p.Up(ctx)
 	if err != nil {
@@ -58,11 +58,25 @@ func MigrationVersion(ctx context.Context, c Config) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = sqlDB.Close() }()
-	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS)
+	p, err := newProvider(sqlDB, migrations.FS)
 	if err != nil {
-		return 0, fmt.Errorf("db: migrations: %w", err)
+		return 0, err
 	}
 	return p.GetDBVersion(ctx)
+}
+
+// newProvider combines the embedded SQL files with the Go-defined (River)
+// migrations into one goose history.
+func newProvider(sqlDB *sql.DB, fsys fs.FS) (*goose.Provider, error) {
+	gm, err := migrations.Go()
+	if err != nil {
+		return nil, fmt.Errorf("db: migrations: %w", err)
+	}
+	p, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fsys, goose.WithGoMigrations(gm...))
+	if err != nil {
+		return nil, fmt.Errorf("db: migrations: %w", err)
+	}
+	return p, nil
 }
 
 func openSQL(c Config) (*sql.DB, error) {

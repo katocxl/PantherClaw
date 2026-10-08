@@ -167,7 +167,8 @@ type ListerPurpose string
 
 // Lister purposes (extended by later migrations).
 const (
-	ListActiveOrgs ListerPurpose = "orgs"
+	ListActiveOrgs      ListerPurpose = "orgs"
+	ListLedgerUnchained ListerPurpose = "ledger_unchained" // orgs with entries above their chain watermark
 )
 
 // CrossOrgList calls the single audited cross-org lister (HR-053, HR-054).

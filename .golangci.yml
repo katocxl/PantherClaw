@@ -123,6 +123,7 @@ linters:
       locale: US
       ignore-rules:
         - licence # British spelling used in docs/product text
+        - licences
 
   exclusions:
     generated: lax
