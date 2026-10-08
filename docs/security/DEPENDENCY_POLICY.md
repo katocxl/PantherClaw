@@ -45,6 +45,7 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 
 Test-only: `github.com/testcontainers/testcontainers-go` (MIT), `github.com/peterldowns/pgtestdb` (MIT), `pgregory.net/rapid` (MPL-2.0, property tests).
 Dev tools (not shipped): golangci-lint (GPL-3.0, tool only), gofumpt, sqlc, buf, goose CLI, task, actionlint, govulncheck, osv-scanner, gitleaks, zizmor, Semgrep CE, goreleaser, syft, cosign, k6 (AGPL, tool only), schemathesis.
+Dev-tool pin exceptions in dependency review (`allow-dependencies-licenses`; these modules are dependencies of the buf and sqlc pins only, never linked into shipped artifacts): `github.com/opencontainers/go-digest` (Apache-2.0 AND CC-BY-SA-4.0 for docs), `github.com/opencontainers/image-spec` (Apache-2.0 AND MIT AND DCO-1.1), `github.com/segmentio/asm` (MIT-0), `github.com/fatih/structtag` (BSD-3-Clause AND CC-BY-3.0), `github.com/pganalyze/pg_query_go/v6` (BSD-3-Clause AND PostgreSQL).
 
 Adding a dependency: PR adds a row here (purpose, licence, maintenance status, alternatives considered, transitive count), passes dependency-review, and is called out in the G1 review.
 
