@@ -144,12 +144,12 @@ func TestT037_ServiceAccountIDOR(t *testing.T) {
 	}
 }
 
-// TestIntCredentialIssuanceCannotEscalate: a Security Admin
+// TestT037_CredentialIssuanceCannotEscalate: a Security Admin
 // (service_account.manage, no role.bind) cannot mint a key or an API key
 // that would let it act with permissions it lacks, such as an Org Admin
 // account's role.bind; it can for accounts and scopes within its own
 // permissions. An Org Admin (role.bind) can always issue.
-func TestIntCredentialIssuanceCannotEscalate(t *testing.T) {
+func TestT037_CredentialIssuanceCannotEscalate(t *testing.T) {
 	f := newFixture(t)
 	s := app.NewServiceAccounts(f.pool, credential.EnvTest)
 	a := app.NewAccess(f.pool, nil)
