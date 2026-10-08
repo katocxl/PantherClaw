@@ -3,8 +3,9 @@
 
 // Package admincli implements pclaw-admin, the offline tool for the
 // founder's root keys (HR-063): root key generation, licence signing and
-// licence verification. It has no network code and must only run on an
-// offline-capable machine; the root private keys never enter CI.
+// verification, and tool package targets signing and verification. It has
+// no network code and must only run on an offline-capable machine; the root
+// private keys never enter CI.
 package admincli
 
 import (
@@ -34,13 +35,17 @@ const (
 	exitUsage = 2
 )
 
-const usage = `pclaw-admin — offline root key and licence tool (keep this machine offline)
+const usage = `pclaw-admin — offline root key, licence and package signing tool (keep this machine offline)
 
 Usage:
   pclaw-admin keygen --purpose licence|packages --out-dir DIR [--passphrase-file FILE]
   pclaw-admin licence sign --key FILE [--passphrase-file FILE] --claims FILE --out FILE
   pclaw-admin licence verify --roots FILE --in FILE
+  pclaw-admin packages sign --key FILE [--passphrase-file FILE] --version N --expires-days D --out FILE PACKAGE.yaml...
+  pclaw-admin packages verify --roots FILE --targets FILE PACKAGE.yaml...
   pclaw-admin version
+
+Flags come before the package files.
 `
 
 // Run executes pclaw-admin with args (without the program name).
@@ -60,6 +65,10 @@ func Run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		err = sign(args[2:], stdout, stderr, now)
 	case args[0] == "licence" && len(args) > 1 && args[1] == "verify":
 		err = verify(args[2:], stdout, stderr, now)
+	case args[0] == "packages" && len(args) > 1 && args[1] == "sign":
+		err = signPackages(args[2:], stdout, stderr, now)
+	case args[0] == "packages" && len(args) > 1 && args[1] == "verify":
+		err = verifyPackages(args[2:], stdout, stderr, now)
 	default:
 		_, _ = fmt.Fprint(stderr, usage)
 		return exitUsage
@@ -91,6 +100,28 @@ func passphrase(path string) ([]byte, error) {
 		return nil, err
 	}
 	return s.Reveal(), nil
+}
+
+// loadSigner decodes a root private key and refuses a root of another
+// purpose.
+func loadSigner(keyFile, ppFile string, want rootkey.Purpose) (*jws.Signer, error) {
+	pp, err := passphrase(ppFile)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, err := os.ReadFile(keyFile) //nolint:gosec // G304: operator-chosen key path
+	if err != nil {
+		return nil, err
+	}
+	p, priv, err := rootkey.Decode(keyPEM, pp)
+	if err != nil {
+		return nil, err
+	}
+	if p != want {
+		return nil, fmt.Errorf("key %s is a %s root, not a %s root", keyFile, p, want)
+	}
+	pub, _ := priv.Public().(ed25519.PublicKey)
+	return jws.NewSigner(rootkey.KID(p, pub), priv)
 }
 
 func keygen(args []string, stdout, stderr io.Writer) error {
@@ -139,11 +170,11 @@ func keygen(args []string, stdout, stderr io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "Generated %s root key %s\n  private key: %s (%s)\n  public key:  %s\n\n", p, kid, privPath, encrypted, pubPath)
 	_, _ = fmt.Fprintf(stdout, "Next steps:\n  1. Copy the private key to a second offline medium. Never copy it to CI or a server.\n")
-	if p == rootkey.PurposeLicence {
-		_, _ = fmt.Fprintf(stdout, "  2. Add the key from %s to internal/billing/licence/roots.json and commit it.\n", pubPath)
-	} else {
-		_, _ = fmt.Fprintf(stdout, "  2. Commit the public key from %s as the package root (milestone M4).\n", pubPath)
+	roots := "internal/billing/licence/roots.json"
+	if p == rootkey.PurposePackages {
+		roots = "internal/definitions/trust/roots.json"
 	}
+	_, _ = fmt.Fprintf(stdout, "  2. Add the key from %s to %s and commit it.\n", pubPath, roots)
 	return nil
 }
 
@@ -172,20 +203,9 @@ func sign(args []string, stdout, stderr io.Writer, now func() time.Time) error {
 		fs.Usage()
 		return errUsage
 	}
-	pp, err := passphrase(*ppFile)
+	signer, err := loadSigner(*keyFile, *ppFile, rootkey.PurposeLicence)
 	if err != nil {
 		return err
-	}
-	keyPEM, err := os.ReadFile(*keyFile)
-	if err != nil {
-		return err
-	}
-	p, priv, err := rootkey.Decode(keyPEM, pp)
-	if err != nil {
-		return err
-	}
-	if p != rootkey.PurposeLicence {
-		return fmt.Errorf("key %s is a %s root, not a licence root", *keyFile, p)
 	}
 	raw, err := os.ReadFile(*claimsFile)
 	if err != nil {
@@ -202,11 +222,6 @@ func sign(args []string, stdout, stderr io.Writer, now func() time.Time) error {
 		Version: 1, LicenceID: in.LicenceID, Licensee: in.Licensee, CustomerID: in.CustomerID,
 		Edition: in.Edition, MaxAgents: in.MaxAgents, MaxOrgs: in.MaxOrgs,
 		IssuedAt: now().UTC().Truncate(time.Second), NotBefore: in.NotBefore.UTC(), ExpiresAt: in.ExpiresAt.UTC(),
-	}
-	pub, _ := priv.Public().(ed25519.PublicKey)
-	signer, err := jws.NewSigner(rootkey.KID(p, pub), priv)
-	if err != nil {
-		return err
 	}
 	doc, err := licence.Sign(c, signer)
 	if err != nil {
