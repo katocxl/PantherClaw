@@ -26,5 +26,10 @@
     "gateway_id": "gw-dev-1",
     "org": "",
     "token_file": "deploy/dev/secrets/gateway.token"
+  },
+  "auth": {
+    "public_url": "http://127.0.0.1:8080",
+    "api_key_env": "dev",
+    "oidc_providers": []
   }
 }
