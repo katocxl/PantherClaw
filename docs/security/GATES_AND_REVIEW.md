@@ -55,6 +55,7 @@ Material changes to security-critical code after a G1 approval invalidate that a
 |---|---|---|---|---|---|---|
 | **EX-001** | No independent human reviewer (SG12 independence; repo rulesets use 0 required approvals + admin bypass) | All PRs and releases | Founder | Two AI reviewers from different vendors; mandatory CI incl. invariant/adversarial suites; ≥ 1 h cooling-off before self-review; G0 briefs written before code; signed, attested releases; all findings tracked | Every 90 days (next: 2027-01-08) | When a second engineer joins |
 | EX-002 | Local commits unsigned until founder configures an SSH agent | Local branches | Founder | `main` only receives GitHub-signed squash merges via PR; rulesets require signed commits on `main` | 30 days | Founder adds signing key + agent |
+| EX-003 | Go 1.27.2 adopted inside the 7-day cooldown (DEPENDENCY_POLICY §1.3) to fix GO-2026-6617 / CVE-2026-97032, a remotely triggerable HTTP/2 server crash reachable from the server, gateway and `pclaw` (founder decision 2026-10-09) | Go toolchain only (`go.mod` toolchain lines, Linux test image) | Founder | Official Go security release; toolchain checksums verified through the Go checksum database; image pinned by digest; full CI on the change | — | Lapses on 2026-10-15, when 1.27.2 leaves the cooldown |
 
 Exceptions never override product invariants or turn missing evidence into completed controls.
 
