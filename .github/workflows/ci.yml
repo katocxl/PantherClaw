@@ -88,6 +88,10 @@ jobs:
       - name: Verify modules
         run: |
           for m in . sdk/go tools; do (cd "$m" && go mod verify && go mod tidy -diff); done
+      - name: Traceability (every HR/T due by the last completed milestone has a test)
+        run: $TASK trace
+      - name: Generated code is up to date (buf, sqlc)
+        run: $TASK gen:check
       - name: Format
         run: $TASK fmt:check
       - name: Licence headers
@@ -279,7 +283,17 @@ jobs:
           # rivershared is MPL-2.0 with an MIT-licensed levenshtein subpackage; the
           # scanner reports the pair as LicenseRef-bad-mit-mpl-2.0. Both licences
           # are allowed (DEPENDENCY_POLICY section 1).
-          allow-dependencies-licenses: pkg:golang/github.com/riverqueue/river/rivershared
+          # The others are dependencies of the buf and sqlc dev-tool pins only,
+          # never linked into shipped artifacts; their extra licences cover
+          # documentation (CC-BY), the DCO, MIT-0 and the PostgreSQL licence
+          # (DEPENDENCY_POLICY, dev tools).
+          allow-dependencies-licenses: >-
+            pkg:golang/github.com/riverqueue/river/rivershared,
+            pkg:golang/github.com/opencontainers/go-digest,
+            pkg:golang/github.com/opencontainers/image-spec,
+            pkg:golang/github.com/segmentio/asm,
+            pkg:golang/github.com/fatih/structtag,
+            pkg:golang/github.com/pganalyze/pg_query_go/v6
 
   workflows:
     name: security / workflows (zizmor)

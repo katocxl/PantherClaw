@@ -93,6 +93,27 @@ tasks:
         -w /src {{.GOLANG_IMAGE}}
         sh -c "go test -race -shuffle=on -count=1 ./... && go -C sdk/go test -race -count=1 ./... && go -C tools test -race -count=1 ./..."
 
+  gen:
+    desc: Regenerate committed code (buf protos, sqlc queries) and add licence headers
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go tool -modfile={{.PINS}}/buf/go.mod buf lint
+      - go tool -modfile={{.PINS}}/buf/go.mod buf generate
+      - go tool -modfile={{.PINS}}/sqlc/go.mod sqlc generate
+      - go -C tools run ./licensecheck -root .. -fix
+
+  gen:check:
+    desc: Fail if generated code is out of date
+    cmds:
+      - task: gen
+      - git diff --exit-code -- internal/gen
+
+  trace:
+    desc: Fail if a hardening rule or threat due by MILESTONE has no test (default M1)
+    cmds:
+      - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M1"}}
+
   license:check:
     desc: Verify SPDX + copyright headers on every source file
     cmds:
