@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# gitleaks configuration: the default rules plus one path allowlist.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Local, git-ignored compose secrets. Never committed: `task secrets` fails if any .env file other than .env.example is tracked."
+paths = ['''^deploy/compose/\.env$''']

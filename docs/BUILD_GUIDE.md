@@ -151,6 +151,7 @@ Rules: tests first for security behavior; no sleeps (use clocks/conditions); no 
 | `task lint:workflows` | actionlint over `.github/workflows` |
 | `task fmt` / `task lint` / `task test` | individual steps |
 | `task test:linux` | race + integration tests inside a Linux container |
+| `task test:integration` | database integration tests (`-tags integration`) against the throwaway cluster started by `task up PROFILE=test` (127.0.0.1:5433, tmpfs); tests connect as `pc_app` |
 | `task gen` | buf generate + sqlc generate (M1+) |
 | `task license:check` / `task license:fix` | SPDX/copyright headers |
 | `task build` | build all binaries into `bin/` |
