@@ -238,3 +238,7 @@ func (c *Config) validateAuth() []error {
 	}
 	return errs
 }
+
+// oauthRateLimit bounds requests per client IP per minute to the
+// unauthenticated OAuth endpoints (SB-2 brute-force limits).
+const oauthRateLimit = 120

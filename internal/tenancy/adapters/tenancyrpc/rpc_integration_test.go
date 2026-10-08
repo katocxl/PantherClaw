@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
@@ -27,6 +28,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
+	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
@@ -35,6 +37,8 @@ import (
 	"github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
+
+const issuer = "https://pc.example.test"
 
 type business struct{}
 
@@ -63,7 +67,7 @@ func newStack(t *testing.T) *stack {
 			t.Fatal(err)
 		}
 	}
-	tokens, err := token.New(reg, "https://pc.example.test", token.Audience)
+	tokens, err := token.New(reg, issuer, token.Audience)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +89,10 @@ func newStack(t *testing.T) *stack {
 	}
 	pantherclawv1connect.RegisterTenancyServiceHandler(s, tenancyrpc.NewTenancy(app.NewHierarchy(pool, business{})))
 	pantherclawv1connect.RegisterAccessServiceHandler(s, tenancyrpc.NewAccess(app.NewAccess(pool, nil)))
+	pantherclawv1connect.RegisterServiceAccountServiceHandler(s, tenancyrpc.NewServiceAccounts(app.NewServiceAccounts(pool, credential.EnvTest)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, s)
+	oauthhttp.New(authnapp.NewOAuth(pool, tokens, issuer, clock.System{}, nil), issuer, httpx.NewLimiter(1000, time.Minute, nil)).Mount(mux)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return &stack{pool: pool, tokens: tokens, url: ts.URL}
@@ -247,4 +253,9 @@ func TestIntRPCTenancyAndAccess(t *testing.T) {
 	}
 	_, err = vten.GetTeam(ctx, &pantherclawv1.GetTeamRequest{Id: teamID})
 	wantCode(t, "disabled viewer", err, connect.CodeUnauthenticated)
+}
+
+func (s *stack) saClient(tok string) pantherclawv1connect.ServiceAccountServiceClient {
+	tr := connecthttp.NewTransport(&http.Client{Transport: bearer{tok}}, s.url)
+	return pantherclawv1connect.NewServiceAccountServiceClient(connect.NewClient(tr))
 }

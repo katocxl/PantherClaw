@@ -24,6 +24,7 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
@@ -183,7 +184,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		}
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
-			auth: rpcauth.New(authn, procedurePermissions, gw),
+			auth:      rpcauth.New(authn, procedurePermissions, gw),
+			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
+			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
+				cfg.Auth.PublicURL, httpx.NewLimiter(oauthRateLimit, time.Minute, nil)),
 		})
 		if err != nil {
 			return err
@@ -287,6 +291,8 @@ type apiDeps struct {
 	authority *authority.Service
 	billing   *billing.Service
 	auth      rpc.Authenticator
+	apiKeyEnv credential.Env
+	oauth     *oauthhttp.Handler
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -304,8 +310,10 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(d.authority))
 	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
 	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
+	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
+	d.oauth.Mount(mux)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
