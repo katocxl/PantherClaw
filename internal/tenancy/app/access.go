@@ -199,7 +199,7 @@ func (a *Access) WhoAmI(ctx context.Context) (Identity, error) {
 				return err
 			}
 		case td.KindServiceAccount:
-			sa, err := q.ShareServiceAccount(ctx, c.Org, c.Principal.ID)
+			sa, err := q.GetServiceAccount(ctx, c.Org, c.Principal.ID)
 			if err != nil {
 				return notFound(err, ErrServiceAccountNotFound)
 			}

@@ -88,3 +88,10 @@ SELECT * FROM pc.role_bindings WHERE org_id = sqlc.arg(org_id) AND user_id = sql
 -- name: BindingsOfServiceAccount :many
 SELECT * FROM pc.role_bindings
 WHERE org_id = sqlc.arg(org_id) AND service_account_id = sqlc.arg(service_account_id) ORDER BY id LIMIT 500;
+
+-- name: RevokeBootstrapInvitations :execrows
+UPDATE pc.invitations SET state = 'REVOKED', revoked_at = now()
+WHERE org_id = sqlc.arg(org_id) AND kind = 'BOOTSTRAP' AND state = 'PENDING';
+
+-- name: InsertOrg :exec
+INSERT INTO pc.orgs (id, name) VALUES (sqlc.arg(org_id), sqlc.arg(name));
