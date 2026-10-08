@@ -6,7 +6,7 @@
 2. **Pinned and verified.** Lockfiles are committed; installs are reproducible and verified against checksums.
 3. **Cooldown.** New upstream releases are not adopted for 7 days (malicious releases are usually caught within that window). Security fixes for actively exploited vulnerabilities may skip the cooldown with a recorded reason.
 4. **Reachability-aware.** Go vulnerabilities are judged by `govulncheck` call-graph reachability; unreachable findings are tracked, not ignored.
-5. **No copyleft in shipped artifacts.** Allowed licences for code linked into released binaries/SDKs: Apache-2.0, MIT, BSD-2/3-Clause, ISC, MPL-2.0 (file-level, unmodified), Unicode-DFS, CC0, 0BSD. Disallowed: GPL/AGPL/LGPL (except standalone dev tools never shipped, e.g. golangci-lint, k6), SSPL, BSL/FSL from others, unknown.
+5. **No copyleft in shipped artifacts.** Allowed licences for code linked into released binaries/SDKs: Apache-2.0, MIT, BSD-2/3-Clause, ISC, MPL-2.0 (file-level, unmodified), Unicode-DFS, CC0, 0BSD, and the Go project's additional patent grant (`PATENTS` file in `golang.org/x/*`, reported by scanners as `LicenseRef-scancode-google-patent-license-golang`). Disallowed: GPL/AGPL/LGPL (except standalone dev tools never shipped, e.g. golangci-lint, k6), SSPL, BSL/FSL from others, unknown.
 
 ## 2. Sources
 
@@ -29,10 +29,10 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 | `github.com/jackc/pgx/v5` | PostgreSQL driver + pool | MIT | De-facto standard; needed for COPY-free, typed, context-aware access |
 | `github.com/pressly/goose/v3` | Migrations | MIT | Embedded SQL migrations, simple, no DSL |
 | `github.com/riverqueue/river` (+ `riverpgxv5`) | Postgres job queue / outbox | MPL-2.0 | Transactional enqueue (InsertTx) |
-| `connectrpc.com/connect/v2` (+ `otelconnect`, `grpchealth`, `validate`) | RPC framework | Apache-2.0 | One handler for gRPC/Connect JSON |
+| `connectrpc.com/connect/v2` (+ `otelconnect`, `grpchealth`, `validate`) | RPC framework | Apache-2.0 | One handler for gRPC/Connect JSON. Pinned to `v2.0.0-rc.1` until `v2.0.0` (2026-10-07) clears the 7-day cooldown (founder decision 2026-10-08). `otelconnect`, `grpchealth` and `validate` are not used yet: the OTel and protovalidate interceptors are in `platform/rpc` and health uses plain HTTP endpoints |
 | `buf.build/go/protovalidate` | Contract validation (CEL) | Apache-2.0 | Declarative input validation |
 | `google.golang.org/protobuf` | Protobuf runtime | BSD-3 | Required by Connect |
-| `github.com/google/cel-go` | Policy/detection expressions | Apache-2.0 | Safe, typed, cost-bounded expressions |
+| `cel.dev/cel-go` (formerly `github.com/google/cel-go`) | Policy/detection expressions | Apache-2.0 | Safe, typed, cost-bounded expressions. Now published under `cel.dev`; first pulled in by protovalidate v1.4.0 |
 | `github.com/go-jose/go-jose/v4` (≥ 4.1.5) | JWS/JWT/JWK, thumbprints | Apache-2.0 | Algorithm allowlists; RFC 7638 |
 | `github.com/coreos/go-oidc/v3` | OIDC relying party | Apache-2.0 | ID token verification, discovery |
 | `golang.org/x/oauth2` | OAuth2 flows | BSD-3 | Auth code, device flow |
@@ -45,6 +45,7 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 
 Test-only: `github.com/testcontainers/testcontainers-go` (MIT), `github.com/peterldowns/pgtestdb` (MIT), `pgregory.net/rapid` (MPL-2.0, property tests).
 Dev tools (not shipped): golangci-lint (GPL-3.0, tool only), gofumpt, sqlc, buf, goose CLI, task, actionlint, govulncheck, osv-scanner, gitleaks, zizmor, Semgrep CE, goreleaser, syft, cosign, k6 (AGPL, tool only), schemathesis.
+Dev-tool pin exceptions in dependency review (`allow-dependencies-licenses`; these modules are dependencies of the buf and sqlc pins only, never linked into shipped artifacts): `github.com/opencontainers/go-digest` (Apache-2.0 AND CC-BY-SA-4.0 for docs), `github.com/opencontainers/image-spec` (Apache-2.0 AND MIT AND DCO-1.1), `github.com/segmentio/asm` (MIT-0), `github.com/fatih/structtag` (BSD-3-Clause AND CC-BY-3.0), `github.com/pganalyze/pg_query_go/v6` (BSD-3-Clause AND PostgreSQL).
 
 Adding a dependency: PR adds a row here (purpose, licence, maintenance status, alternatives considered, transitive count), passes dependency-review, and is called out in the G1 review.
 

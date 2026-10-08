@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+
+// SystemService exposes non-sensitive information about the running server.
+service SystemService {
+  // GetBuildInfo returns the server's build identity.
+  // permission: public
+  rpc GetBuildInfo(GetBuildInfoRequest) returns (GetBuildInfoResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// GetBuildInfoRequest asks for the build identity.
+message GetBuildInfoRequest {
+  // Optional caller-chosen id echoed back for correlation.
+  string client_request_id = 1 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9._-]*$"
+  }];
+}
+
+// GetBuildInfoResponse is the build identity of the server.
+message GetBuildInfoResponse {
+  // Release version, for example "v0.0.1", or "dev".
+  string version = 1;
+  // Source commit the binary was built from (may be empty).
+  string commit = 2;
+  // Whether the binary runs in FIPS 140-3 mode.
+  bool fips = 3;
+  // Echo of GetBuildInfoRequest.client_request_id.
+  string client_request_id = 4;
+}
