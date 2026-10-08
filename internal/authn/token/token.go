@@ -180,3 +180,7 @@ func parseV7(s string) (ids.UUID, error) {
 	id, err := ids.Parse[anyID](s)
 	return id.UUID(), err
 }
+
+// Audience is the aud of every PantherClaw access token: the control-plane
+// API.
+const Audience = "pantherclaw-api"

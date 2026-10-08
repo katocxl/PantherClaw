@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -39,6 +42,7 @@ type Config struct {
 	WorkerConcurrency int              `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
 	Authority         AuthorityConfig  `json:"authority"`
 	DevGateway        DevGatewayConfig `json:"dev_gateway"`
+	Auth              AuthConfig       `json:"auth"`
 }
 
 // LogConfig configures logging.
@@ -90,6 +94,7 @@ func DefaultConfig() Config {
 			PermitTTL: config.Duration(5 * time.Second), StaleDispatch: config.Duration(30 * time.Second),
 		},
 		DevGateway: DevGatewayConfig{ID: "gw-dev-1"},
+		Auth:       AuthConfig{PublicURL: "http://127.0.0.1:8080", APIKeyEnv: string(credential.EnvLive)},
 	}
 }
 
@@ -118,6 +123,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("worker_concurrency must be 1..1000"))
 	}
 	errs = append(errs, c.validateAuthority()...)
+	errs = append(errs, c.validateAuth()...)
 	return errors.Join(errs...)
 }
 
@@ -201,4 +207,34 @@ func loopback(addr string) bool {
 	}
 	a, err := netip.ParseAddr(host)
 	return err == nil && a.IsLoopback()
+}
+
+// AuthConfig configures control-plane authentication (ADR-0016).
+type AuthConfig struct {
+	// PublicURL is the server's external base URL. It is the access-token
+	// issuer and the base of the OAuth and device-login endpoints. HTTPS is
+	// required unless the host is loopback.
+	PublicURL string `json:"public_url" env:"PC_AUTH_PUBLIC_URL"`
+	// APIKeyEnv is the pck_ key environment this deployment accepts and
+	// mints: dev, test or live.
+	APIKeyEnv string `json:"api_key_env" env:"PC_AUTH_API_KEY_ENV"`
+}
+
+func (c *Config) validateAuth() []error {
+	var errs []error
+	u, err := url.Parse(c.Auth.PublicURL)
+	switch {
+	case err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || strings.HasSuffix(c.Auth.PublicURL, "/"):
+		errs = append(errs, errors.New("auth.public_url must be an absolute URL without path, query or trailing slash, for example https://pantherclaw.example.com"))
+	case u.Scheme == "https":
+	case u.Scheme == "http" && loopback(u.Host):
+	case u.Scheme == "http" && u.Port() == "" && loopback(u.Host+":80"):
+	default:
+		errs = append(errs, errors.New("auth.public_url must use https unless the host is loopback"))
+	}
+	if !credential.Env(c.Auth.APIKeyEnv).Valid() {
+		errs = append(errs, errors.New("auth.api_key_env must be dev, test or live"))
+	}
+	return errs
 }

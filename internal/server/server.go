@@ -24,6 +24,10 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
+	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
+	"github.com/katocxl/pantherclaw/internal/authn/credential"
+	"github.com/katocxl/pantherclaw/internal/authn/token"
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/billing"
 	"github.com/katocxl/pantherclaw/internal/billing/licence"
@@ -158,15 +162,23 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
-		auth, err := devGatewayAuth(cfg)
+		gw, err := devGatewayAuth(cfg)
 		if err != nil {
 			return err
 		}
-		if auth != nil {
+		if gw != nil {
 			log.WarnContext(ctx, "server.dev_gateway_enabled", slog.String("gateway_id", cfg.DevGateway.ID),
 				slog.String("org", cfg.DevGateway.Org), slog.String("note", "development only; not for production"))
 		}
-		handler, err := apiHandler(pool, reg, log, svc, auth)
+		tokens, err := token.New(reg, cfg.Auth.PublicURL, token.Audience)
+		if err != nil {
+			return err
+		}
+		authn, err := authnapp.NewAuthenticator(pool, tokens, credential.Env(cfg.Auth.APIKeyEnv), clock.System{}, log)
+		if err != nil {
+			return err
+		}
+		handler, err := apiHandler(pool, reg, log, svc, rpcauth.New(authn, procedurePermissions, gw))
 		if err != nil {
 			return err
 		}
@@ -253,13 +265,19 @@ func listen(ctx context.Context, cfg *Config, handler http.Handler, log *slog.Lo
 	return srv, ln, nil
 }
 
+// publicProcedures run without authentication; each is declared
+// "permission: public" in its proto (tested).
+func publicProcedures() []string {
+	return []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure}
+}
+
 // apiHandler mounts the RPC services, health endpoints and the JWKS. auth
-// is nil unless the development gateway is enabled; AuthorityService then
-// refuses every call.
+// authenticates users, service accounts and API keys, and delegates
+// AuthorityService to the development gateway (refused when it is off).
 func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *authority.Service, auth rpc.Authenticator) (http.Handler, error) {
 	rs, err := rpc.NewServer(rpc.Options{
 		Logger:       log,
-		Public:       []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure},
+		Public:       publicProcedures(),
 		Authenticate: auth,
 	})
 	if err != nil {
