@@ -309,12 +309,44 @@ func TestHR053_EveryTenantTableIsIsolated(t *testing.T) {
 				strings.Count(policies[0], policyExpr) != 2 {
 				t.Errorf("policies = %q, want one USING + WITH CHECK on %s with the standard expression (HR-052)", policies, keyCol)
 			}
+		})
+	}
+	checkSecurityDefinersAndViews(ctx, t, p)
+}
+
+// TestHR050_TenantKeysAndForeignKeysLeadWithOrgID checks, from the catalog,
+// that every unique index (including primary keys) and every foreign key of
+// every tenant table starts with org_id, so uniqueness and references are
+// always scoped to one tenant (no cross-tenant existence oracles).
+func TestHR050_TenantKeysAndForeignKeysLeadWithOrgID(t *testing.T) {
+	d := dbtest.New(t)
+	p := d.Pool(t, d.Migrator)
+	ctx := context.Background()
+	rows, err := p.Pgx().Query(ctx, `
+		SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'pc' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if slices.Contains(globalTables, name) || strings.HasPrefix(name, "river_") {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			keyCol := "org_id"
+			if name == "orgs" {
+				keyCol = "id"
+			}
 			// Every unique index (incl. the primary key) starts with the tenant column (HR-050).
 			urows, err := p.Pgx().Query(ctx, `
 				SELECT i.indexrelid::regclass::text, a.attname
 				FROM pg_index i
 				JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
-				WHERE i.indrelid = ('pc.' || quote_ident($1))::regclass AND i.indisunique`, tb.name)
+				WHERE i.indrelid = ('pc.' || quote_ident($1))::regclass AND i.indisunique`, name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -337,7 +369,7 @@ func TestHR053_EveryTenantTableIsIsolated(t *testing.T) {
 				SELECT con.conname, a.attname
 				FROM pg_constraint con
 				JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = con.conkey[1]
-				WHERE con.conrelid = ('pc.' || quote_ident($1))::regclass AND con.contype = 'f'`, tb.name)
+				WHERE con.conrelid = ('pc.' || quote_ident($1))::regclass AND con.contype = 'f'`, name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -356,7 +388,12 @@ func TestHR053_EveryTenantTableIsIsolated(t *testing.T) {
 			}
 		})
 	}
-	// Exactly one SECURITY DEFINER function exists, and views are security_invoker.
+}
+
+// checkSecurityDefinersAndViews: exactly one SECURITY DEFINER function
+// exists, and every view is security_invoker (HR-053).
+func checkSecurityDefinersAndViews(ctx context.Context, t *testing.T, p *db.Pool) {
+	t.Helper()
 	var definers []string
 	drows, err := p.Pgx().Query(ctx, `SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 		WHERE n.nspname = 'pc' AND p.prosecdef ORDER BY 1`)

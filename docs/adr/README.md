@@ -18,3 +18,4 @@ Format: Context → Decision → Consequences → Alternatives considered. Statu
 | [0012](0012-crypto-and-keys.md) | Standard-library cryptography and KeyProvider |
 | [0013](0013-pap1-workload-identity.md) | PAP/1 workload identity with DPoP-style proofs |
 | [0014](0014-permits-and-dispatch-commit.md) | Dispatch permits with a server-side commit point |
+| [0015](0015-budget-settlement-off-the-hot-row.md) | Keep budget settlement off the hot row (**Proposed**, M1.5) |

@@ -5,9 +5,11 @@ package ids
 
 import (
 	"crypto/rand"
+	"database/sql/driver"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -85,6 +87,42 @@ func (u UUID) Version() int { return int(u[6] >> 4) }
 
 // rfcVariant reports whether u uses the RFC 9562 variant.
 func (u UUID) rfcVariant() bool { return u[8]&0xc0 == 0x80 }
+
+// Value implements driver.Valuer (uuid columns). The nil UUID is stored as
+// SQL NULL, like the zero typed ID.
+func (u UUID) Value() (driver.Value, error) {
+	if u.IsZero() {
+		return nil, nil
+	}
+	return u.String(), nil
+}
+
+// Scan implements sql.Scanner for uuid columns.
+func (u *UUID) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*u = UUID{}
+		return nil
+	case string:
+		p, err := ParseUUID(v)
+		if err != nil {
+			return err
+		}
+		*u = p
+		return nil
+	case []byte:
+		if len(v) == 16 {
+			*u = UUID(v)
+			return nil
+		}
+		return u.Scan(string(v))
+	case [16]byte:
+		*u = UUID(v)
+		return nil
+	default:
+		return fmt.Errorf("%w: cannot scan %T", ErrInvalidUUID, src)
+	}
+}
 
 // Time returns the timestamp embedded in a version 7 UUID.
 func (u UUID) Time() time.Time {
