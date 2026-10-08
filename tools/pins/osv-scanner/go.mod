@@ -2,7 +2,7 @@ module github.com/katocxl/pantherclaw/tools/pins/osv-scanner
 
 go 1.27.0
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 tool github.com/google/osv-scanner/v2/cmd/osv-scanner
 

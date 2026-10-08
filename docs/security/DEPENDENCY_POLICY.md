@@ -69,7 +69,7 @@ Unreachable vulnerabilities: tracked, fixed at next routine update. Released ver
 
 ## 6. Build integrity
 
-- Builds are reproducible from a tag: `-trimpath`, `-buildvcs=true`, pinned toolchain (`toolchain go1.27.1`), `CGO_ENABLED=0` for release binaries.
+- Builds are reproducible from a tag: `-trimpath`, `-buildvcs=true`, pinned toolchain (`toolchain go1.27.2`), `CGO_ENABLED=0` for release binaries.
 - Release artifacts: SBOM (SPDX + CycloneDX via syft), GitHub artifact attestations (build provenance) for binaries, checksums, SBOMs and images; container images also signed with cosign (keyless, Sigstore bundle).
 - Publishing uses OIDC trusted publishing (PyPI, npm) bound to the protected `release` environment; no long-lived registry tokens exist.
 - Users verify with `gh attestation verify` / `cosign verify`; `pclaw` self-update verifies attestations before replacing itself.
