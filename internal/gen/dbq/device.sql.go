@@ -176,7 +176,7 @@ INSERT INTO pc.device_codes (org_id, id, code_hash, user_code, device_jkt, devic
 VALUES ($1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10,
         now() + make_interval(secs => $11::int))
-ON CONFLICT DO NOTHING
+ON CONFLICT (org_id, user_code) WHERE state IN ('PENDING', 'AUTHORIZING') DO NOTHING
 RETURNING created_at, expires_at
 `
 
@@ -209,6 +209,7 @@ type InsertDeviceCodeRow struct {
 // reads them.
 // A user-code collision among open codes must not abort the transaction:
 // skip the row (no RETURNING row) and let the caller draw another code.
+// Only the open-user-code index is an arbiter: any other conflict is an error.
 func (q *Queries) InsertDeviceCode(ctx context.Context, arg InsertDeviceCodeParams) (InsertDeviceCodeRow, error) {
 	row := q.db.QueryRow(ctx, insertDeviceCode,
 		arg.OrgID,
