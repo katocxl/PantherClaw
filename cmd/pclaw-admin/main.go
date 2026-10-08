@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-// Command pclaw-admin: offline root key generation and licence signing.
+// Command pclaw-admin: offline root key generation, licence signing and
+// tool package signing.
 // Run it only on an offline-capable machine (HR-063).
 package main
 
