@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	billing "github.com/katocxl/pantherclaw/internal/billing/domain"
+	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
@@ -118,3 +119,5 @@ func (f *fixture) auditCount(t *testing.T, org ids.OrgID, name string) int {
 	}
 	return n
 }
+
+func dbqNew(tx db.TenantTx) *dbq.Queries { return dbq.New(tx) }
