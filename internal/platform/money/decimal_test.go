@@ -5,6 +5,7 @@ package money
 
 import (
 	"errors"
+	"math"
 	"math/big"
 	"testing"
 
@@ -20,6 +21,8 @@ func TestParseAccepts(t *testing.T) {
 		"100":                         "100",
 		"999999999999999999.99999999": "999999999999999999.99999999",
 		"0.00000001":                  "0.00000001",
+		"-0":                          "0",
+		"-0.00":                       "0",
 	} {
 		d, err := Parse(in)
 		if err != nil {
@@ -33,7 +36,7 @@ func TestParseAccepts(t *testing.T) {
 
 func TestHR101_ParseRejectsNonCanonicalAmounts(t *testing.T) {
 	for _, in := range []string{
-		"", "-", ".", "1.", ".5", "+1", "01", "00", "-0", "-0.00", "1e3", "1E3", " 1", "1 ",
+		"", "-", ".", "1.", ".5", "+1", "01", "00", "-00", "-01", "1e3", "1E3", " 1", "1 ",
 		"1,000", "1_000", "0x10", "NaN", "Inf", "-Inf", "١٢", // Arabic-Indic digits
 		"1.000000001",         // 9 fraction digits
 		"1000000000000000000", // 19 integer digits
@@ -82,6 +85,25 @@ func TestOverflowIsAnError(t *testing.T) {
 	}
 	if _, err := largest.MulInt(2); !errors.Is(err, ErrOverflow) {
 		t.Fatalf("max × 2 err = %v, want ErrOverflow", err)
+	}
+}
+
+func TestFromIntRange(t *testing.T) {
+	d, err := FromInt(-42)
+	if err != nil || d.String() != "-42" {
+		t.Fatalf("FromInt(-42) = %v, %v", d, err)
+	}
+	if d, err := FromInt(999_999_999_999_999_999); err != nil || d.String() != "999999999999999999" {
+		t.Fatalf("FromInt(18 nines) = %v, %v", d, err)
+	}
+	for _, n := range []int64{math.MaxInt64, math.MinInt64, 1_000_000_000_000_000_000} {
+		if _, err := FromInt(n); !errors.Is(err, ErrOverflow) {
+			t.Errorf("FromInt(%d) err = %v, want ErrOverflow", n, err)
+		}
+	}
+	var s Decimal
+	if err := s.Scan(int64(math.MaxInt64)); !errors.Is(err, ErrOverflow) {
+		t.Errorf("Scan(MaxInt64) err = %v, want ErrOverflow", err)
 	}
 }
 
@@ -146,7 +168,7 @@ func genDecimal() *rapid.Generator[Decimal] {
 		}
 		d, err := Parse(s)
 		if err != nil {
-			// "-0.000" style strings are rejected by design; use zero instead.
+			// Unreachable for generated strings; keep the generator total.
 			return Decimal{}
 		}
 		return d

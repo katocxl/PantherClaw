@@ -44,9 +44,10 @@ type Decimal struct {
 	units *big.Int // value × 10^MaxScale; nil means zero
 }
 
-// Parse parses a decimal string in the PAP/1 amount grammar. Leading zeros,
-// a leading '+', exponents, whitespace, "-0" and more than 8 fraction digits
-// are rejected so that each value has a small set of accepted spellings.
+// Parse parses a decimal string in the PAP/1 amount grammar
+// ^-?(0|[1-9][0-9]{0,17})(\.[0-9]{1,8})?$ exactly. Leading zeros, a leading
+// '+', exponents, whitespace and more than 8 fraction digits are rejected.
+// "-0" is accepted (the grammar allows it) and equals zero.
 func Parse(s string) (Decimal, error) {
 	if len(s) == 0 || len(s) > 1+MaxIntDigits+1+MaxScale {
 		return Decimal{}, invalid(s)
@@ -71,9 +72,7 @@ func Parse(s string) (Decimal, error) {
 		return Decimal{}, invalid(s)
 	}
 	if neg {
-		if units.Sign() == 0 {
-			return Decimal{}, invalid(s) // "-0" and "-0.00" are not canonical
-		}
+		// "-0" and "-0.00" match the PAP/1 grammar; they denote zero.
 		units.Neg(units)
 	}
 	return fromUnits(units), nil
@@ -89,9 +88,10 @@ func MustParse(s string) Decimal {
 	return d
 }
 
-// FromInt returns the decimal value of n.
-func FromInt(n int64) Decimal {
-	return fromUnits(new(big.Int).Mul(big.NewInt(n), scaleFactor))
+// FromInt returns the decimal value of n, or ErrOverflow when n has more than
+// 18 digits.
+func FromInt(n int64) (Decimal, error) {
+	return checked(new(big.Int).Mul(big.NewInt(n), scaleFactor))
 }
 
 func fromUnits(u *big.Int) Decimal {
@@ -234,7 +234,11 @@ func (d *Decimal) Scan(src any) error {
 	case []byte:
 		s = string(v)
 	case int64:
-		*d = FromInt(v)
+		v2, err := FromInt(v)
+		if err != nil {
+			return err
+		}
+		*d = v2
 		return nil
 	default:
 		return fmt.Errorf("%w: cannot scan %T", ErrInvalidDecimal, src)
