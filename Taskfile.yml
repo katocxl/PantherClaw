@@ -94,10 +94,12 @@ tasks:
         sh -c "go test -race -shuffle=on -count=1 ./... && go -C sdk/go test -race -count=1 ./... && go -C tools test -race -count=1 ./..."
 
   gen:
-    desc: Regenerate committed code (sqlc queries; buf protos from M1 RPC) and add licence headers
+    desc: Regenerate committed code (buf protos, sqlc queries) and add licence headers
     env:
       CGO_ENABLED: "0"
     cmds:
+      - go tool -modfile={{.PINS}}/buf/go.mod buf lint
+      - go tool -modfile={{.PINS}}/buf/go.mod buf generate
       - go tool -modfile={{.PINS}}/sqlc/go.mod sqlc generate
       - go -C tools run ./licensecheck -root .. -fix
 
