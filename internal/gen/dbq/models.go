@@ -15,6 +15,29 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
 
+type PcApiKey struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	ServiceAccountID ids.UUID
+	Name             string
+	SecretHash       []byte
+	Hint             string
+	Scopes           []string
+	State            string
+	CreatedBy        string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	RevokedAt        *time.Time
+	LastUsedAt       *time.Time
+}
+
+type PcAuthReplay struct {
+	OrgID     ids.OrgID
+	Issuer    string
+	Jti       string
+	ExpiresAt time.Time
+}
+
 type PcBudget struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -37,6 +60,35 @@ type PcBudgetLedger struct {
 	Kind          string
 	Amount        money.Decimal
 	CreatedAt     time.Time
+}
+
+type PcBusinessUnit struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	Slug        string
+	Name        string
+	Description string
+	State       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type PcCliSession struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	UserID          ids.UUID
+	DeviceJkt       string
+	DeviceJwk       []byte
+	DeviceName      string
+	RefreshHash     []byte
+	PrevRefreshHash []byte
+	Generation      int32
+	State           string
+	RevokeReason    *string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	RefreshedAt     *time.Time
+	RevokedAt       *time.Time
 }
 
 type PcCrossOrgListAudit struct {
@@ -65,6 +117,45 @@ type PcDek struct {
 	CreatedAt  time.Time
 }
 
+type PcDeviceCode struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	CodeHash       []byte
+	UserCode       string
+	DeviceJkt      string
+	DeviceJwk      []byte
+	DeviceName     string
+	RequestedIp    string
+	InvitationID   *ids.UUID
+	Provider       *string
+	State          string
+	OauthStateHash []byte
+	BindingHash    []byte
+	Nonce          *string
+	PkceVerifier   *string
+	Attempts       int32
+	UserID         *ids.UUID
+	DenyReason     *string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	LastPolledAt   *time.Time
+	ApprovedAt     *time.Time
+	ConsumedAt     *time.Time
+}
+
+type PcEnvironment struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	TeamID      *ids.UUID
+	Slug        string
+	Name        string
+	Description string
+	Kind        string
+	State       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type PcExecutionAttempt struct {
 	OrgID          ids.OrgID
 	ID             ids.UUID
@@ -75,6 +166,22 @@ type PcExecutionAttempt struct {
 	ResponseDigest []byte
 	DispatchMs     *int32
 	RecordedAt     time.Time
+}
+
+type PcInvitation struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	Kind           string
+	Email          string
+	Roles          []string
+	TokenHash      []byte
+	State          string
+	CreatedBy      string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+	AcceptedAt     *time.Time
+	AcceptedUserID *ids.UUID
+	RevokedAt      *time.Time
 }
 
 type PcKey struct {
@@ -128,6 +235,14 @@ type PcLicenceState struct {
 	UpdatedBy      string
 }
 
+type PcMembership struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	TeamID    ids.UUID
+	UserID    ids.UUID
+	CreatedAt time.Time
+}
+
 type PcOrg struct {
 	ID        ids.OrgID
 	Name      string
@@ -158,6 +273,57 @@ type PcPermit struct {
 	FinishedAt    *time.Time
 }
 
+type PcRoleBinding struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	Role             string
+	UserID           *ids.UUID
+	ServiceAccountID *ids.UUID
+	ScopeType        string
+	BusinessUnitID   *ids.UUID
+	TeamID           *ids.UUID
+	EnvironmentID    *ids.UUID
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
+type PcServiceAccount struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	Name        string
+	Description string
+	State       string
+	CreatedBy   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type PcServiceAccountKey struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	ServiceAccountID ids.UUID
+	Kid              string
+	Alg              string
+	PublicJwk        []byte
+	State            string
+	CreatedBy        string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	RevokedAt        *time.Time
+}
+
+type PcTeam struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	BusinessUnitID *ids.UUID
+	Slug           string
+	Name           string
+	Description    string
+	State          string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type PcTransaction struct {
 	OrgID      ids.OrgID
 	ID         ids.UUID
@@ -172,4 +338,17 @@ type PcTransaction struct {
 	Currency   *string
 	GatewayID  string
 	CreatedAt  time.Time
+}
+
+type PcUser struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	Issuer      string
+	Subject     string
+	Email       string
+	DisplayName string
+	State       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	LastLoginAt *time.Time
 }

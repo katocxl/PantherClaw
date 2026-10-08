@@ -69,5 +69,33 @@ services:
       timeout: 3s
       retries: 30
 
+
+  # Mock OpenID provider for integration tests (navikt/mock-oauth2-server):
+  # issuer http://127.0.0.1:8181/default, any client secret, a login form
+  # that accepts any subject and claims. Test use only.
+  mock-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:6.0.4@sha256:47374fe063995d9b6d39ebb6ea21eb5f765025bf0aa08b61b08b439eb91adaf0
+    profiles: ["test"]
+    ports:
+      - "127.0.0.1:8181:8080"
+    security_opt:
+      - no-new-privileges:true
+
+  # Keycloak development realm (M2): issuer
+  # http://127.0.0.1:8180/realms/pantherclaw, client "pantherclaw", users
+  # alice and bob. Credentials in the realm file are development-only.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
+    profiles: ["identity", "full-demo"]
+    command: ["start-dev", "--import-realm", "--http-port=8180", "--hostname=http://127.0.0.1:8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?set KC_ADMIN_PASSWORD in deploy/compose/.env (copy .env.example)}
+    ports:
+      - "127.0.0.1:8180:8180"
+    volumes:
+      - ../keycloak/realm-pantherclaw.json:/opt/keycloak/data/import/realm-pantherclaw.json:ro
+    security_opt:
+      - no-new-privileges:true
 volumes:
   pgdata:

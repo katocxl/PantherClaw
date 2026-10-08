@@ -181,3 +181,8 @@ func (e Entitlements) CheckAgents(current int) error {
 	}
 	return nil
 }
+
+// BusinessUnits reports whether the edition includes business units
+// (F573: Business and Enterprise; smaller tenants use only org, teams and
+// environments).
+func (e Entitlements) BusinessUnits() bool { return e.Edition == Business || e.Edition == Enterprise }

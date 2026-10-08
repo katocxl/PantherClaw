@@ -152,6 +152,11 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 2s --health-timeout 3s --health-retries 30
+      # Third-party OpenID provider for the M2 interoperability e2e test.
+      mock-oidc:
+        image: ghcr.io/navikt/mock-oauth2-server:6.0.4@sha256:47374fe063995d9b6d39ebb6ea21eb5f765025bf0aa08b61b08b439eb91adaf0
+        ports:
+          - 8181:8080
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -168,6 +173,7 @@ jobs:
         env:
           PC_TEST_REQUIRE_DB: "1"
           PC_TEST_PG_ADMIN_URL: postgres://postgres:pc-ci-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:5433/postgres?sslmode=disable
+          PC_TEST_MOCK_OIDC_URL: http://127.0.0.1:8181
         run: go test -race -tags integration -shuffle=on -count=1 ./...
 
   go-vuln:

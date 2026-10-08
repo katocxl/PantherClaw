@@ -40,6 +40,7 @@ var apachePrefixes = []string{"sdk/", "integrations/claude-code/", "docs/protoco
 var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "bin": true, "dist": true, "vendor": true,
 	".venv": true, "venv": true, "__pycache__": true, "testdata": true, ".task": true,
+	".claude": true, // local agent worktrees and settings, never repository code
 }
 
 // commentPrefix maps source extensions to their line-comment syntax.

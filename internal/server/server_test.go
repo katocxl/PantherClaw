@@ -51,11 +51,42 @@ func TestConfigValidation(t *testing.T) {
 			c.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: "t", Org: devOrg, ID: "gw"}
 			c.HTTP.PlaintextBehindProxy = true
 		},
+		"public url http":     func(c *Config) { c.Auth.PublicURL = "http://pantherclaw.example.com" },
+		"public url path":     func(c *Config) { c.Auth.PublicURL = "https://pc.example.com/api" },
+		"public url slash":    func(c *Config) { c.Auth.PublicURL = "https://pc.example.com/" },
+		"public url query":    func(c *Config) { c.Auth.PublicURL = "https://pc.example.com?x=1" },
+		"public url userinfo": func(c *Config) { c.Auth.PublicURL = "https://u:p@pc.example.com" },
+		"public url relative": func(c *Config) { c.Auth.PublicURL = "pc.example.com" },
+		"api key env":         func(c *Config) { c.Auth.APIKeyEnv = "prod" },
+		"trusted proxy":       func(c *Config) { c.HTTP.TrustedProxies = []string{"10.0.0.0/8", "proxy.internal"} },
+		"oidc http issuer": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "http://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}}
+		},
+		"oidc http not loopback": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "http://idp.example.com", ClientID: "pc", ClientSecretFile: "s", AllowInsecureLoopback: true}}
+		},
+		"oidc no secret": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "https://idp.example.com", ClientID: "pc"}}
+		},
+		"oidc bad name": func(c *Config) {
+			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "Key Cloak", Issuer: "https://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}}
+		},
+		"oidc duplicate": func(c *Config) {
+			p := OIDCProviderConfig{Name: "kc", Issuer: "https://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}
+			c.Auth.OIDCProviders = []OIDCProviderConfig{p, p}
+		},
 	} {
 		cc := c
 		mutate(&cc)
 		if err := cc.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+	for _, u := range []string{"https://pc.example.com", "https://pc.example.com:8443", "http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:9000"} {
+		cc := c
+		cc.Auth.PublicURL = u
+		if err := cc.Validate(); err != nil {
+			t.Errorf("public url %s refused: %v", u, err)
 		}
 	}
 	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:0"} {
@@ -144,5 +175,26 @@ func TestServeRefusesInvalidConfigWithoutTouchingTheDatabase(t *testing.T) {
 	}
 	if code := Run(context.Background(), []string{"serve"}, &bytes.Buffer{}, &errb, env); code != 1 || !strings.Contains(errb.String(), "role must be") {
 		t.Fatalf("serve with bad role: %d %s", code, errb.String())
+	}
+}
+
+func TestOIDCProviderConfigAccepted(t *testing.T) {
+	c := DefaultConfig()
+	c.DB.AppPasswordFile, c.KEKFiles = "pw", []string{"kek"}
+	c.Auth.OIDCProviders = []OIDCProviderConfig{
+		{Name: "okta", Issuer: "https://acme.okta.com", ClientID: "pc", ClientSecretFile: "s"},
+		{Name: "keycloak", Issuer: "http://127.0.0.1:8180/realms/pantherclaw", ClientID: "pc", ClientSecretFile: "s", AllowInsecureLoopback: true},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTrustedProxiesParse(t *testing.T) {
+	c := DefaultConfig()
+	c.HTTP.TrustedProxies = []string{"10.0.0.0/8", "192.168.1.5", "::ffff:172.16.0.9", "fd00::/8"}
+	got, err := c.trustedProxies()
+	if err != nil || len(got) != 4 || got[1].String() != "192.168.1.5/32" || got[2].String() != "172.16.0.9/32" {
+		t.Fatalf("trustedProxies = %v, %v", got, err)
 	}
 }

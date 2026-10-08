@@ -143,9 +143,12 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | R-10 | Ledger proves integrity, not completeness | Inherent | Target-log reconciliation, external anchoring |
 | R-11 | Solo founder: no independent human reviewer | Team size | EX-001 compensating controls ([GATES_AND_REVIEW.md](GATES_AND_REVIEW.md)) |
 | R-12 | Public source can be copied | Business choice | BSL, private enterprise repo, signed roots, detection |
+| R-13 | Device-code phishing: a person can be talked into confirming a code someone else started, giving that CLI their session | Device flow is the only browserless CLI login (ADR-0016) | Confirmation page shows device name, address and time with an explicit warning; same-origin POST; 10-minute codes, 5 attempts; each session is tied to the requesting device key, audited (`authn.login`) and revocable (logout, user disable) |
+| R-14 | A local attacker who copies `credentials.json` gets the CLI session (the device key is in the same file) | Founder decision 4 (ADR-0016): private file now, OS keychain later | Mode 0600 in the user profile; 15-minute access tokens; 8-hour absolute sessions; refresh rotation with reuse detection; immediate server-side revocation |
 
 ## 9. Change log
 
 | Date | Change | Gate |
 |---|---|---|
 | 2026-10-08 | v1.0 created from product spec, adversarial review and engineering review | G0 (M0) |
+| 2026-10-08 | M2: TB4 implemented for the CLI and services (OIDC relying party with PKCE, nonce and RFC 9207; server-mediated device flow; `private_key_jwt`; `pck_` API keys; per-request revocation checks). T-032, T-037, T-043 tested for their M2 parts. Residual risks R-13 (device-code phishing) and R-14 (CLI credentials file) accepted. TB8 gains the customer IdP as an OIDC provider (HTTPS only, discovered endpoints checked). | G0 (M2), ADR-0016 |
