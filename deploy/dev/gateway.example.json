@@ -1,0 +1,17 @@
+{
+  "log": { "level": "info" },
+  "listen": "127.0.0.1:8090",
+  "gateway_id": "gw-dev-1",
+  "org": "",
+  "authority": {
+    "url": "http://127.0.0.1:8080",
+    "token_file": "deploy/dev/secrets/gateway.token",
+    "timeout": "2s"
+  },
+  "target": {
+    "url": "http://127.0.0.1:9090",
+    "timeout": "10s",
+    "allowed_prefixes": ["127.0.0.1/32"]
+  },
+  "dev_workloads": ["01920000-0000-7000-8000-0000000000c1"]
+}
