@@ -24,6 +24,12 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
+	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
+	"github.com/katocxl/pantherclaw/internal/authn/credential"
+	"github.com/katocxl/pantherclaw/internal/authn/token"
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/billing"
 	"github.com/katocxl/pantherclaw/internal/billing/licence"
@@ -40,6 +46,8 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
+	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
+	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -50,6 +58,10 @@ Usage:
   pantherclaw-server db bootstrap --admin-url-file F --app-password-file F --migrator-password-file F --audit-password-file F
                                                      create roles and schema once, as the database owner
   pantherclaw-server keys gen-kek --out FILE          write a new key-encryption key (0600)
+  pantherclaw-server org create --name N [--admin-email E] [--config FILE]
+                                                     create an organization and print its one-time admin token
+  pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
+                                                     issue a new one-time admin token (recovery)
   pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
                                                      DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
@@ -79,6 +91,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		err = cmdDB(ctx, args[1:], stdout, stderr)
 	case "keys":
 		err = cmdKeys(args[1:], stdout, stderr)
+	case "org":
+		err = cmdOrg(ctx, args[1:], stdout, stderr, env)
 	case "dev":
 		err = cmdDev(ctx, args[1:], stdout, stderr, env)
 	default:
@@ -147,7 +161,8 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err := keystore.LoadSigningKeys(ctx, pool, kp, reg); err != nil {
 		return err
 	}
-	if err := applyLicence(ctx, cfg, pool, log); err != nil {
+	bill, err := applyLicence(ctx, cfg, pool, log)
+	if err != nil {
 		return err
 	}
 
@@ -158,15 +173,40 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
-		auth, err := devGatewayAuth(cfg)
+		gw, err := devGatewayAuth(cfg)
 		if err != nil {
 			return err
 		}
-		if auth != nil {
+		if gw != nil {
 			log.WarnContext(ctx, "server.dev_gateway_enabled", slog.String("gateway_id", cfg.DevGateway.ID),
 				slog.String("org", cfg.DevGateway.Org), slog.String("note", "development only; not for production"))
 		}
-		handler, err := apiHandler(pool, reg, log, svc, auth)
+		tokens, err := token.New(reg, cfg.Auth.PublicURL, token.Audience)
+		if err != nil {
+			return err
+		}
+		authn, err := authnapp.NewAuthenticator(pool, tokens, credential.Env(cfg.Auth.APIKeyEnv), clock.System{}, log)
+		if err != nil {
+			return err
+		}
+		idps, err := cfg.oidcProviders()
+		if err != nil {
+			return err
+		}
+		limiter := httpx.NewLimiter(oauthRateLimit, time.Minute, nil)
+		device, err := devicehttp.New(authnapp.NewDevice(pool, tokens, cfg.Auth.PublicURL, idps, clock.System{}, log),
+			cfg.Auth.PublicURL, limiter, log)
+		if err != nil {
+			return err
+		}
+		handler, err := apiHandler(apiDeps{
+			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
+			auth:      rpcauth.New(authn, procedurePermissions, gw),
+			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
+			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
+				cfg.Auth.PublicURL, limiter),
+			device: device,
+		})
 		if err != nil {
 			return err
 		}
@@ -205,9 +245,12 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authority.RegisterSweeper(jreg, pool, svc, cfg.Authority.StaleDispatch.D()); err != nil {
 			return err
 		}
+		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs()),
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
 			Logger:       log,
 		})
 		if err != nil {
@@ -253,22 +296,47 @@ func listen(ctx context.Context, cfg *Config, handler http.Handler, log *slog.Lo
 	return srv, ln, nil
 }
 
-// apiHandler mounts the RPC services, health endpoints and the JWKS. auth
-// is nil unless the development gateway is enabled; AuthorityService then
-// refuses every call.
-func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *authority.Service, auth rpc.Authenticator) (http.Handler, error) {
+// publicProcedures run without authentication; each is declared
+// "permission: public" in its proto (tested).
+func publicProcedures() []string {
+	return []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure}
+}
+
+// apiDeps are the API role's dependencies. auth authenticates users,
+// service accounts and API keys, and delegates AuthorityService to the
+// development gateway (refused when it is off).
+type apiDeps struct {
+	pool      *db.Pool
+	reg       *keys.Registry
+	log       *slog.Logger
+	authority *authority.Service
+	billing   *billing.Service
+	auth      rpc.Authenticator
+	apiKeyEnv credential.Env
+	oauth     *oauthhttp.Handler
+	device    *devicehttp.Handler
+}
+
+// apiHandler mounts the RPC services, health endpoints and the JWKS.
+func apiHandler(d apiDeps) (http.Handler, error) {
+	pool, reg, log := d.pool, d.reg, d.log
 	rs, err := rpc.NewServer(rpc.Options{
 		Logger:       log,
-		Public:       []string{pantherclawv1connect.SystemServiceGetBuildInfoProcedure},
-		Authenticate: auth,
+		Public:       publicProcedures(),
+		Authenticate: d.auth,
 	})
 	if err != nil {
 		return nil, err
 	}
 	pantherclawv1connect.RegisterSystemServiceHandler(rs, systemService{})
-	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
+	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(d.authority))
+	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
+	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
+	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
+	d.oauth.Mount(mux)
+	d.device.Mount(mux, d.oauth)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
@@ -303,30 +371,30 @@ func apiHandler(pool *db.Pool, reg *keys.Registry, log *slog.Logger, svc *author
 // startupActor records start-up actions in the audit log.
 var startupActor = evdomain.Actor{Type: "system", ID: "server-startup"}
 
-func applyLicence(ctx context.Context, cfg *Config, pool *db.Pool, log *slog.Logger) error {
+func applyLicence(ctx context.Context, cfg *Config, pool *db.Pool, log *slog.Logger) (*billing.Service, error) {
 	roots, err := licence.EmbeddedRoots()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	svc := billing.New(pool, roots, clock.System{}, log)
 	if cfg.LicenceFile != "" {
 		doc, err := os.ReadFile(cfg.LicenceFile)
 		if err != nil {
-			return fmt.Errorf("server: licence file: %w", err)
+			return nil, fmt.Errorf("server: licence file: %w", err)
 		}
 		// An invalid licence is recorded and audited, and the server keeps
 		// running with Community limits (founder decision 2026-10-08).
 		if _, err := svc.Install(ctx, doc, startupActor); err != nil && !errors.Is(err, licence.ErrInvalid) {
-			return err
+			return nil, err
 		}
 	}
 	e, err := svc.Current(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	log.InfoContext(ctx, "licence.status", slog.String("edition", string(e.Edition)), slog.String("status", string(e.Status)),
 		slog.Int("max_agents", e.Limits.MaxAgents), slog.Int("max_orgs", e.Limits.MaxOrgs))
-	return nil
+	return svc, nil
 }
 
 func cmdMigrate(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {

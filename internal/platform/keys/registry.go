@@ -28,11 +28,12 @@ const (
 	PurposePermits        Purpose = "permits"         // dispatch permits
 	PurposeWorkloadTokens Purpose = "workload_tokens" // PAP/1 workload tokens
 	PurposeCheckpoints    Purpose = "checkpoints"     // ledger checkpoints
+	PurposeAccessTokens   Purpose = "access_tokens"   // control-plane access tokens (ADR-0016); never published
 )
 
 // Purposes lists every signing purpose.
 func Purposes() []Purpose {
-	return []Purpose{PurposeReceipts, PurposePermits, PurposeWorkloadTokens, PurposeCheckpoints}
+	return []Purpose{PurposeReceipts, PurposePermits, PurposeWorkloadTokens, PurposeCheckpoints, PurposeAccessTokens}
 }
 
 // Valid reports whether p is a known purpose.
