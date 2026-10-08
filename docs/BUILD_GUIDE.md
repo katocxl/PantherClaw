@@ -182,6 +182,7 @@ Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-know
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
   --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
 # copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
 ```
 
 ---
