@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -274,6 +275,9 @@ func (s *ServiceAccounts) AddKey(ctx context.Context, id td.ServiceAccountID, al
 		if err != nil {
 			return err
 		}
+		if err := noEscalation(ctx, q, c, sa.ID, nil); err != nil {
+			return err
+		}
 		r, err := q.InsertServiceAccountKey(ctx, dbq.InsertServiceAccountKeyParams{
 			OrgID: c.Org, ID: ids.NewV7(), ServiceAccountID: sa.ID, Kid: pk.Thumbprint, Alg: string(pk.Alg),
 			PublicJwk: pk.Canonical, CreatedBy: c.Principal.String(), TtlDays: days,
@@ -366,6 +370,9 @@ func (s *ServiceAccounts) CreateAPIKey(ctx context.Context, id td.ServiceAccount
 		if err != nil {
 			return err
 		}
+		if err := noEscalation(ctx, q, c, sa.ID, scopes); err != nil {
+			return err
+		}
 		if tok, err = credential.New(credential.APIKey, s.env, c.Org); err != nil {
 			return err
 		}
@@ -433,4 +440,75 @@ func (s *ServiceAccounts) RevokeAPIKey(ctx context.Context, id ids.UUID) (APIKey
 		return record(ctx, tx, c, "access.api_key_revoked", "api_key", r.ID, nil)
 	})
 	return out, err
+}
+
+// ErrEscalation refuses a credential that would let the caller act with
+// permissions it does not hold itself (CWE-269).
+var ErrEscalation = pcerr.New(pcerr.PermissionDenied, "PRIVILEGE_ESCALATION",
+	"this service account holds permissions you do not hold; you cannot issue credentials for it")
+
+// noEscalation checks, before a key or API key is issued for a service
+// account, that the caller already holds every permission the credential
+// could exercise, at the scope the account holds it. scopes limits the
+// check to an API key's scopes (nil: a key, which carries all of the
+// account's permissions). A caller that may bind roles at org scope could
+// grant itself those permissions anyway (audited), so it passes.
+func noEscalation(ctx context.Context, q *dbq.Queries, c Caller, account ids.UUID, scopes []td.Permission) error {
+	if c.Can(td.PermRoleBind, td.OrgPath(c.Org)) {
+		return nil
+	}
+	bs, err := Bindings(ctx, q, c.Org, td.PrincipalRef{Kind: td.KindServiceAccount, ID: account})
+	if err != nil {
+		return err
+	}
+	for _, b := range bs {
+		r, ok := td.LookupRole(b.Role)
+		if !ok {
+			continue // unknown roles grant nothing
+		}
+		path, err := scopePath(ctx, q, c.Org, b.Scope)
+		if err != nil {
+			return err
+		}
+		for _, p := range r.Permissions {
+			if p.HumanOnly() || (scopes != nil && !slices.Contains(scopes, p)) {
+				continue // never effective for the credential
+			}
+			if !c.Can(p, path) {
+				return ErrEscalation
+			}
+		}
+	}
+	return nil
+}
+
+// scopePath returns the full path from the org to a binding's scope.
+func scopePath(ctx context.Context, q *dbq.Queries, org ids.OrgID, s td.Scope) (td.Path, error) {
+	switch s.Type {
+	case td.ScopeOrg:
+		return td.OrgPath(org), nil
+	case td.ScopeBusinessUnit:
+		return businessUnitPath(org, s.ID), nil
+	case td.ScopeTeam:
+		t, err := q.GetTeam(ctx, org, s.ID)
+		if err != nil {
+			return nil, err
+		}
+		return teamPath(org, t), nil
+	case td.ScopeEnvironment:
+		e, err := q.GetEnvironment(ctx, org, s.ID)
+		if err != nil {
+			return nil, err
+		}
+		if e.TeamID == nil {
+			return td.OrgPath(org).Child(td.ScopeEnvironment, e.ID), nil
+		}
+		t, err := q.GetTeam(ctx, org, *e.TeamID)
+		if err != nil {
+			return nil, err
+		}
+		return teamPath(org, t).Child(td.ScopeEnvironment, e.ID), nil
+	default:
+		return td.OrgPath(org), nil
+	}
 }

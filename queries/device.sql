@@ -13,6 +13,9 @@ INSERT INTO pc.device_codes (org_id, id, code_hash, user_code, device_jkt, devic
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(code_hash), sqlc.arg(user_code), sqlc.arg(device_jkt), sqlc.arg(device_jwk),
         sqlc.arg(device_name), sqlc.arg(requested_ip), sqlc.narg(invitation_id), sqlc.arg(provider),
         now() + make_interval(secs => sqlc.arg(ttl_seconds)::int))
+-- A user-code collision among open codes must not abort the transaction:
+-- skip the row (no RETURNING row) and let the caller draw another code.
+ON CONFLICT DO NOTHING
 RETURNING created_at, expires_at;
 
 -- name: PendingInvitationByHash :one

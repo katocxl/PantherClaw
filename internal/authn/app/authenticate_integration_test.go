@@ -15,6 +15,7 @@ import (
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/authn/token"
+	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
@@ -248,5 +249,33 @@ func TestIntJanitorRemovesOnlyExpiredRows(t *testing.T) {
 	})
 	if err != nil || left != 2 {
 		t.Fatalf("live rows left = %d (%v)", left, err)
+	}
+}
+
+// TestIntUserCodeCollisionKeepsTheTransaction: a user code already open in
+// the org is skipped (no row) without aborting the transaction, so Start
+// can draw another code in the same transaction.
+func TestIntUserCodeCollisionKeepsTheTransaction(t *testing.T) {
+	e := newEnv(t)
+	w := e.world(t, "codes")
+	err := e.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		insert := func(code string) error {
+			_, err := q.InsertDeviceCode(ctx, dbq.InsertDeviceCodeParams{
+				OrgID: w.org, ID: ids.NewV7(), CodeHash: []byte(strings.Repeat(code[:1], 32)), UserCode: code,
+				DeviceJkt: strings.Repeat("d", 43), DeviceJwk: []byte("{}"), TtlSeconds: 600,
+			})
+			return err
+		}
+		if err := insert("BCDFGHJK"); err != nil {
+			return err
+		}
+		if err := insert("BCDFGHJK"); !db.IsNoRows(err) {
+			t.Errorf("colliding user code: %v, want no row", err)
+		}
+		return insert("CDFGHJKL") // the transaction is still usable
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

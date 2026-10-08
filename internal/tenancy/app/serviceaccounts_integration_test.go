@@ -143,3 +143,49 @@ func TestT037_ServiceAccountIDOR(t *testing.T) {
 		t.Fatalf("B lists A's API keys: %+v", l.Items)
 	}
 }
+
+// TestIntCredentialIssuanceCannotEscalate: a Security Admin
+// (service_account.manage, no role.bind) cannot mint a key or an API key
+// that would let it act with permissions it lacks, such as an Org Admin
+// account's role.bind; it can for accounts and scopes within its own
+// permissions. An Org Admin (role.bind) can always issue.
+func TestIntCredentialIssuanceCannotEscalate(t *testing.T) {
+	f := newFixture(t)
+	s := app.NewServiceAccounts(f.pool, credential.EnvTest)
+	a := app.NewAccess(f.pool, nil)
+	org := f.org(t, "acme")
+	admin := adminOf(org)
+	secAdmin := as(org, orgRole(org, td.RoleSecurityAdmin))
+	team := must(f.h.CreateTeam(admin, ids.ID[td.BusinessUnit]{}, app.NewEntity{Slug: "t", Name: "T"}))
+	account := func(name string, role td.RoleName, scope td.Scope) td.ServiceAccountID {
+		sa := must(s.Create(admin, name, ""))
+		must2(a.CreateRoleBinding(admin, role, td.PrincipalRef{Kind: td.KindServiceAccount, ID: sa.ID.UUID()}, scope))
+		return sa.ID
+	}
+	privileged := account("privileged", td.RoleOrgAdmin, orgScope(org))
+	viewer := account("viewer", td.RoleViewer, td.Scope{Type: td.ScopeTeam, ID: team.ID.UUID()})
+	owner := account("owner", td.RoleAgentOwner, td.Scope{Type: td.ScopeTeam, ID: team.ID.UUID()})
+
+	_, _, err := s.CreateAPIKey(secAdmin, privileged, "escalate", []td.Permission{td.PermRoleBind}, 0)
+	wantCode(t, "API key with role.bind", err, pcerr.PermissionDenied, "PRIVILEGE_ESCALATION")
+	_, err = s.AddKey(secAdmin, privileged, assertion.EdDSA, edJWK(t), 0)
+	wantCode(t, "key for an Org Admin account", err, pcerr.PermissionDenied, "PRIVILEGE_ESCALATION")
+	_, err = s.AddKey(secAdmin, owner, assertion.EdDSA, edJWK(t), 0)
+	wantCode(t, "key carrying agent.manage", err, pcerr.PermissionDenied, "PRIVILEGE_ESCALATION")
+
+	if _, _, err := s.CreateAPIKey(secAdmin, privileged, "reader", []td.Permission{td.PermUserRead}, 0); err != nil {
+		t.Errorf("API key limited to a permission the caller holds: %v", err)
+	}
+	if _, _, err := s.CreateAPIKey(secAdmin, owner, "agents", []td.Permission{td.PermAgentRead}, 0); err != nil {
+		t.Errorf("API key limited to agent.read: %v", err)
+	}
+	if _, err := s.AddKey(secAdmin, viewer, assertion.EdDSA, edJWK(t), 0); err != nil {
+		t.Errorf("key for a team viewer account: %v", err)
+	}
+	if _, err := s.AddKey(admin, privileged, assertion.EdDSA, edJWK(t), 0); err != nil {
+		t.Errorf("Org Admin issuing a key: %v", err)
+	}
+	if _, _, err := s.CreateAPIKey(admin, owner, "full", []td.Permission{td.PermAgentManage}, 0); err != nil {
+		t.Errorf("Org Admin issuing an API key: %v", err)
+	}
+}

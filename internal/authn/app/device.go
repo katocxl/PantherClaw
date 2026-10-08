@@ -182,8 +182,8 @@ func (d *Device) Start(ctx context.Context, in DeviceStart) (DeviceAuthorization
 				DeviceJwk: key.Canonical, DeviceName: td.SanitizeClaim(in.DeviceName, 64), RequestedIp: trim(in.ClientIP, 64),
 				InvitationID: invitation, Provider: ptr(idp.Name()), TtlSeconds: int32(DeviceCodeTTL.Seconds()),
 			})
-			if db.IsUniqueViolation(err) {
-				continue // user code collision among open codes: draw again
+			if db.IsNoRows(err) {
+				continue // ON CONFLICT DO NOTHING skipped a user-code collision: draw again
 			}
 			if err != nil {
 				return err

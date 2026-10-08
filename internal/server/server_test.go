@@ -58,6 +58,7 @@ func TestConfigValidation(t *testing.T) {
 		"public url userinfo": func(c *Config) { c.Auth.PublicURL = "https://u:p@pc.example.com" },
 		"public url relative": func(c *Config) { c.Auth.PublicURL = "pc.example.com" },
 		"api key env":         func(c *Config) { c.Auth.APIKeyEnv = "prod" },
+		"trusted proxy":       func(c *Config) { c.HTTP.TrustedProxies = []string{"10.0.0.0/8", "proxy.internal"} },
 		"oidc http issuer": func(c *Config) {
 			c.Auth.OIDCProviders = []OIDCProviderConfig{{Name: "kc", Issuer: "http://idp.example.com", ClientID: "pc", ClientSecretFile: "s"}}
 		},
@@ -186,5 +187,14 @@ func TestOIDCProviderConfigAccepted(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTrustedProxiesParse(t *testing.T) {
+	c := DefaultConfig()
+	c.HTTP.TrustedProxies = []string{"10.0.0.0/8", "192.168.1.5", "::ffff:172.16.0.9", "fd00::/8"}
+	got, err := c.trustedProxies()
+	if err != nil || len(got) != 4 || got[1].String() != "192.168.1.5/32" || got[2].String() != "172.16.0.9/32" {
+		t.Fatalf("trustedProxies = %v, %v", got, err)
 	}
 }

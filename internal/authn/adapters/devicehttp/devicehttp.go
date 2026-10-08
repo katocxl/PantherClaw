@@ -83,7 +83,7 @@ func (h *Handler) Mount(mux *http.ServeMux, token *oauthhttp.Handler) {
 
 func (h *Handler) limited(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !h.limiter.Allow(httpx.ClientIP(r)) {
+		if !h.limiter.AllowRequest(r) {
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
 		}
@@ -104,7 +104,7 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := h.d.Start(r.Context(), authnapp.DeviceStart{
 		Org: form.Get("org"), DeviceJWK: form.Get("device_jwk"), DeviceName: form.Get("device_name"),
-		Invitation: form.Get("invitation"), Provider: form.Get("idp"), ClientIP: httpx.ClientIP(r),
+		Invitation: form.Get("invitation"), Provider: form.Get("idp"), ClientIP: h.limiter.ClientIP(r),
 	})
 	if err != nil {
 		oauthhttp.WriteError(w, err)
