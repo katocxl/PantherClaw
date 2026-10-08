@@ -58,6 +58,10 @@ Usage:
   pantherclaw-server db bootstrap --admin-url-file F --app-password-file F --migrator-password-file F --audit-password-file F
                                                      create roles and schema once, as the database owner
   pantherclaw-server keys gen-kek --out FILE          write a new key-encryption key (0600)
+  pantherclaw-server org create --name N [--admin-email E] [--config FILE]
+                                                     create an organization and print its one-time admin token
+  pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
+                                                     issue a new one-time admin token (recovery)
   pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
                                                      DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
@@ -87,6 +91,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		err = cmdDB(ctx, args[1:], stdout, stderr)
 	case "keys":
 		err = cmdKeys(args[1:], stdout, stderr)
+	case "org":
+		err = cmdOrg(ctx, args[1:], stdout, stderr, env)
 	case "dev":
 		err = cmdDev(ctx, args[1:], stdout, stderr, env)
 	default:
@@ -239,9 +245,12 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authority.RegisterSweeper(jreg, pool, svc, cfg.Authority.StaleDispatch.D()); err != nil {
 			return err
 		}
+		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs()),
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
 			Logger:       log,
 		})
 		if err != nil {
