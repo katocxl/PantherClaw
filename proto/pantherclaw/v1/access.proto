@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// AccessService manages who can do what in the caller's org: users (linked
+// to the org's OIDC identity provider), invitations, the default roles and
+// role bindings (F581, SB-2). Self-grants are allowed and audited
+// (ADR-0016); roles containing human-only permissions cannot be bound to
+// service accounts; the last Org Admin cannot be removed or disabled.
+service AccessService {
+  // WhoAmI describes the authenticated caller, its bindings and the
+  // permissions it holds somewhere in the org.
+  // permission: authenticated
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // ListUsers lists the org's users.
+  // permission: user.read
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetUser returns one user.
+  // permission: user.read
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // SetUserState disables or re-enables a user. Disabling revokes the
+  // user's CLI sessions at once.
+  // permission: user.manage
+  rpc SetUserState(SetUserStateRequest) returns (SetUserStateResponse);
+
+  // CreateInvitation invites a person by email. The token is returned once.
+  // Inviting with roles also requires role.bind.
+  // permission: invitation.manage
+  rpc CreateInvitation(CreateInvitationRequest) returns (CreateInvitationResponse);
+  // ListInvitations lists invitations.
+  // permission: invitation.read
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeInvitation revokes a pending invitation.
+  // permission: invitation.manage
+  rpc RevokeInvitation(RevokeInvitationRequest) returns (RevokeInvitationResponse);
+
+  // ListRoles lists the default roles and their permissions.
+  // permission: authenticated
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListRoleBindings lists role bindings, optionally for one principal.
+  // permission: role.read
+  rpc ListRoleBindings(ListRoleBindingsRequest) returns (ListRoleBindingsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // CreateRoleBinding grants a role to a principal at a scope.
+  // permission: role.bind
+  rpc CreateRoleBinding(CreateRoleBindingRequest) returns (CreateRoleBindingResponse);
+  // DeleteRoleBinding removes a role binding.
+  // permission: role.bind
+  rpc DeleteRoleBinding(DeleteRoleBindingRequest) returns (DeleteRoleBindingResponse);
+}
+
+// PrincipalType distinguishes people from service accounts.
+enum PrincipalType {
+  PRINCIPAL_TYPE_UNSPECIFIED = 0;
+  PRINCIPAL_TYPE_USER = 1;
+  PRINCIPAL_TYPE_SERVICE_ACCOUNT = 2;
+}
+
+// AccountState is the state of a user or service account.
+enum AccountState {
+  ACCOUNT_STATE_UNSPECIFIED = 0;
+  ACCOUNT_STATE_ACTIVE = 1;
+  // Disabled accounts cannot authenticate; their tokens stop working at the
+  // next request.
+  ACCOUNT_STATE_DISABLED = 2;
+}
+
+// ScopeType is a level of the hierarchy a role is bound at.
+enum ScopeType {
+  SCOPE_TYPE_UNSPECIFIED = 0;
+  SCOPE_TYPE_ORG = 1;
+  SCOPE_TYPE_BUSINESS_UNIT = 2;
+  SCOPE_TYPE_TEAM = 3;
+  SCOPE_TYPE_ENVIRONMENT = 4;
+}
+
+// InvitationState is the state of an invitation.
+enum InvitationState {
+  INVITATION_STATE_UNSPECIFIED = 0;
+  INVITATION_STATE_PENDING = 1;
+  INVITATION_STATE_ACCEPTED = 2;
+  INVITATION_STATE_REVOKED = 3;
+  // Pending but past its expiry time.
+  INVITATION_STATE_EXPIRED = 4;
+}
+
+// Principal identifies a user or a service account.
+message Principal {
+  // Type.
+  PrincipalType type = 1;
+  // User or service account id.
+  string id = 2;
+  // Email (users) or name (service accounts), for display.
+  string display_name = 3;
+}
+
+// Scope is where a role binding applies: the org, or one business unit,
+// team or environment and everything below it.
+message Scope {
+  // Scope type.
+  ScopeType type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Business unit, team or environment id; empty for the org scope.
+  string id = 2 [
+    (buf.validate.field).string.uuid = true,
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+}
+
+// User is one OIDC identity in the org.
+message User {
+  // User id.
+  string id = 1;
+  // OIDC issuer.
+  string issuer = 2;
+  // OIDC subject.
+  string subject = 3;
+  // Email from the identity provider.
+  string email = 4;
+  // Display name from the identity provider.
+  string display_name = 5;
+  // State.
+  AccountState state = 6;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 7;
+  // Last change.
+  google.protobuf.Timestamp update_time = 8;
+  // Last successful login.
+  google.protobuf.Timestamp last_login_time = 9;
+}
+
+// Invitation invites one person (or, for the bootstrap token, the first
+// administrator) to join the org.
+message Invitation {
+  // Invitation id.
+  string id = 1;
+  // Invitee email; empty only for a bootstrap invitation.
+  string email = 2;
+  // Roles granted at org scope on acceptance.
+  repeated string roles = 3;
+  // State.
+  InvitationState state = 4;
+  // Whether this is the operator-created bootstrap invitation.
+  bool bootstrap = 5;
+  // Who created it ("user:<id>", "service_account:<id>" or "operator:…").
+  string created_by = 6;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 7;
+  // Expiry time.
+  google.protobuf.Timestamp expire_time = 8;
+  // Acceptance time.
+  google.protobuf.Timestamp accept_time = 9;
+  // The user created on acceptance.
+  string accepted_user_id = 10;
+}
+
+// Role is a default role.
+message Role {
+  // Role name, for example "org_admin".
+  string name = 1;
+  // Human-readable title.
+  string title = 2;
+  // What the role is for.
+  string description = 3;
+  // Permissions the role contains.
+  repeated string permissions = 4;
+  // Scope types the role may be bound at.
+  repeated ScopeType scope_types = 5;
+  // Whether only users may hold the role.
+  bool human_only = 6;
+}
+
+// RoleBinding grants one role to one principal at one scope.
+message RoleBinding {
+  // Binding id.
+  string id = 1;
+  // Role name.
+  string role = 2;
+  // Who holds the role.
+  Principal principal = 3;
+  // Where it applies.
+  Scope scope = 4;
+  // Who created it.
+  string created_by = 5;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 6;
+}
+
+// WhoAmIRequest asks about the caller.
+message WhoAmIRequest {}
+
+// WhoAmIResponse describes the caller.
+message WhoAmIResponse {
+  // The caller.
+  Principal principal = 1;
+  // The caller's org id.
+  string org_id = 2;
+  // The caller's org name.
+  string org_name = 3;
+  // The caller's role bindings.
+  repeated RoleBinding bindings = 4;
+  // Permissions held somewhere in the org (after API key scopes).
+  repeated string permissions = 5;
+  // How the caller authenticated: "access_token" or "api_key".
+  string credential = 6;
+}
+
+// ListUsersRequest pages through users.
+message ListUsersRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+}
+
+// ListUsersResponse is one page.
+message ListUsersResponse {
+  // Users, oldest first.
+  repeated User users = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// GetUserRequest names a user.
+message GetUserRequest {
+  // User id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetUserResponse returns the user.
+message GetUserResponse {
+  // The user.
+  User user = 1;
+}
+
+// SetUserStateRequest disables or re-enables a user.
+message SetUserStateRequest {
+  // User id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // New state.
+  AccountState state = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// SetUserStateResponse returns the user.
+message SetUserStateResponse {
+  // The user.
+  User user = 1;
+}
+
+// CreateInvitationRequest invites a person.
+message CreateInvitationRequest {
+  // Invitee email; the identity provider must assert it at acceptance.
+  string email = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 320
+    email: true
+  }];
+  // Roles to grant at org scope on acceptance.
+  repeated string roles = 2 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+    items: {
+      string: {pattern: "^[a-z][a-z_]{0,62}$"}
+    }
+  }];
+  // Validity in hours (default 168, at most 720).
+  int32 ttl_hours = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 720
+  }];
+}
+
+// CreateInvitationResponse returns the invitation and its token.
+message CreateInvitationResponse {
+  // The invitation.
+  Invitation invitation = 1;
+  // The single-use token (pci_…). It is shown only once.
+  string token = 2;
+}
+
+// ListInvitationsRequest pages through invitations.
+message ListInvitationsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Also list accepted, revoked and expired invitations.
+  bool include_closed = 3;
+}
+
+// ListInvitationsResponse is one page.
+message ListInvitationsResponse {
+  // Invitations, oldest first.
+  repeated Invitation invitations = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// RevokeInvitationRequest revokes a pending invitation.
+message RevokeInvitationRequest {
+  // Invitation id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RevokeInvitationResponse returns the invitation.
+message RevokeInvitationResponse {
+  // The invitation.
+  Invitation invitation = 1;
+}
+
+// ListRolesRequest asks for the role catalog.
+message ListRolesRequest {}
+
+// ListRolesResponse is the role catalog.
+message ListRolesResponse {
+  // Roles.
+  repeated Role roles = 1;
+}
+
+// ListRoleBindingsRequest pages through role bindings.
+message ListRoleBindingsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only bindings of this principal type (set together with principal_id).
+  PrincipalType principal_type = 3 [(buf.validate.field).enum.defined_only = true];
+  // Only bindings of this user or service account.
+  string principal_id = 4 [
+    (buf.validate.field).string.uuid = true,
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
+}
+
+// ListRoleBindingsResponse is one page.
+message ListRoleBindingsResponse {
+  // Bindings, oldest first.
+  repeated RoleBinding bindings = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// CreateRoleBindingRequest grants a role.
+message CreateRoleBindingRequest {
+  // Role name.
+  string role = 1 [(buf.validate.field).string.pattern = "^[a-z][a-z_]{0,62}$"];
+  // Principal type.
+  PrincipalType principal_type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // User or service account id.
+  string principal_id = 3 [(buf.validate.field).string.uuid = true];
+  // Where the role applies.
+  Scope scope = 4 [(buf.validate.field).required = true];
+}
+
+// CreateRoleBindingResponse returns the binding.
+message CreateRoleBindingResponse {
+  // The binding.
+  RoleBinding binding = 1;
+  // Whether the caller granted the role to itself (audited).
+  bool self_grant = 2;
+}
+
+// DeleteRoleBindingRequest removes a binding.
+message DeleteRoleBindingRequest {
+  // Binding id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// DeleteRoleBindingResponse confirms the removal.
+message DeleteRoleBindingResponse {}
