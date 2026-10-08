@@ -1,0 +1,357 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+//go:build integration
+
+// Package e2e runs the M1.5 walking skeleton end to end: pantherclaw-server
+// (API + workers, dev gateway), pantherclaw-sim payments and the gateway,
+// against a throwaway database. Scenario ids follow BUILD_GUIDE §8 (M6 exit
+// table); M1.5 covers the subset that needs no policies or approvals.
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/katocxl/pantherclaw/internal/gateway"
+	"github.com/katocxl/pantherclaw/internal/platform/config"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
+	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/keys"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	"github.com/katocxl/pantherclaw/internal/server"
+	"github.com/katocxl/pantherclaw/internal/sim/payments"
+)
+
+const agent = "01920000-0000-7000-8000-0000000000c1"
+
+func noEnv(string) (string, bool) { return "", false }
+
+// stack is one running skeleton bound to one seeded org.
+type stack struct {
+	db       *dbtest.DB
+	org      ids.OrgID
+	gateway  string
+	sim      *payments.Server
+	simCalls *atomic.Int64
+	stop     context.CancelFunc
+	done     chan struct{} // closed when the server has stopped
+}
+
+type options struct {
+	budget   string
+	maxCount int
+	faults   payments.Faults
+	timeout  time.Duration
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().String()
+}
+
+func writeFile(t *testing.T, dir, name string, b []byte) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+var seededOrg = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+
+func start(t *testing.T, o options) *stack {
+	t.Helper()
+	s := &stack{db: dbtest.New(t), simCalls: &atomic.Int64{}, done: make(chan struct{})}
+	dir := t.TempDir()
+	kek := filepath.Join(dir, "kek")
+	if err := keys.GenerateKEKFile(kek); err != nil {
+		t.Fatal(err)
+	}
+	apiAddr := freeAddr(t)
+	cfg := map[string]any{
+		"role": "all", "log": map[string]any{"level": "warn"}, "http": map[string]any{"addr": apiAddr},
+		"database": map[string]any{
+			"host": s.db.App.Host, "port": s.db.App.Port, "name": s.db.Name, "sslmode": "disable",
+			"app_password_file":      writeFile(t, dir, "app-pw", s.db.App.Password.Reveal()),
+			"migrator_password_file": writeFile(t, dir, "mig-pw", s.db.Migrator.Password.Reveal()),
+			"max_conns":              10,
+		},
+		"kek_files": []string{kek}, "worker_concurrency": 2,
+	}
+	write := func(name string) string {
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return writeFile(t, dir, name, b)
+	}
+
+	token := filepath.Join(dir, "gateway-token")
+	args := []string{"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token}
+	if o.maxCount > 0 {
+		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
+	}
+	var out, errb bytes.Buffer
+	if code := server.Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
+		t.Fatalf("dev seed: %d %s", code, errb.String())
+	}
+	m := seededOrg.FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("dev seed output %q", out.String())
+	}
+	s.org = ids.MustParse[ids.Org](m[1])
+
+	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org.String(), "gateway_id": "gw-dev-1", "token_file": token}
+	serverCfg := write("server.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	s.stop = cancel
+	var logs syncBuffer
+	go func() {
+		defer close(s.done)
+		if err := runServer(ctx, serverCfg, &logs); err != nil {
+			t.Errorf("%v\n%s", err, logs.String())
+		}
+	}()
+	t.Cleanup(func() {
+		s.stop()
+		select {
+		case <-s.done:
+		case <-time.After(30 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+	waitReady(t, "http://"+apiAddr, &logs)
+
+	s.sim = payments.New(o.faults, pclog.Discard())
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.simCalls.Add(1)
+		s.sim.Handler().ServeHTTP(w, r)
+	})
+	simSrv := httptest.NewServer(counted)
+	t.Cleanup(simSrv.Close)
+
+	gc := gateway.DefaultConfig()
+	gc.Org, gc.DevWorkloads = s.org.String(), []string{agent}
+	gc.Authority.URL, gc.Authority.TokenFile = "http://"+apiAddr, token
+	gc.Target.URL, gc.Target.AllowedPrefixes = simSrv.URL, []string{"127.0.0.1/32"}
+	if o.timeout > 0 {
+		gc.Target.Timeout = config.Duration(o.timeout)
+	}
+	g, err := gateway.New(&gc, pclog.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := httptest.NewServer(g.Handler())
+	t.Cleanup(gs.Close)
+	s.gateway = gs.URL
+	return s
+}
+
+func runServer(ctx context.Context, cfgPath string, logs io.Writer) error {
+	if code := server.Run(ctx, []string{"serve", "--config", cfgPath}, io.Discard, logs, noEnv); code != 0 {
+		return fmt.Errorf("serve exited %d", code)
+	}
+	return nil
+}
+
+func waitReady(t *testing.T, base string, logs *syncBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/readyz", nil)
+		if resp, err := http.DefaultTransport.RoundTrip(req); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("server not ready:\n%s", logs.String())
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+type reply struct {
+	Error         string   `json:"error"`
+	Decision      string   `json:"decision"`
+	Reasons       []string `json:"reasons"`
+	TransactionID string   `json:"transaction_id"`
+	Outcome       string   `json:"outcome"`
+	Receipt       string   `json:"receipt"`
+}
+
+func (s *stack) refund(t *testing.T, run, act ids.UUID, amount string) (int, reply) {
+	t.Helper()
+	code, r, err := s.tryRefund(run, act, amount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, r
+}
+
+// tryRefund is safe to call from any goroutine.
+func (s *stack) tryRefund(run, act ids.UUID, amount string) (int, reply, error) {
+	body := `{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req.Header.Set(gateway.HeaderDevWorkload, agent)
+	req.Header.Set(gateway.HeaderRunID, run.String())
+	req.Header.Set(gateway.HeaderActionID, act.String())
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return 0, reply{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var r reply
+	b, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(b, &r); err != nil {
+		return 0, reply{}, fmt.Errorf("gateway reply %q: %w", b, err)
+	}
+	return resp.StatusCode, r, nil
+}
+
+// budget returns reserved and spent amounts and the state of txn's permit.
+func (s *stack) budget(t *testing.T, txn string) (reserved, spent, permit string) {
+	t.Helper()
+	err := s.db.AppPool(t).InTenantTx(context.Background(), s.org, func(ctx context.Context, tx db.TenantTx) error {
+		if err := tx.QueryRow(ctx, "SELECT reserved::float8::text, spent::float8::text FROM pc.budgets").Scan(&reserved, &spent); err != nil {
+			return err
+		}
+		if txn == "" {
+			return nil
+		}
+		return tx.QueryRow(ctx, "SELECT state FROM pc.permits WHERE transaction_id = $1", txn).Scan(&permit)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reserved, spent, permit
+}
+
+// S01 ($30 within grant → accepted, exactly one effect on retry) and S03
+// ($125 over the grant → DENY, nothing reserved or sent).
+func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
+	s := start(t, options{budget: "1000.00"})
+	run, act := ids.NewV7(), ids.NewV7()
+	code, r := s.refund(t, run, act, "30.00")
+	if code != http.StatusOK || r.Outcome != "ACCEPTED" || r.Receipt == "" {
+		t.Fatalf("S01: %d %+v", code, r)
+	}
+	if reserved, spent, permit := s.budget(t, r.TransactionID); reserved != "0" || spent != "30" || permit != "DISPATCHED" {
+		t.Fatalf("S01 budget reserved=%s spent=%s permit=%s", reserved, spent, permit)
+	}
+	// The agent retries the same action: no second permit, no second refund.
+	if code, r2 := s.refund(t, run, act, "30.00"); code != http.StatusConflict || r2.TransactionID != r.TransactionID {
+		t.Fatalf("S01 retry: %d %+v", code, r2)
+	}
+	if st := s.sim.Stats(); st.Refunds != 1 || st.Replays != 0 {
+		t.Fatalf("S01 target stats %+v", st)
+	}
+
+	code, r = s.refund(t, run, ids.NewV7(), "125.00")
+	if code != http.StatusForbidden || r.Decision != "DENY" || len(r.Reasons) == 0 || r.Reasons[0] != "GRANT_AMOUNT_EXCEEDED" {
+		t.Fatalf("S03: %d %+v", code, r)
+	}
+	if reserved, spent, _ := s.budget(t, ""); reserved != "0" || spent != "30" || s.simCalls.Load() != 1 {
+		t.Fatalf("S03 reserved=%s spent=%s target calls=%d", reserved, spent, s.simCalls.Load())
+	}
+}
+
+// S06: two concurrent refunds against a one-refund budget: exactly one.
+func TestS06_ConcurrentRefundsAgainstOneRefundBudget(t *testing.T) {
+	s := start(t, options{budget: "1000.00", maxCount: 1})
+	run := ids.NewV7()
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	errs := make([]error, len(codes))
+	for i := range codes {
+		wg.Go(func() { codes[i], _, errs[i] = s.tryRefund(run, ids.NewV7(), "30.00") })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	ok := 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusOK:
+			ok++
+		case http.StatusForbidden:
+		default:
+			t.Errorf("unexpected status %d", c)
+		}
+	}
+	if ok != 1 || s.sim.Stats().Refunds != 1 {
+		t.Fatalf("S06: %d succeeded (%v), target refunds %d", ok, codes, s.sim.Stats().Refunds)
+	}
+}
+
+// S07: the target never answers: UNKNOWN, reservation held, no retry.
+func TestS07_TargetTimeoutIsUnknownAndHeld(t *testing.T) {
+	s := start(t, options{budget: "1000.00", faults: payments.Faults{HangRate: 1, HangFor: time.Minute}, timeout: 500 * time.Millisecond})
+	code, r := s.refund(t, ids.NewV7(), ids.NewV7(), "30.00")
+	if code != http.StatusGatewayTimeout || r.Outcome != "UNKNOWN" {
+		t.Fatalf("S07: %d %+v", code, r)
+	}
+	if reserved, spent, permit := s.budget(t, r.TransactionID); reserved != "30" || spent != "0" || permit != "UNKNOWN" {
+		t.Fatalf("S07 reserved=%s spent=%s permit=%s, want held", reserved, spent, permit)
+	}
+	time.Sleep(2 * time.Second) // a sweep or two: the reservation stays held
+	if reserved, _, permit := s.budget(t, r.TransactionID); reserved != "30" || permit != "UNKNOWN" || s.simCalls.Load() != 1 {
+		t.Fatalf("S07 after sweeps reserved=%s permit=%s target calls=%d", reserved, permit, s.simCalls.Load())
+	}
+}
+
+// S09: the Authority is down: fail closed, nothing dispatched.
+func TestS09_AuthorityUnavailableDispatchesNothing(t *testing.T) {
+	s := start(t, options{budget: "1000.00"})
+	s.stop()
+	select {
+	case <-s.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("server did not stop")
+	}
+	code, r := s.refund(t, ids.NewV7(), ids.NewV7(), "30.00")
+	if code != http.StatusServiceUnavailable || r.Error != "authority_unavailable" || s.simCalls.Load() != 0 {
+		t.Fatalf("S09: %d %+v, target calls %d", code, r, s.simCalls.Load())
+	}
+}

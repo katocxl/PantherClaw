@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Local plugins pinned in tools/pins/buf (no remote plugin execution).
+version: v2
+managed:
+  enabled: true
+  disable:
+    - file_option: go_package
+      module: buf.build/bufbuild/protovalidate
+  override:
+    - file_option: go_package_prefix
+      value: github.com/katocxl/pantherclaw/internal/gen
+plugins:
+  - local: ["go", "tool", "-modfile=tools/pins/buf/go.mod", "protoc-gen-go"]
+    out: internal/gen
+    opt: paths=source_relative
+  - local: ["go", "tool", "-modfile=tools/pins/buf/go.mod", "protoc-gen-connect-go"]
+    out: internal/gen
+    opt: paths=source_relative
