@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>PantherClaw sign-in</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;line-height:1.5;color:#1a1a1a;background:#fff}
+h1{font-size:1.4rem}.code{font-family:ui-monospace,monospace;font-size:1.6rem;letter-spacing:.15em}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:.25rem 1rem}dt{color:#555}
+.warn{border-left:4px solid #b45309;padding:.5rem 1rem;background:#fffbeb}
+button,input[type=submit]{font-size:1rem;padding:.5rem 1rem;cursor:pointer}
+input[type=text]{font-size:1.2rem;padding:.4rem;font-family:ui-monospace,monospace;text-transform:uppercase}
+@media (prefers-color-scheme:dark){body{background:#111;color:#eee}dt{color:#aaa}.warn{background:#2a2108}}
+</style>
+</head>
+<body>
+<h1>Confirm this sign-in</h1>
+<p>A command-line tool asked to sign in to your PantherClaw organization with this code:</p>
+<p class="code">{{.UserCode}}</p>
+<dl>
+<dt>Device</dt><dd>{{if .Prompt.DeviceName}}{{.Prompt.DeviceName}}{{else}}(not given){{end}}</dd>
+<dt>From address</dt><dd>{{.Prompt.IP}}</dd>
+<dt>Requested</dt><dd>{{.Prompt.RequestedAt.UTC.Format "2006-01-02 15:04:05 MST"}}</dd>
+<dt>Identity provider</dt><dd>{{.Prompt.Provider}}</dd>
+{{if .Prompt.Invited}}<dt>Invitation</dt><dd>this sign-in accepts an invitation</dd>{{end}}
+</dl>
+<p class="warn"><strong>Only continue if you started this sign-in yourself, just now, and the code matches your terminal.</strong>
+If someone sent you this link or code, close this page: continuing would give them access as you.</p>
+<form method="post" action="/device">
+<input type="hidden" name="org" value="{{.Org}}">
+<input type="hidden" name="user_code" value="{{.UserCode}}">
+<p><button type="submit">Continue to sign in</button></p>
+</form>
+</body>
+</html>

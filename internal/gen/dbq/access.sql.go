@@ -225,6 +225,15 @@ func (q *Queries) InsertInvitation(ctx context.Context, arg InsertInvitationPara
 	return i, err
 }
 
+const insertOrg = `-- name: InsertOrg :exec
+INSERT INTO pc.orgs (id, name) VALUES ($1, $2)
+`
+
+func (q *Queries) InsertOrg(ctx context.Context, orgID ids.OrgID, name string) error {
+	_, err := q.db.Exec(ctx, insertOrg, orgID, name)
+	return err
+}
+
 const insertRoleBinding = `-- name: InsertRoleBinding :one
 INSERT INTO pc.role_bindings (org_id, id, role, user_id, service_account_id, scope_type, business_unit_id, team_id,
                               environment_id, created_by)
@@ -468,6 +477,19 @@ SELECT id FROM pc.orgs WHERE id = $1 FOR NO KEY UPDATE
 func (q *Queries) LockOrgAdmins(ctx context.Context, orgID ids.OrgID) error {
 	_, err := q.db.Exec(ctx, lockOrgAdmins, orgID)
 	return err
+}
+
+const revokeBootstrapInvitations = `-- name: RevokeBootstrapInvitations :execrows
+UPDATE pc.invitations SET state = 'REVOKED', revoked_at = now()
+WHERE org_id = $1 AND kind = 'BOOTSTRAP' AND state = 'PENDING'
+`
+
+func (q *Queries) RevokeBootstrapInvitations(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeBootstrapInvitations, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeInvitation = `-- name: RevokeInvitation :one
