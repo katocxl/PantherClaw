@@ -8,7 +8,7 @@ PantherClaw sits between AI agents and the systems they act on, so that every co
 
 ## Integrations
 
-Works with MCP clients, Claude Code, and Python, TypeScript and Go SDKs.
+Planned (not yet released): MCP clients, Claude Code, and Python, TypeScript and Go SDKs. See the milestones in [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md).
 
 ## Development
 
@@ -17,7 +17,7 @@ task setup    # git hooks + pinned tools
 task check    # format, headers, lint, tests, workflow lint, secret scan
 ```
 
-You only need Go and Docker installed. See [CONTRIBUTING.md](CONTRIBUTING.md).
+You need Go and Docker. Task is optional: every tool, Task included, is pinned under `tools/pins/`, so without a global Task run `go tool -modfile=tools/pins/task/go.mod task <name>`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 
