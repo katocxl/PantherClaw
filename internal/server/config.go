@@ -6,12 +6,16 @@ package server
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"slices"
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
 
 // Roles a server process can run.
@@ -32,7 +36,9 @@ type Config struct {
 	KEKFiles    []string `json:"kek_files" env:"PC_KEK_FILES"`
 	LicenceFile string   `json:"licence_file" env:"PC_LICENCE_FILE"`
 	// WorkerConcurrency is the number of concurrent jobs per worker process.
-	WorkerConcurrency int `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
+	WorkerConcurrency int              `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
+	Authority         AuthorityConfig  `json:"authority"`
+	DevGateway        DevGatewayConfig `json:"dev_gateway"`
 }
 
 // LogConfig configures logging.
@@ -79,6 +85,11 @@ func DefaultConfig() Config {
 			IdleInTxTimeout: config.Duration(d.IdleInTxTimeout),
 		},
 		WorkerConcurrency: 10,
+		Authority: AuthorityConfig{
+			GrantMaxPerAction: "100", GrantCurrency: "USD", BudgetName: "dev-refunds",
+			PermitTTL: config.Duration(5 * time.Second), StaleDispatch: config.Duration(30 * time.Second),
+		},
+		DevGateway: DevGatewayConfig{ID: "gw-dev-1"},
 	}
 }
 
@@ -106,6 +117,7 @@ func (c *Config) Validate() error {
 	if c.WorkerConcurrency < 1 || c.WorkerConcurrency > 1000 {
 		errs = append(errs, errors.New("worker_concurrency must be 1..1000"))
 	}
+	errs = append(errs, c.validateAuthority()...)
 	return errors.Join(errs...)
 }
 
@@ -127,3 +139,66 @@ func (c *Config) dbConfig(user, passwordFile string, maxConns int) (db.Config, e
 
 // shutdownGrace bounds graceful shutdown.
 const shutdownGrace = 20 * time.Second
+
+// AuthorityConfig configures the walking-skeleton Transaction Authority:
+// the hard-coded development grant (M1.5) and permit timing.
+type AuthorityConfig struct {
+	GrantMaxPerAction string          `json:"grant_max_per_action" env:"PC_AUTHORITY_GRANT_MAX"`
+	GrantCurrency     string          `json:"grant_currency" env:"PC_AUTHORITY_GRANT_CURRENCY"`
+	BudgetName        string          `json:"budget_name" env:"PC_AUTHORITY_BUDGET_NAME"`
+	PermitTTL         config.Duration `json:"permit_ttl" env:"PC_AUTHORITY_PERMIT_TTL"`
+	StaleDispatch     config.Duration `json:"stale_dispatch_after" env:"PC_AUTHORITY_STALE_DISPATCH"`
+}
+
+// DevGatewayConfig enables the single development gateway authenticated by
+// a static token. DEVELOPMENT ONLY (until gateway mTLS, M6): refused unless
+// the API listens on loopback.
+type DevGatewayConfig struct {
+	Enabled   bool   `json:"enabled" env:"PC_DEV_GATEWAY_ENABLED"`
+	TokenFile string `json:"token_file" env:"PC_DEV_GATEWAY_TOKEN_FILE"`
+	Org       string `json:"org" env:"PC_DEV_GATEWAY_ORG"`
+	ID        string `json:"gateway_id" env:"PC_DEV_GATEWAY_ID"`
+}
+
+func (c *Config) validateAuthority() []error {
+	var errs []error
+	if m, err := money.ParseMoney(c.Authority.GrantMaxPerAction, c.Authority.GrantCurrency); err != nil {
+		errs = append(errs, fmt.Errorf("authority.grant_max_per_action/currency: %w", err))
+	} else if m.Amount.Sign() <= 0 {
+		errs = append(errs, errors.New("authority.grant_max_per_action must be positive"))
+	}
+	if c.Authority.BudgetName == "" {
+		errs = append(errs, errors.New("authority.budget_name is required"))
+	}
+	if c.Authority.PermitTTL.D() < time.Second || c.Authority.PermitTTL.D() > time.Minute {
+		errs = append(errs, errors.New("authority.permit_ttl must be 1s..1m (HR-009 expects about 5s)"))
+	}
+	if c.Authority.StaleDispatch.D() < 30*time.Second {
+		errs = append(errs, errors.New("authority.stale_dispatch_after must be at least 30s (the sweep lister looks for dispatches older than 30s)"))
+	}
+	if !c.DevGateway.Enabled {
+		return errs
+	}
+	if c.DevGateway.TokenFile == "" || c.DevGateway.ID == "" {
+		errs = append(errs, errors.New("dev_gateway.token_file and dev_gateway.gateway_id are required when enabled"))
+	}
+	if _, err := ids.Parse[ids.Org](c.DevGateway.Org); err != nil {
+		errs = append(errs, errors.New("dev_gateway.org must be the org id printed by `dev seed`"))
+	}
+	if !loopback(c.HTTP.Addr) || c.HTTP.PlaintextBehindProxy {
+		errs = append(errs, errors.New("dev_gateway is development-only: the API must listen on loopback"))
+	}
+	return errs
+}
+
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.IsLoopback()
+}
