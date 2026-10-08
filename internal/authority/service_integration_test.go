@@ -322,9 +322,11 @@ func TestT024_CrashMidDispatchYieldsUnknown(t *testing.T) {
 func TestHR003_SweeperReleasesOnlyExpiredIssued(t *testing.T) {
 	f := setup(t, "1000", nil, time.Microsecond)
 	ctx := context.Background()
-	f.authorize(t, "25.00")
+	for _, amount := range []string{"25.00", "10.50", "4.25"} {
+		f.authorize(t, amount)
+	}
 	r, err := f.svc.SweepOrg(ctx, f.gw.Org, time.Hour)
-	if err != nil || r.Released != 1 || r.Unknown != 0 {
+	if err != nil || r.Released != 3 || r.Unknown != 0 {
 		t.Fatalf("sweep = %+v, %v", r, err)
 	}
 	if b := f.budgetRow(t); !b.Reserved.IsZero() || b.ReservedCount != 0 {

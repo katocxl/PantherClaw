@@ -40,7 +40,7 @@ func secretFile(t *testing.T, dir, name string, b []byte) string {
 }
 
 // testConfig writes a server config for the test database d.
-func testConfig(t *testing.T, d *dbtest.DB, role string) string {
+func testConfig(t *testing.T, d *dbtest.DB, role string, mutate ...func(map[string]any)) string {
 	t.Helper()
 	dir := t.TempDir()
 	kek := filepath.Join(dir, "kek")
@@ -59,6 +59,9 @@ func testConfig(t *testing.T, d *dbtest.DB, role string) string {
 		},
 		"kek_files":          []string{kek},
 		"worker_concurrency": 2,
+	}
+	for _, m := range mutate {
+		m(cfg)
 	}
 	b, err := json.Marshal(cfg)
 	if err != nil {
