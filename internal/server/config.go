@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+package server
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"slices"
+	"time"
+
+	"github.com/katocxl/pantherclaw/internal/platform/config"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	"github.com/katocxl/pantherclaw/internal/platform/money"
+)
+
+// Roles a server process can run.
+const (
+	RoleAPI    = "api"
+	RoleWorker = "worker"
+	RoleAll    = "all"
+)
+
+// Config is the pantherclaw-server configuration (JSON file + PC_* env).
+// Secrets are referenced by file path only (SB-7).
+type Config struct {
+	Role string     `json:"role" env:"PC_ROLE"`
+	Log  LogConfig  `json:"log"`
+	HTTP HTTPConfig `json:"http"`
+	DB   DBConfig   `json:"database"`
+	// KEKFiles are key-encryption-key files; the first wraps new keys.
+	KEKFiles    []string `json:"kek_files" env:"PC_KEK_FILES"`
+	LicenceFile string   `json:"licence_file" env:"PC_LICENCE_FILE"`
+	// WorkerConcurrency is the number of concurrent jobs per worker process.
+	WorkerConcurrency int              `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
+	Authority         AuthorityConfig  `json:"authority"`
+	DevGateway        DevGatewayConfig `json:"dev_gateway"`
+}
+
+// LogConfig configures logging.
+type LogConfig struct {
+	Level string `json:"level" env:"PC_LOG_LEVEL"`
+}
+
+// HTTPConfig configures the API listener.
+type HTTPConfig struct {
+	Addr                 string `json:"addr" env:"PC_HTTP_ADDR"`
+	TLSCertFile          string `json:"tls_cert_file" env:"PC_HTTP_TLS_CERT_FILE"`
+	TLSKeyFile           string `json:"tls_key_file" env:"PC_HTTP_TLS_KEY_FILE"`
+	PlaintextBehindProxy bool   `json:"plaintext_behind_proxy" env:"PC_HTTP_PLAINTEXT_BEHIND_PROXY"`
+}
+
+// DBConfig configures PostgreSQL access.
+type DBConfig struct {
+	Host                 string          `json:"host" env:"PC_DB_HOST"`
+	Port                 int             `json:"port" env:"PC_DB_PORT"`
+	Name                 string          `json:"name" env:"PC_DB_NAME"`
+	SSLMode              string          `json:"sslmode" env:"PC_DB_SSLMODE"`
+	SSLRootCert          string          `json:"sslrootcert" env:"PC_DB_SSLROOTCERT"`
+	AppUser              string          `json:"app_user" env:"PC_DB_APP_USER"`
+	AppPasswordFile      string          `json:"app_password_file" env:"PC_DB_APP_PASSWORD_FILE"`
+	MigratorUser         string          `json:"migrator_user" env:"PC_DB_MIGRATOR_USER"`
+	MigratorPasswordFile string          `json:"migrator_password_file" env:"PC_DB_MIGRATOR_PASSWORD_FILE"`
+	MaxConns             int             `json:"max_conns" env:"PC_DB_MAX_CONNS"`
+	StatementTimeout     config.Duration `json:"statement_timeout" env:"PC_DB_STATEMENT_TIMEOUT"`
+	LockTimeout          config.Duration `json:"lock_timeout" env:"PC_DB_LOCK_TIMEOUT"`
+	IdleInTxTimeout      config.Duration `json:"idle_in_transaction_timeout" env:"PC_DB_IDLE_IN_TX_TIMEOUT"`
+}
+
+// DefaultConfig returns safe defaults: loopback listener, TLS-verified DB.
+func DefaultConfig() Config {
+	d := db.Defaults()
+	return Config{
+		Role: RoleAll,
+		Log:  LogConfig{Level: "info"},
+		HTTP: HTTPConfig{Addr: "127.0.0.1:8080"},
+		DB: DBConfig{
+			Host: d.Host, Port: d.Port, Name: d.Database, SSLMode: d.SSLMode,
+			AppUser: db.RoleApp, MigratorUser: db.RoleMigrator, MaxConns: int(d.MaxConns),
+			StatementTimeout: config.Duration(d.StatementTimeout), LockTimeout: config.Duration(d.LockTimeout),
+			IdleInTxTimeout: config.Duration(d.IdleInTxTimeout),
+		},
+		WorkerConcurrency: 10,
+		Authority: AuthorityConfig{
+			GrantMaxPerAction: "100", GrantCurrency: "USD", BudgetName: "dev-refunds",
+			PermitTTL: config.Duration(5 * time.Second), StaleDispatch: config.Duration(30 * time.Second),
+		},
+		DevGateway: DevGatewayConfig{ID: "gw-dev-1"},
+	}
+}
+
+// Validate implements config.Validator.
+func (c *Config) Validate() error {
+	var errs []error
+	if !slices.Contains([]string{RoleAPI, RoleWorker, RoleAll}, c.Role) {
+		errs = append(errs, fmt.Errorf("role must be %s, %s or %s", RoleAPI, RoleWorker, RoleAll))
+	}
+	if _, ok := pclog.ParseLevel(c.Log.Level); !ok {
+		errs = append(errs, errors.New("log.level must be debug, info, warn or error"))
+	}
+	if (c.HTTP.TLSCertFile == "") != (c.HTTP.TLSKeyFile == "") {
+		errs = append(errs, errors.New("http.tls_cert_file and http.tls_key_file must be set together"))
+	}
+	if c.DB.AppPasswordFile == "" {
+		errs = append(errs, errors.New("database.app_password_file is required"))
+	}
+	if c.DB.AppUser == db.RoleMigrator || c.DB.AppUser == "postgres" {
+		errs = append(errs, errors.New("database.app_user must be the unprivileged application role"))
+	}
+	if len(c.KEKFiles) == 0 {
+		errs = append(errs, errors.New("kek_files is required (generate one with: pantherclaw-server keys gen-kek --out FILE)"))
+	}
+	if c.WorkerConcurrency < 1 || c.WorkerConcurrency > 1000 {
+		errs = append(errs, errors.New("worker_concurrency must be 1..1000"))
+	}
+	errs = append(errs, c.validateAuthority()...)
+	return errors.Join(errs...)
+}
+
+// dbConfig builds a pool configuration for user with the password from file.
+func (c *Config) dbConfig(user, passwordFile string, maxConns int) (db.Config, error) {
+	pw, err := config.ReadSecretFile(passwordFile)
+	if err != nil {
+		return db.Config{}, err
+	}
+	return db.Config{
+		Host: c.DB.Host, Port: c.DB.Port, Database: c.DB.Name, User: user, Password: pw,
+		SSLMode: c.DB.SSLMode, SSLRootCert: c.DB.SSLRootCert,
+		MaxConns:         int32(maxConns), //nolint:gosec // G115: validated by db.Config.Validate (≤ 1000)
+		StatementTimeout: c.DB.StatementTimeout.D(), LockTimeout: c.DB.LockTimeout.D(),
+		IdleInTxTimeout: c.DB.IdleInTxTimeout.D(), ApplicationName: "pantherclaw-server",
+		RequireUnprivileged: user != c.DB.MigratorUser,
+	}, nil
+}
+
+// shutdownGrace bounds graceful shutdown.
+const shutdownGrace = 20 * time.Second
+
+// AuthorityConfig configures the walking-skeleton Transaction Authority:
+// the hard-coded development grant (M1.5) and permit timing.
+type AuthorityConfig struct {
+	GrantMaxPerAction string          `json:"grant_max_per_action" env:"PC_AUTHORITY_GRANT_MAX"`
+	GrantCurrency     string          `json:"grant_currency" env:"PC_AUTHORITY_GRANT_CURRENCY"`
+	BudgetName        string          `json:"budget_name" env:"PC_AUTHORITY_BUDGET_NAME"`
+	PermitTTL         config.Duration `json:"permit_ttl" env:"PC_AUTHORITY_PERMIT_TTL"`
+	StaleDispatch     config.Duration `json:"stale_dispatch_after" env:"PC_AUTHORITY_STALE_DISPATCH"`
+}
+
+// DevGatewayConfig enables the single development gateway authenticated by
+// a static token. DEVELOPMENT ONLY (until gateway mTLS, M6): refused unless
+// the API listens on loopback.
+type DevGatewayConfig struct {
+	Enabled   bool   `json:"enabled" env:"PC_DEV_GATEWAY_ENABLED"`
+	TokenFile string `json:"token_file" env:"PC_DEV_GATEWAY_TOKEN_FILE"`
+	Org       string `json:"org" env:"PC_DEV_GATEWAY_ORG"`
+	ID        string `json:"gateway_id" env:"PC_DEV_GATEWAY_ID"`
+}
+
+func (c *Config) validateAuthority() []error {
+	var errs []error
+	if m, err := money.ParseMoney(c.Authority.GrantMaxPerAction, c.Authority.GrantCurrency); err != nil {
+		errs = append(errs, fmt.Errorf("authority.grant_max_per_action/currency: %w", err))
+	} else if m.Amount.Sign() <= 0 {
+		errs = append(errs, errors.New("authority.grant_max_per_action must be positive"))
+	}
+	if c.Authority.BudgetName == "" {
+		errs = append(errs, errors.New("authority.budget_name is required"))
+	}
+	if c.Authority.PermitTTL.D() < time.Second || c.Authority.PermitTTL.D() > time.Minute {
+		errs = append(errs, errors.New("authority.permit_ttl must be 1s..1m (HR-009 expects about 5s)"))
+	}
+	if c.Authority.StaleDispatch.D() < 30*time.Second {
+		errs = append(errs, errors.New("authority.stale_dispatch_after must be at least 30s (the sweep lister looks for dispatches older than 30s)"))
+	}
+	if !c.DevGateway.Enabled {
+		return errs
+	}
+	if c.DevGateway.TokenFile == "" || c.DevGateway.ID == "" {
+		errs = append(errs, errors.New("dev_gateway.token_file and dev_gateway.gateway_id are required when enabled"))
+	}
+	if _, err := ids.Parse[ids.Org](c.DevGateway.Org); err != nil {
+		errs = append(errs, errors.New("dev_gateway.org must be the org id printed by `dev seed`"))
+	}
+	if !loopback(c.HTTP.Addr) || c.HTTP.PlaintextBehindProxy {
+		errs = append(errs, errors.New("dev_gateway is development-only: the API must listen on loopback"))
+	}
+	return errs
+}
+
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.IsLoopback()
+}
