@@ -88,7 +88,9 @@ jobs:
       - name: Verify modules
         run: |
           for m in . sdk/go tools; do (cd "$m" && go mod verify && go mod tidy -diff); done
-      - name: Generated code is up to date (sqlc)
+      - name: Traceability (every HR/T due by the last completed milestone has a test)
+        run: $TASK trace
+      - name: Generated code is up to date (buf, sqlc)
         run: $TASK gen:check
       - name: Format
         run: $TASK fmt:check
