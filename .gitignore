@@ -18,6 +18,7 @@ coverage.*
 *.jwk
 *-key.json
 /secrets/
+deploy/dev/secrets/
 /.pclaw/
 *.licence
 *.license.json
