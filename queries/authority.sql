@@ -89,6 +89,14 @@ UPDATE pc.budgets
 SET reserved = reserved - sqlc.arg(amount), reserved_count = reserved_count - 1
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND reserved >= sqlc.arg(amount) AND reserved_count >= 1;
 
+-- ReleaseReservations releases several reservations of one budget in one
+-- statement, so a sweep locks the hot row once.
+-- name: ReleaseReservations :execresult
+UPDATE pc.budgets
+SET reserved = reserved - sqlc.arg(amount), reserved_count = reserved_count - sqlc.arg(count)::int4
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id)
+  AND reserved >= sqlc.arg(amount) AND reserved_count >= sqlc.arg(count)::int4;
+
 -- name: InsertExecutionAttempt :exec
 INSERT INTO pc.execution_attempts (org_id, id, permit_id, transaction_id, outcome, target_status, response_digest, dispatch_ms)
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(permit_id), sqlc.arg(transaction_id), sqlc.arg(outcome),
