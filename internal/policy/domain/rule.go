@@ -224,6 +224,12 @@ func (r *Rule) Applies(operation, env string) bool {
 	if len(r.Environments) > 0 && !slices.Contains(r.Environments, env) {
 		return false
 	}
+	return r.CoversOperation(operation)
+}
+
+// CoversOperation reports whether the rule's operations cover an operation,
+// whatever the environment.
+func (r *Rule) CoversOperation(operation string) bool {
 	return slices.ContainsFunc(r.Operations, func(op string) bool {
 		prefix, isPrefix := strings.CutSuffix(op, "*")
 		return op == operation || (isPrefix && strings.HasPrefix(operation, prefix))
