@@ -48,7 +48,7 @@ Rules for the AI implementer:
 | 3 | Run `claude setup-token` and save it as repository secret `CLAUDE_CODE_OAUTH_TOKEN` | Claude AI security review in CI | ☐ |
 | 4 | Reserve package names: PyPI pending trusted publisher `pantherclaw` (workflow `release.yml`, environment `release`); npm organization `@pantherclaw` | Prevent name squatting; OIDC publishing | ☐ |
 | 5 | Optional: install Task (`winget install Task.Task`) for shorter commands; install `uv` (`winget install astral-sh.uv`) before SDK work (M8). All other tools are pinned under `tools/pins/` and run via `go tool` | Local tooling | ☐ |
-| 6 | (M1) Run `pclaw-admin keygen --purpose licence` and `--purpose packages` on an offline-capable machine; store private keys on two offline media; commit only the public keys | Licence and package trust roots (HR-063) | ☐ |
+| 6 | (M1) On an offline-capable machine: `go build -o pclaw-admin ./cmd/pclaw-admin`, then `pclaw-admin keygen --purpose licence --out-dir <offline media> --passphrase-file <file>` (and the same with `--purpose packages`). Copy each `*-root.key` to a second offline medium. Commit only the public key: paste the key from `licence-root.pub.json` into `internal/billing/licence/roots.json`. Until then every licence is rejected and servers run with Community limits | Licence and package trust roots (HR-063) | ☐ |
 | 7 | Optional: create `%UserProfile%\.wslconfig` with `memory=8GB` | Docker stability with Keycloak + LGTM | ☐ |
 | 8 | Before accepting outside PRs: install CLA Assistant (cla-assistant.io) linked to `CLA.md` | Keep relicensing rights | ☐ |
 | 9 | Optional: create fine-grained PAT (public repos, read-only) as secret `CANARY_SEARCH_TOKEN` | Copy detection workflow | ☐ |
@@ -157,6 +157,49 @@ Rules: tests first for security behavior; no sleeps (use clocks/conditions); no 
 | `task build` | build all binaries into `bin/` |
 | `task up` / `task down` | compose stack (profile via `PROFILE=core`) |
 | `task vuln` | govulncheck |
+
+**Run the server locally (M1):** secrets live in the git-ignored `deploy/dev/secrets/`.
+
+```bash
+task up                                                   # PostgreSQL 17 on 127.0.0.1:5432
+mkdir -p deploy/dev/secrets
+for r in pc_app pc_migrator pc_audit_ro; do openssl rand -hex 24 > deploy/dev/secrets/$r.pw; done
+set -a; . deploy/compose/.env; set +a                       # PC_PG_PASSWORD of the compose database
+printf 'postgres://pc_owner:%s@127.0.0.1:5432/pantherclaw?sslmode=disable' "$PC_PG_PASSWORD" > deploy/dev/secrets/admin.url
+go run ./cmd/pantherclaw-server db bootstrap --admin-url-file deploy/dev/secrets/admin.url \
+  --app-password-file deploy/dev/secrets/pc_app.pw --migrator-password-file deploy/dev/secrets/pc_migrator.pw \
+  --audit-password-file deploy/dev/secrets/pc_audit_ro.pw
+go run ./cmd/pantherclaw-server keys gen-kek --out deploy/dev/secrets/kek
+go run ./cmd/pantherclaw-server migrate up --config deploy/dev/server.example.json
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
+```
+
+Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
+
+**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+
+```bash
+go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
+  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
+# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
+# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000-8000-0000000000c1' \
+  -H "PC-Run-Id: $(uuidgen)" -H "PC-Action-Id: $(uuidgen)" \
+  -d '{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}'
+```
+
+The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
+
+**Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
+
+```bash
+go run ./cmd/pantherclaw-sim load --workload 01920000-0000-7000-8000-0000000000c1 --rate 1000 --duration 30s --warmup 5s --out perf.json
+k6 run -e WORKLOAD=01920000-0000-7000-8000-0000000000c1 -e RATE=1000 test/load/refund.js   # Linux/nightly; thresholds are the SLOs
+```
+
+Results and the machines they were measured on are recorded in `docs/perf/M1.5.md`.
 
 ---
 
