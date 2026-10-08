@@ -15,7 +15,8 @@ VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(code_hash), sqlc.arg(user_code)
         now() + make_interval(secs => sqlc.arg(ttl_seconds)::int))
 -- A user-code collision among open codes must not abort the transaction:
 -- skip the row (no RETURNING row) and let the caller draw another code.
-ON CONFLICT DO NOTHING
+-- Only the open-user-code index is an arbiter: any other conflict is an error.
+ON CONFLICT (org_id, user_code) WHERE state IN ('PENDING', 'AUTHORIZING') DO NOTHING
 RETURNING created_at, expires_at;
 
 -- name: PendingInvitationByHash :one

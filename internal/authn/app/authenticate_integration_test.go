@@ -254,28 +254,35 @@ func TestIntJanitorRemovesOnlyExpiredRows(t *testing.T) {
 
 // TestIntUserCodeCollisionKeepsTheTransaction: a user code already open in
 // the org is skipped (no row) without aborting the transaction, so Start
-// can draw another code in the same transaction.
+// can draw another code in the same transaction. Any other conflict (here a
+// duplicate code hash) is still an error.
 func TestIntUserCodeCollisionKeepsTheTransaction(t *testing.T) {
 	e := newEnv(t)
 	w := e.world(t, "codes")
+	insert := func(ctx context.Context, q *dbq.Queries, code, hash string) error {
+		_, err := q.InsertDeviceCode(ctx, dbq.InsertDeviceCodeParams{
+			OrgID: w.org, ID: ids.NewV7(), CodeHash: []byte(strings.Repeat(hash, 32)), UserCode: code,
+			DeviceJkt: strings.Repeat("d", 43), DeviceJwk: []byte("{}"), TtlSeconds: 600,
+		})
+		return err
+	}
 	err := e.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		insert := func(code string) error {
-			_, err := q.InsertDeviceCode(ctx, dbq.InsertDeviceCodeParams{
-				OrgID: w.org, ID: ids.NewV7(), CodeHash: []byte(strings.Repeat(code[:1], 32)), UserCode: code,
-				DeviceJkt: strings.Repeat("d", 43), DeviceJwk: []byte("{}"), TtlSeconds: 600,
-			})
+		if err := insert(ctx, q, "BCDFGHJK", "a"); err != nil {
 			return err
 		}
-		if err := insert("BCDFGHJK"); err != nil {
-			return err
-		}
-		if err := insert("BCDFGHJK"); !db.IsNoRows(err) {
+		if err := insert(ctx, q, "BCDFGHJK", "b"); !db.IsNoRows(err) {
 			t.Errorf("colliding user code: %v, want no row", err)
 		}
-		return insert("CDFGHJKL") // the transaction is still usable
+		return insert(ctx, q, "CDFGHJKL", "c") // the transaction is still usable
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	err = e.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
+		return insert(ctx, dbq.New(tx), "DFGHJKLM", "a")
+	})
+	if !db.IsUniqueViolation(err) {
+		t.Fatalf("duplicate code hash: %v, want a unique violation", err)
 	}
 }
