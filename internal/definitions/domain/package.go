@@ -18,15 +18,16 @@ import (
 // Format is the only supported package format.
 const Format = 1
 
-// Package is a reviewed, versioned bundle of action definitions
-// (F372, SemanticPackage).
+// Package is a reviewed, versioned bundle of action definitions and
+// consequence rules (F372, SemanticPackage).
 type Package struct {
-	Format      int          `json:"format"`
-	Name        string       `json:"name"`
-	Version     string       `json:"version"`
-	Publisher   string       `json:"publisher"`
-	Summary     string       `json:"summary"`
-	Definitions []Definition `json:"definitions"`
+	Format       int               `json:"format"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Publisher    string            `json:"publisher"`
+	Summary      string            `json:"summary"`
+	Definitions  []Definition      `json:"definitions"`
+	Consequences []ConsequenceRule `json:"consequences,omitzero"`
 }
 
 // Channel is how an agent reaches a tool.
@@ -184,8 +185,8 @@ func (d *Definition) validateMapping(i int) error {
 }
 
 // Validate checks the whole package. Definitions are validated one by one,
-// then the cross-references: unique operations, tools and routes, and
-// verifier operations that are reads in this package.
+// then the cross-references: unique operations, tools and routes, verifier
+// operations that are reads in this package, and consequence rules.
 func (p *Package) Validate() error {
 	switch {
 	case p.Format != Format:
@@ -196,8 +197,8 @@ func (p *Package) Validate() error {
 		return invalid("version %q must be MAJOR.MINOR.PATCH", p.Version)
 	case !reviewRe.MatchString(p.Publisher):
 		return invalid("publisher %q", p.Publisher)
-	case len(p.Definitions) == 0 || len(p.Definitions) > 256:
-		return invalid("a package has 1..256 definitions")
+	case len(p.Definitions) == 0 || len(p.Definitions) > 256 || len(p.Consequences) > 256:
+		return invalid("a package has 1..256 definitions and at most 256 consequence rules")
 	}
 	if err := text("summary", p.Summary); err != nil {
 		return err
@@ -226,7 +227,7 @@ func (p *Package) Validate() error {
 			return invalid("%s: verifier %s must be a read operation in this package", d.Operation, v.Operation)
 		}
 	}
-	return nil
+	return p.validateConsequences(ops)
 }
 
 // Definition returns the definition of op.
