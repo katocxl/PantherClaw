@@ -33,6 +33,11 @@ sql:
             go_type: github.com/katocxl/pantherclaw/internal/platform/ids.OrgID
           - column: "pc.orgs.id"
             go_type: github.com/katocxl/pantherclaw/internal/platform/ids.OrgID
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
           - db_type: timestamptz
             go_type: time.Time
           - db_type: timestamptz

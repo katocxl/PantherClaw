@@ -74,6 +74,15 @@ type PcLedgerHead struct {
 	UpdatedAt    time.Time
 }
 
+type PcLicenceState struct {
+	ID             int16
+	Document       *string
+	LicenceID      *string
+	RejectedReason *string
+	UpdatedAt      time.Time
+	UpdatedBy      string
+}
+
 type PcOrg struct {
 	ID        ids.OrgID
 	Name      string
