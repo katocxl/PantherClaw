@@ -27,6 +27,7 @@ const usage = `pantherclaw-sim — simulated targets and load driver (everything
 
 Usage:
   pantherclaw-sim payments [--addr 127.0.0.1:9090] [--latency 0s] [--decline-rate 0] [--hang-rate 0]
+  pantherclaw-sim load --workload ID [--gateway URL] [--rate 1000] [--duration 30s] [--warmup 5s] [--amount 1.00] [--out FILE]
   pantherclaw-sim version
 `
 
@@ -43,6 +44,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "payments":
 		err = runPayments(ctx, args[1:], stderr)
+	case "load":
+		err = runLoad(ctx, args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprint(stderr, usage)
 		return 2
