@@ -108,6 +108,11 @@ func init() {
 	for k, v := range serviceAccountCommands() {
 		commands[k] = v
 	}
+	for _, group := range []map[string]command{agentCommands(), identityCommands(), workloadCommands()} {
+		for k, v := range group {
+			commands[k] = v
+		}
+	}
 }
 
 func tenancyCommands() map[string]command {
