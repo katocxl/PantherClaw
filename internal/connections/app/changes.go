@@ -13,7 +13,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
-	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
@@ -45,7 +44,7 @@ type change struct {
 // apply runs a change to a locked connection: the update itself, the epoch
 // for strengthening changes, the gateway configuration versions, the audit
 // with old and new values, and the notification for weakening ones.
-func (s *Service) apply(ctx context.Context, tx db.TenantTx, c tenancy.Caller, before dbq.PcConnection, p dbq.UpdateConnectionParams,
+func (s *Service) apply(ctx context.Context, tx db.TenantTx, c actor, before dbq.PcConnection, p dbq.UpdateConnectionParams,
 	changes []change, event string, extra map[string]string,
 ) (dbq.PcConnection, error) {
 	q := dbq.New(tx)
@@ -59,7 +58,7 @@ func (s *Service) apply(ctx context.Context, tx db.TenantTx, c tenancy.Caller, b
 }
 
 // after is everything a change does besides writing it.
-func (s *Service) after(ctx context.Context, tx db.TenantTx, c tenancy.Caller, before, after dbq.PcConnection, changes []change,
+func (s *Service) after(ctx context.Context, tx db.TenantTx, c actor, before, after dbq.PcConnection, changes []change,
 	event string, extra map[string]string,
 ) error {
 	q := dbq.New(tx)
@@ -112,11 +111,11 @@ func fieldNames(changes []change) string {
 }
 
 // params starts an update that keeps every field.
-func params(c tenancy.Caller, conn dbq.PcConnection) dbq.UpdateConnectionParams {
+func params(c actor, conn dbq.PcConnection) dbq.UpdateConnectionParams {
 	return dbq.UpdateConnectionParams{
 		GatewayID: conn.GatewayID, BaseUrl: conn.BaseUrl, AllowedHosts: conn.AllowedHosts, DestinationClass: conn.DestinationClass,
 		AccessMode: conn.AccessMode, DefaultMode: conn.DefaultMode, MaxResponseBytes: conn.MaxResponseBytes, TimeoutMs: conn.TimeoutMs,
-		State: conn.State, QuarantineReason: conn.QuarantineReason, UpdatedBy: c.Principal.String(), OrgID: c.Org, ID: conn.ID,
+		State: conn.State, QuarantineReason: conn.QuarantineReason, UpdatedBy: c.By, OrgID: c.Org, ID: conn.ID,
 		Revision: conn.Revision,
 	}
 }
@@ -267,18 +266,18 @@ func (s *Service) SetRouteMode(ctx context.Context, id ids.UUID, route, mode str
 			}
 			from = conn.DefaultMode
 			if err := q.InsertConnectionRoute(ctx, dbq.InsertConnectionRouteParams{
-				OrgID: c.Org, ConnectionID: id, Route: route, Mode: from, ChangedBy: c.Principal.String(),
+				OrgID: c.Org, ConnectionID: id, Route: route, Mode: from, ChangedBy: c.By,
 			}); err != nil {
 				return err
 			}
 		}
 		if from != mode {
 			if _, err := q.SetConnectionRouteMode(ctx, dbq.SetConnectionRouteModeParams{
-				Mode: mode, ChangedBy: c.Principal.String(), OrgID: c.Org, ConnectionID: id, Route: route,
+				Mode: mode, ChangedBy: c.By, OrgID: c.Org, ConnectionID: id, Route: route,
 			}); err != nil {
 				return err
 			}
-			if err := q.TouchConnection(ctx, c.Principal.String(), c.Org, id); err != nil {
+			if err := q.TouchConnection(ctx, c.By, c.Org, id); err != nil {
 				return err
 			}
 			after, err := q.GetConnection(ctx, c.Org, id)
@@ -343,7 +342,7 @@ func (s *Service) transition(ctx context.Context, id ids.UUID, from []string, to
 			details[k] = v
 		}
 		if to == StateRetired {
-			n, err := q.RevokeConnectionCredentials(ctx, ptr(c.Principal.String()), c.Org, id)
+			n, err := q.RevokeConnectionCredentials(ctx, ptr(c.By), c.Org, id)
 			if err != nil {
 				return err
 			}

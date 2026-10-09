@@ -251,6 +251,24 @@ func (m *Mapper) HTTP(ctx context.Context, tc Context, method, rawPath, rawQuery
 	return m.run(ctx, tc, match, map[string]any{"input": input, "path": vars, "query": query})
 }
 
+// HTTPRoute returns the route id a request's method and raw path match,
+// without mapping its input; ok is false for none or more than one. It
+// names the route of a request that is refused before mapping.
+func (m *Mapper) HTTPRoute(method, rawPath string) (route string, ok bool) {
+	for _, c := range m.http {
+		if c.m.Method != method {
+			continue
+		}
+		if _, match := matchPath(c.tmpl, rawPath); match {
+			if ok {
+				return "", false
+			}
+			route, ok = c.m.Route, true
+		}
+	}
+	return route, ok
+}
+
 func (m *Mapper) run(ctx context.Context, tc Context, c *compiled, vars map[string]any) (actionir.Parsed, error) {
 	input, _ := vars["input"].(map[string]any)
 	for k := range input {

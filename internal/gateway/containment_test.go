@@ -20,16 +20,18 @@ func TestHR010_TheGatewayDispatchesNothingWithoutFreshContainment(t *testing.T) 
 	for name, tc := range map[string]struct {
 		err  error
 		code int
+		want string
 	}{
-		"stale":       {control.ErrStale, http.StatusServiceUnavailable},
-		"revoked":     {control.ErrRevoked, http.StatusServiceUnavailable},
-		"kill switch": {control.ErrKillSwitch, http.StatusForbidden},
+		"stale":       {control.ErrStale, http.StatusServiceUnavailable, "containment_stale"},
+		"revoked":     {control.ErrRevoked, http.StatusServiceUnavailable, "gateway_revoked"},
+		"kill switch": {control.ErrKillSwitch, http.StatusForbidden, "kill_switch"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := setup(t, "", func(h *harness) { h.containment.err = tc.err })
-			code, r, _ := h.post(t, inbound, nil)
-			if code != tc.code || r.Error != tc.err.Error() || h.auth.snap().authorize != 0 || h.target.calls() != 0 {
-				t.Fatalf("%d %+v, authorize %d, target %d", code, r, h.auth.snap().authorize, h.target.calls())
+			h := setup(t, func(h *harness) { h.containment.err = tc.err })
+			r := h.post(t, inbound, nil)
+			if r.code != tc.code || r.refusal.ErrorClass != "enforcement_failed" || r.refusal.Error != tc.want ||
+				h.auth.snap().authorize != 0 || h.target.calls() != 0 {
+				t.Fatalf("%d %+v, authorize %d, target %d", r.code, r.refusal, h.auth.snap().authorize, h.target.calls())
 			}
 		})
 	}
@@ -45,10 +47,10 @@ func TestHR010_ContainmentChangingDuringTheDecisionStopsDispatch(t *testing.T) {
 		"kill switch":  func(f *fakeContainment) { f.err = control.ErrKillSwitch },
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := setup(t, "", func(h *harness) { h.containment.after = after })
-			code, _, _ := h.post(t, inbound, nil)
-			if s := h.auth.snap(); code == http.StatusOK || s.authorize != 1 || s.begins != 0 || h.target.calls() != 0 {
-				t.Fatalf("%d, authorize %d, begins %d, target %d", code, s.authorize, s.begins, h.target.calls())
+			h := setup(t, func(h *harness) { h.containment.after = after })
+			r := h.post(t, inbound, nil)
+			if s := h.auth.snap(); r.code == http.StatusOK || s.authorize != 1 || len(s.begins) != 0 || h.target.calls() != 0 {
+				t.Fatalf("%d, authorize %d, begins %d, target %d", r.code, s.authorize, len(s.begins), h.target.calls())
 			}
 		})
 	}
@@ -57,7 +59,7 @@ func TestHR010_ContainmentChangingDuringTheDecisionStopsDispatch(t *testing.T) {
 // TestHR010_ServingWaitsForTheFirstSnapshot: WaitReady blocks until the
 // containment view has its first snapshot, and gives up after its timeout.
 func TestHR010_ServingWaitsForTheFirstSnapshot(t *testing.T) {
-	h := setup(t, "")
+	h := setup(t)
 	pending := &fakeContainment{ready: make(chan struct{})}
 	h.gw.containment = pending
 	if err := h.gw.WaitReady(context.Background(), 50*time.Millisecond); err == nil {
@@ -73,7 +75,7 @@ func TestHR010_ServingWaitsForTheFirstSnapshot(t *testing.T) {
 // but no configuration, the gateway is not ready (decision 19: a gateway
 // whose configuration is unavailable at start does not serve).
 func TestServingWaitsForTheFirstConfiguration(t *testing.T) {
-	h := setup(t, "")
+	h := setup(t)
 	pending := &fakeConfig{ready: make(chan struct{})}
 	h.gw.config = pending
 	if err := h.gw.WaitReady(context.Background(), 50*time.Millisecond); err == nil || !strings.Contains(err.Error(), "configuration") {

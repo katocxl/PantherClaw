@@ -80,7 +80,6 @@ func TestHR182_TheGatewayRegistersItsBrokerKeyAndOpensWithTheRegisteredID(t *tes
 
 func TestBrokerConfigIsPaired(t *testing.T) {
 	c := DefaultConfig()
-	c.Target.URL = "http://127.0.0.1:9090"
 	c.Broker.KeyFile = "broker.json"
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "broker") {
 		t.Fatalf("a key file without KEK files: %v", err)

@@ -14,7 +14,6 @@ const (
 
 func TestConfigValidation(t *testing.T) {
 	base := DefaultConfig()
-	base.Target.URL = "http://127.0.0.1:9090"
 	base.Control.CASHA256 = testPin
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid config refused: %v", err)
@@ -27,9 +26,8 @@ func TestConfigValidation(t *testing.T) {
 		"plain gateway url":         func(c *Config) { c.Control.GatewayURL = "http://127.0.0.1:8443" },
 		"bad pin":                   func(c *Config) { c.Control.CASHA256 = "sha256:abc" },
 		"no identity dir":           func(c *Config) { c.Control.IdentityDir = "" },
-		"target userinfo":           func(c *Config) { c.Target.URL = "http://u:p@127.0.0.1:9090" },
-		"target scheme":             func(c *Config) { c.Target.URL = "ftp://127.0.0.1" },
-		"bad prefix":                func(c *Config) { c.Target.AllowedPrefixes = []string{"127.0.0.1"} },
+		"no control timeout":        func(c *Config) { c.Control.Timeout = 0 },
+		"bad prefix":                func(c *Config) { c.Egress.AllowedPrefixes = []string{"127.0.0.1"} },
 		"no public url":             func(c *Config) { c.PublicURL = "" },
 		"public url path":           func(c *Config) { c.PublicURL = "http://127.0.0.1:8090/gw" },
 	} {

@@ -44,6 +44,36 @@ type m3Stack struct {
 	org       string
 	bootstrap string
 	gateway   string
+	// sim is the simulated payments API's URL.
+	sim string
+}
+
+// connect creates the development "payments" connection to the simulator
+// (once the org has the package) and waits until the gateway serves it.
+func (s *m3Stack) connect(t *testing.T) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := server.Run(context.Background(), []string{"dev", "connection", "--config", s.cfg, "--org", s.org, "--target-url", s.sim},
+		&out, &errb, noEnv); code != 0 {
+		t.Fatalf("dev connection: %d %s", code, errb.String())
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		// Without credentials the gateway answers 401 for a connection it
+		// serves and 404 for one it does not know yet.
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the gateway did not load the new connection")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func startM3(t *testing.T) *m3Stack {
@@ -130,13 +160,13 @@ func startM3(t *testing.T) *m3Stack {
 	gc := gateway.DefaultConfig()
 	gc.PublicURL = "http://" + gs.Listener.Addr().String()
 	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
-	gc.Target.URL, gc.Target.AllowedPrefixes = sim.URL, []string{"127.0.0.1/32"}
+	gc.Egress.AllowedPrefixes = []string{"127.0.0.1/32"}
 	gst := &stack{gatewayCfg: gc, gatewayEnroll: enrollFile}
 	g := gst.startGateway(t)
 	gs.Config.Handler = g.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
-	s.gateway = gs.URL
+	s.gateway, s.sim = gs.URL, sim.URL
 	return s
 }
 
@@ -158,7 +188,7 @@ func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 func (s *m3Stack) refund(t *testing.T, key ed25519.PrivateKey, token, run string, base http.RoundTripper) (int, http.Header, string) {
 	t.Helper()
 	body := `{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, run)
 	req.Header.Set(gateway.HeaderActionID, ids.NewV7().String())
 	if base == nil {
@@ -176,7 +206,7 @@ func (s *m3Stack) refund(t *testing.T, key ed25519.PrivateKey, token, run string
 
 func (s *m3Stack) raw(t *testing.T, header http.Header, body []byte) (int, string) {
 	t.Helper()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", bytes.NewReader(body))
 	req.Header = header.Clone()
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
@@ -252,6 +282,7 @@ func TestE2E_M3_EnrollAdmitRunRefund(t *testing.T) {
 	agentID, _ := ids.ParseUUID(agent)
 	aliceUUID, _ := ids.ParseUUID(aliceID)
 	grant := seedAuthority(t, s.db.AppPool(t), ids.MustParse[ids.Org](s.org), agentID, aliceUUID, "ch_1")
+	s.connect(t)
 	run := field(t, must("run", "start", agent, "--instance", inst[1], "--grant", grant, "--task", "refund ch_1"), "id")
 	token := strings.TrimSpace(must("workload", "token", "--key-file", keyFile))
 	kf, err := workloadclient.ReadKeyFile(keyFile)
@@ -262,7 +293,7 @@ func TestE2E_M3_EnrollAdmitRunRefund(t *testing.T) {
 
 	rec := &recorder{}
 	code, hdr, body := s.refund(t, key, token, run, rec)
-	if code != http.StatusOK || !strings.Contains(body, `"outcome":"ACCEPTED"`) || hdr.Get(gateway.HeaderNonce) == "" {
+	if code != http.StatusOK || hdr.Get("PC-Outcome") != "ACCEPTED" || hdr.Get(gateway.HeaderNonce) == "" {
 		t.Fatalf("refund: %d %s", code, body)
 	}
 

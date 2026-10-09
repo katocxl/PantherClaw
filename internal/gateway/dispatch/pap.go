@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-package gateway
+package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
 // PAP/1 request headers (PAP-1 §4, §5). The run and action ids are what the
@@ -29,6 +31,9 @@ const (
 	HeaderError    = "PAP-Error"
 	HeaderRunID    = "PAP-Run-Id"
 	HeaderActionID = "PC-Action-Id"
+	// HeaderAction carries the action token to a target-enforced
+	// connection (PAP-1 §10, HR-188).
+	HeaderAction = "PAP-Action"
 )
 
 // nonceCacheFor bounds how long the gateway serves a nonce from its cache.
@@ -69,31 +74,62 @@ func (n *nonces) get() string {
 	return n.cur
 }
 
-// nonce returns the cached nonce, asking the Authority when there is none.
-func (g *Gateway) nonce(ctx context.Context) string {
-	if v := g.nonces.get(); v != "" {
+// Nonce returns the cached nonce, asking the Authority when there is none.
+func (e *Engine) Nonce(ctx context.Context) string {
+	if v := e.nonces.get(); v != "" {
 		return v
 	}
-	if res, err := g.authority.GetNonce(ctx, &pb.GetNonceRequest{}); err == nil {
+	if res, err := e.authority.GetNonce(ctx, &pb.GetNonceRequest{}); err == nil {
 		var exp time.Time
-		if e := res.GetExpireTime(); e != nil && e.IsValid() {
-			exp = e.AsTime()
+		if t := res.GetExpireTime(); t != nil && t.IsValid() {
+			exp = t.AsTime()
 		}
-		g.nonces.set(res.GetNonce(), exp)
+		e.nonces.set(res.GetNonce(), exp)
 	}
-	return g.nonces.get()
+	return e.nonces.get()
 }
 
-// refusePAP answers 401 with a PAP-Error code and a nonce (PAP-1 §12).
-func (g *Gateway) refusePAP(ctx context.Context, w http.ResponseWriter, code pap.Code, nonce string) {
-	if nonce == "" {
-		nonce = g.nonce(ctx)
+// Inbound is what a request says about its workload: the PAP/1
+// credentials, forwarded for the Authority to verify (HR-021), and the
+// instance, environment, run and action it names, which go into the
+// ActionIR and which the Authority checks against what it verified.
+type Inbound struct {
+	Creds *pb.WorkloadCredentials
+	// HasToken: the request carries a workload token (otherwise it is
+	// key-only, HR-148).
+	HasToken bool
+	// Instance and Env come from the token, UNVERIFIED; ok is false when
+	// the token does not name them.
+	Instance, Env string
+	SubjectOK     bool
+	// Run and Action are the PAP-Run-Id and PC-Action-Id headers; empty
+	// when absent or not UUIDs.
+	Run, Action string
+}
+
+// ReadInbound reads the PAP/1 credentials of r, whose raw body is body
+// (hashed before anything parses it, HR-091), addressed to htu (the
+// gateway's public URL and the path, never the Host header; PAP-1 §4).
+func ReadInbound(r *http.Request, body []byte, htu string) Inbound {
+	sum := sha256.Sum256(body)
+	token, hasToken := strings.CutPrefix(r.Header.Get("Authorization"), "PAP ")
+	in := Inbound{
+		Creds: &pb.WorkloadCredentials{
+			WorkloadToken: token, Proof: r.Header.Get(HeaderProof), BodySha256: sum[:], Htm: r.Method, Htu: htu,
+			ClientAddress: clientAddress(r),
+		},
+		HasToken: hasToken,
 	}
-	if nonce != "" {
-		w.Header().Set(HeaderNonce, nonce)
+	if hasToken {
+		in.Instance, in.Env, in.SubjectOK = tokenSubject(token)
 	}
-	w.Header().Set(HeaderError, string(code))
-	reply(w, http.StatusUnauthorized, result{Error: string(code)})
+	if run, err := ids.ParseUUID(r.Header.Get(HeaderRunID)); err == nil {
+		in.Run = run.String()
+	}
+	if act, err := ids.ParseUUID(r.Header.Get(HeaderActionID)); err == nil {
+		in.Action = act.String()
+	}
+	return in
 }
 
 // tokenSubject reads, WITHOUT verifying, the instance and environment a
@@ -125,15 +161,15 @@ func tokenSubject(token string) (instance, env string, ok bool) {
 	return id.Instance.String(), c.PAP.Env, true
 }
 
-// reportUnknown reports a key-only request to the Authority (HR-148) and
-// refuses it.
-func (g *Gateway) reportUnknown(ctx context.Context, w http.ResponseWriter, r *http.Request, creds *pb.WorkloadCredentials) {
-	ua := r.UserAgent()
-	if len(ua) > 256 {
-		ua = ua[:256]
+// ReportUnknown reports a key-only request to the Authority (HR-148) and
+// returns the PAP-Error code and nonce to refuse it with. route is the
+// route the request was addressed to, when it matched one.
+func (e *Engine) ReportUnknown(ctx context.Context, creds *pb.WorkloadCredentials, userAgent, route string) (pap.Code, string) {
+	if len(userAgent) > 256 {
+		userAgent = userAgent[:256]
 	}
-	res, err := g.authority.ReportUnknownWorkload(ctx, &pb.ReportUnknownWorkloadRequest{
-		Workload: creds, UserAgent: strings.ToValidUTF8(ua, ""), Route: "payments-refund",
+	res, err := e.authority.ReportUnknownWorkload(ctx, &pb.ReportUnknownWorkloadRequest{
+		Workload: creds, UserAgent: strings.ToValidUTF8(userAgent, ""), Route: route,
 	})
 	code := pap.CodeInstanceNotAdmitted
 	if err != nil {
@@ -145,7 +181,11 @@ func (g *Gateway) reportUnknown(ctx context.Context, w http.ResponseWriter, r *h
 			}
 		}
 	}
-	g.refusePAP(ctx, w, code, res.GetNonce())
+	nonce := res.GetNonce()
+	if nonce == "" {
+		nonce = e.Nonce(ctx)
+	}
+	return code, nonce
 }
 
 // clientAddress is the workload's address as the gateway saw it. It is

@@ -9,26 +9,50 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
+	"github.com/katocxl/pantherclaw/internal/gateway/dispatch"
+	"github.com/katocxl/pantherclaw/internal/gateway/httpproxy"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
-	"github.com/katocxl/pantherclaw/internal/platform/httpx"
+)
+
+// PAP/1 request headers, for clients of the gateway (dispatch).
+const (
+	HeaderProof    = dispatch.HeaderProof
+	HeaderNonce    = dispatch.HeaderNonce
+	HeaderError    = dispatch.HeaderError
+	HeaderRunID    = dispatch.HeaderRunID
+	HeaderActionID = dispatch.HeaderActionID
 )
 
 // Containment is the gateway's view of its org's containment (HR-010):
 // control.Containment, fed by the WatchContainment stream.
 type Containment interface {
-	// Check reports whether dispatch is allowed now, with the current epoch.
-	Check() (int64, error)
+	dispatch.Containment
 	// Ready closes when the first snapshot arrived.
 	Ready() <-chan struct{}
 }
+
+// Gateway is the enforcement point: the HTTP face over the one dispatch
+// path, with the background work that keeps its identity, containment,
+// configuration and broker key current.
+type Gateway struct {
+	run         []func(ctx context.Context) error
+	containment Containment
+	config      Configuration
+	broker      *Broker
+	engine      *dispatch.Engine
+	http        *httpproxy.Handler
+}
+
+// Handler returns the gateway's agent-facing HTTP handler: `/{connection}/…`
+// (httpproxy).
+func (g *Gateway) Handler() http.Handler { return g.http }
 
 // Deps are what the gateway takes from the control plane. New builds them
 // over mutual TLS from the gateway's identity; tests build them directly.
@@ -92,21 +116,24 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	if d.Org == "" || d.GatewayID == "" || d.Authority == nil || d.JWKSClient == nil || d.Containment == nil || d.Configuration == nil {
 		return nil, errors.New("gateway: incomplete control-plane dependencies")
 	}
-	target, err := baseURL(cfg.Target.URL)
-	if err != nil {
-		return nil, err
-	}
 	prefixes, err := cfg.allowedPrefixes()
 	if err != nil {
 		return nil, err
 	}
+	o := dispatch.Options{
+		Org: d.Org, GatewayID: d.GatewayID, Authority: d.Authority, JWKSURL: d.JWKSURL, JWKSClient: d.JWKSClient,
+		Containment: d.Containment, AllowedPrefixes: prefixes, Log: log,
+	}
+	if d.Broker != nil {
+		o.Broker = d.Broker
+	}
+	engine, err := dispatch.New(o)
+	if err != nil {
+		return nil, err
+	}
 	return &Gateway{
-		org: d.Org, authority: d.Authority, run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker,
-		permits:   newPermitVerifier(d.JWKSURL, d.JWKSClient, d.GatewayID, d.Org),
-		egress:    httpx.NewEgressClient(httpx.EgressConfig{Timeout: cfg.Target.Timeout.D(), AllowedPrefixes: prefixes}),
-		target:    target,
-		publicURL: strings.TrimSuffix(cfg.PublicURL, "/"),
-		log:       log,
+		run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker, engine: engine,
+		http: httpproxy.New(engine, d.Configuration, cfg.PublicURL, log),
 	}, nil
 }
 

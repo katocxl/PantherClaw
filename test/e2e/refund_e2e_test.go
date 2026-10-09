@@ -36,7 +36,6 @@ import (
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
-	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -128,10 +127,20 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
+	// The payments simulator runs first: dev seed points the "payments"
+	// connection at it.
+	s.sim = payments.New(o.faults, pclog.Discard())
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.simCalls.Add(1)
+		s.sim.Handler().ServeHTTP(w, r)
+	})
+	simSrv := httptest.NewServer(counted)
+	t.Cleanup(simSrv.Close)
+
 	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{
 		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--gateway-out", enrollFile,
-		"--workload-out", keyFile, "--facts-key-out", factsFile,
+		"--target-url", simSrv.URL, "--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if o.maxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
@@ -145,6 +154,17 @@ func start(t *testing.T, o options) *stack {
 		t.Fatalf("dev seed output %q", out.String())
 	}
 	s.org = ids.MustParse[ids.Org](m[1])
+	if o.timeout > 0 {
+		// The connection's dispatch timeout; the gateway reads it with its
+		// first configuration.
+		err := s.db.AppPool(t).InTenantTx(context.Background(), s.org, func(ctx context.Context, tx db.TenantTx) error {
+			_, err := tx.Exec(ctx, "UPDATE pc.connections SET timeout_ms = $1", o.timeout.Milliseconds())
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	serverCfg := write("server.json")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,22 +188,12 @@ func start(t *testing.T, o options) *stack {
 	s.workload(t, keyFile)
 	refundable(t, "http://"+apiAddr, factsFile, "ch_1")
 
-	s.sim = payments.New(o.faults, pclog.Discard())
-	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.simCalls.Add(1)
-		s.sim.Handler().ServeHTTP(w, r)
-	})
-	simSrv := httptest.NewServer(counted)
-	t.Cleanup(simSrv.Close)
-
 	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
 	gc.PublicURL = "http://" + gs.Listener.Addr().String()
 	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
-	gc.Target.URL, gc.Target.AllowedPrefixes = simSrv.URL, []string{"127.0.0.1/32"}
-	if o.timeout > 0 {
-		gc.Target.Timeout = config.Duration(o.timeout)
-	}
+	// The operator lets the gateway reach the local simulator (HR-077).
+	gc.Egress.AllowedPrefixes = []string{"127.0.0.1/32"}
 	s.gatewayCfg = gc
 	s.gatewayEnroll = enrollFile
 	g := s.startGateway(t)
@@ -257,7 +267,10 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
+// reply is the gateway's answer: on success the target's body with
+// PantherClaw's facts in PC-* headers, otherwise a typed refusal (F642).
 type reply struct {
+	ErrorClass    string   `json:"error_class"`
 	Error         string   `json:"error"`
 	Decision      string   `json:"decision"`
 	Reasons       []string `json:"reasons"`
@@ -279,7 +292,7 @@ func (s *stack) refund(t *testing.T, act ids.UUID, amount string) (int, reply) {
 // PAP/1. It is safe to call from any goroutine.
 func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	body := `{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, s.run)
 	req.Header.Set(gateway.HeaderActionID, act.String())
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{
@@ -292,9 +305,13 @@ func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	defer func() { _ = resp.Body.Close() }()
 	var r reply
 	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &r); err != nil {
-		return 0, reply{}, fmt.Errorf("gateway reply %q: %w", b, err)
+	if resp.StatusCode >= 300 {
+		if err := json.Unmarshal(b, &r); err != nil {
+			return 0, reply{}, fmt.Errorf("gateway refusal %q: %w", b, err)
+		}
+		return resp.StatusCode, r, nil
 	}
+	r.TransactionID, r.Outcome, r.Receipt = resp.Header.Get("PC-Transaction-Id"), resp.Header.Get("PC-Outcome"), resp.Header.Get("PC-Receipt")
 	return resp.StatusCode, r, nil
 }
 
