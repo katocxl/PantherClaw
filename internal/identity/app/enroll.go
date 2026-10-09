@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"time"
 
 	agents "github.com/katocxl/pantherclaw/internal/agents/app"
@@ -110,7 +111,10 @@ type EnrollInput struct {
 	// Proof is the verified key-only proof of the request.
 	Proof           pap.Checked
 	EnrollmentToken string
-	PublicJWK       []byte
+	// Attestation is optional L2 evidence; without an enrollment token it
+	// must match an auto-admitting issuer entry.
+	Attestation *Attestation
+	PublicJWK   []byte
 	// DeclaredRelease is what the workload reports about itself: always
 	// "declared" (PAP-1 §3.3).
 	DeclaredRelease string
@@ -122,20 +126,23 @@ type Enrolled struct {
 	Instance    pap.Instance
 	State       string
 	Fingerprint string
-	Level       int
+	// Level is the attestation level the instance's tokens carry once it
+	// is admitted.
+	Level int
 }
 
 var errReused = errors.New("identity: enrollment token reused")
 
-// Enroll registers the proof's key as a PENDING_ADMISSION instance of the
-// enrollment token's agent, with an ADMISSION entry showing the
-// fingerprint. The token is consumed exactly once; reusing it is refused
-// and audited (PN-002.1, T-004).
+// Enroll registers the proof's key as an instance of an agent (PAP-1
+// §3.2). With an enrollment token, the instance is PENDING_ADMISSION with
+// an ADMISSION entry showing the fingerprint; the token is consumed exactly
+// once and reusing it is refused and audited (PN-002.1, T-004). An
+// attestation, when sent, must match an active entry of that agent and
+// makes the instance L2. Without an enrollment token, the attestation's
+// audience names the org and it must match an active entry that
+// auto-admits: the entry names the agent and the instance is admitted at
+// once (HR-094). The attestation is consumed in the same transaction.
 func (s *Service) Enroll(ctx context.Context, in EnrollInput) (Enrolled, error) {
-	tok, err := credential.Parse(credential.EnrollmentToken, in.EnrollmentToken)
-	if err != nil {
-		return Enrolled{}, pap.Err(pap.CodeInvalidToken)
-	}
 	if _, ok := in.Proof.Token(); ok {
 		return Enrolled{}, pap.Err(pap.CodeInvalidProof) // enrollment uses a key-only proof
 	}
@@ -147,27 +154,68 @@ func (s *Service) Enroll(ctx context.Context, in EnrollInput) (Enrolled, error) 
 	if err != nil || jws.Thumbprint(pub) != in.Proof.JKT() || !pub.Equal(in.Proof.Key()) {
 		return Enrolled{}, pap.Err(pap.CodeKeyMismatch)
 	}
-	org := tok.Org()
+	var tok credential.Token
+	var org ids.OrgID
+	switch {
+	case in.EnrollmentToken != "":
+		if tok, err = credential.Parse(credential.EnrollmentToken, in.EnrollmentToken); err != nil {
+			return Enrolled{}, pap.Err(pap.CodeInvalidToken)
+		}
+		org = tok.Org()
+	case in.Attestation != nil:
+		if org = AttestationOrg(in.Attestation.Token); org.IsZero() {
+			return Enrolled{}, attErr(errors.New("the audience names no org"))
+		}
+	default:
+		return Enrolled{}, pap.Err(pap.CodeInvalidToken)
+	}
 	if err := s.Consume(ctx, org, in.Proof); err != nil {
 		return Enrolled{}, err
+	}
+	var cands []attested
+	if in.Attestation != nil {
+		if cands, err = s.attest(ctx, org, *in.Attestation); err != nil {
+			return Enrolled{}, err
+		}
 	}
 	var out Enrolled
 	err = s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		et, err := q.ConsumeEnrollmentToken(ctx, org, tok.Hash())
-		if db.IsNoRows(err) {
-			if prev, err := q.GetEnrollmentTokenByHash(ctx, org, tok.Hash()); err == nil && prev.State == "USED" {
-				return errReused
+		var a dbq.PcAgent
+		var enrollment *ids.UUID
+		if in.EnrollmentToken != "" {
+			et, err := q.ConsumeEnrollmentToken(ctx, org, tok.Hash())
+			if db.IsNoRows(err) {
+				if prev, err := q.GetEnrollmentTokenByHash(ctx, org, tok.Hash()); err == nil && prev.State == "USED" {
+					return errReused
+				}
+				return pap.Err(pap.CodeInvalidToken)
+			} else if err != nil {
+				return err
 			}
-			return pap.Err(pap.CodeInvalidToken)
-		} else if err != nil {
-			return err
+			if a, err = usableAgent(ctx, q, org, et.AgentID); err != nil {
+				return pap.Err(pap.CodeInstanceNotAdmitted)
+			}
+			enrollment = &et.ID
 		}
-		a, err := usableAgent(ctx, q, org, et.AgentID)
-		if err != nil {
-			return pap.Err(pap.CodeInstanceNotAdmitted)
+		var pick *attested
+		if in.Attestation != nil {
+			var agent *ids.UUID
+			if enrollment != nil {
+				agent = &a.ID
+			}
+			p, err := choose(cands, agent)
+			if err != nil {
+				return err
+			}
+			if enrollment == nil {
+				if a, err = usableAgent(ctx, q, org, p.rev.AgentID); err != nil {
+					return attErr(err)
+				}
+			}
+			pick = &p
 		}
-		out, err = s.insertPending(ctx, q, tx, org, a, in, et.ID, pub)
+		out, err = s.insertInstance(ctx, q, tx, org, a, in, enrollment, pick, pub)
 		return err
 	})
 	if errors.Is(err, errReused) {
@@ -190,9 +238,28 @@ func (s *Service) auditReuse(ctx context.Context, org ids.OrgID, hash []byte) {
 	})
 }
 
-func (s *Service) insertPending(ctx context.Context, q *dbq.Queries, tx db.TenantTx, org ids.OrgID, a dbq.PcAgent,
-	in EnrollInput, enrollment ids.UUID, pub ed25519.PublicKey,
+// maxLevel is the highest level an agent's instances reach (HR-092: a
+// desktop agent stays L1).
+func maxLevel(a dbq.PcAgent) int {
+	if a.ExecutionContext == nil {
+		return 1
+	}
+	return adomain.ExecutionContext(*a.ExecutionContext).MaxAttestationLevel()
+}
+
+// insertInstance stores the instance; a pending one gets an ADMISSION entry
+// and an auto-admitted one marks the agent verified.
+func (s *Service) insertInstance(ctx context.Context, q *dbq.Queries, tx db.TenantTx, org ids.OrgID, a dbq.PcAgent,
+	in EnrollInput, enrollment *ids.UUID, pick *attested, pub ed25519.PublicKey,
 ) (Enrolled, error) {
+	level := 1
+	if pick != nil && maxLevel(a) >= 2 {
+		level = 2
+	}
+	auto := pick != nil && pick.rev.AutoAdmit && level == 2
+	if enrollment == nil && !auto {
+		return Enrolled{}, attErr(errors.New("without an enrollment token, only an auto-admitting entry enrolls an L2 agent"))
+	}
 	jkt := jws.Thumbprint(pub)
 	if exists, err := q.InstanceExistsForKey(ctx, org, jkt); err != nil {
 		return Enrolled{}, err
@@ -204,42 +271,116 @@ func (s *Service) insertPending(ctx context.Context, q *dbq.Queries, tx db.Tenan
 		return Enrolled{}, err
 	}
 	var relState, relDigest *string
-	if in.DeclaredRelease != "" {
+	switch {
+	case pick != nil && pick.match.ReleaseDigest != "":
+		relState, relDigest = ptr(pap.ReleaseAttested), ptr(pick.match.ReleaseDigest)
+	case in.DeclaredRelease != "":
 		relState, relDigest = ptr(pap.ReleaseDeclared), &in.DeclaredRelease
 	}
-	id := ids.NewV7()
-	r, err := q.InsertInstance(ctx, dbq.InsertInstanceParams{
-		OrgID: org, ID: id, AgentID: a.ID, Jkt: jkt, PublicJwk: canonical, EnrolledVia: "enrollment_token",
-		EnrollmentTokenID: &enrollment, ReleaseState: relState, ReleaseDigest: relDigest, LastNetwork: optString(network(in.ClientAddress)),
-	})
+	id, via := ids.NewV7(), "enrollment_token"
+	if enrollment == nil {
+		via = "attestation"
+	}
+	var r dbq.PcAgentInstance
+	if pick == nil {
+		r, err = q.InsertInstance(ctx, dbq.InsertInstanceParams{
+			OrgID: org, ID: id, AgentID: a.ID, Jkt: jkt, PublicJwk: canonical, EnrolledVia: via,
+			EnrollmentTokenID: enrollment, ReleaseState: relState, ReleaseDigest: relDigest, LastNetwork: optString(network(in.ClientAddress)),
+		})
+	} else {
+		state, decidedBy := "PENDING_ADMISSION", (*string)(nil)
+		if auto {
+			state, decidedBy = "ADMITTED", ptr("trusted_issuer:"+pick.rev.EntryID.String())
+		}
+		var binding []byte
+		if binding, err = json.Marshal(pick.match.Binding); err != nil {
+			return Enrolled{}, err
+		}
+		r, err = q.InsertAttestedInstance(ctx, dbq.InsertAttestedInstanceParams{
+			OrgID: org, ID: id, AgentID: a.ID, Jkt: jkt, PublicJwk: canonical, State: state, EnrolledVia: via,
+			EnrollmentTokenID: enrollment, IssuerRevisionID: &pick.rev.ID, Binding: binding, AttestedUntil: &pick.window.ExpiresAt,
+			ReleaseState: relState, ReleaseDigest: relDigest, LastNetwork: optString(network(in.ClientAddress)), DecidedBy: decidedBy,
+		})
+	}
 	if db.IsUniqueViolation(err) {
 		return Enrolled{}, ErrKeyEnrolled
 	} else if err != nil {
 		return Enrolled{}, err
 	}
-	ev, err := json.Marshal(map[string]map[string]string{
-		"trusted":   {"fingerprint": jkt, "enrolled_via": "enrollment_token", "enrollment_id": enrollment.String()},
-		"untrusted": {"declared_release_digest": in.DeclaredRelease, "client_network": network(in.ClientAddress)},
-	})
-	if err != nil {
-		return Enrolled{}, err
+	if pick != nil {
+		if err := pick.record(ctx, q, org, id); err != nil {
+			return Enrolled{}, err
+		}
 	}
-	if _, err := q.InsertWaitlistEntry(ctx, dbq.InsertWaitlistEntryParams{
-		OrgID: org, ID: ids.NewV7(), SubjectType: "instance", SubjectID: id, AgentID: a.ID, Evidence: ev,
-	}); err != nil {
-		return Enrolled{}, err
+	if !auto {
+		if err := pendingEntry(ctx, q, org, a, r, in, enrollment, pick); err != nil {
+			return Enrolled{}, err
+		}
 	}
 	if err := agents.RecordChange(ctx, q, org, a.ID, adomain.Change{
 		Kind: adomain.ChangeInstanceEnrolled, Actor: adomain.InstanceActor(id),
-		Details: map[string]string{"instance_id": id.String(), "fingerprint": jkt},
+		Details: map[string]string{"instance_id": id.String(), "fingerprint": jkt, "enrolled_via": via},
 	}); err != nil {
 		return Enrolled{}, err
 	}
 	if err := recordAs(ctx, tx, instanceActor(id), "identity.instance_enrolled", "instance", id,
-		map[string]string{"agent_id": a.ID.String(), "fingerprint": jkt}); err != nil {
+		map[string]string{"agent_id": a.ID.String(), "fingerprint": jkt, "enrolled_via": via}); err != nil {
 		return Enrolled{}, err
 	}
+	if auto {
+		if err := autoAdmitted(ctx, q, tx, org, a, id, pick.rev); err != nil {
+			return Enrolled{}, err
+		}
+	}
 	return Enrolled{
-		Instance: pap.Instance{Org: org, Agent: a.ID, Instance: r.ID}, State: r.State, Fingerprint: jkt, Level: 1,
+		Instance: pap.Instance{Org: org, Agent: a.ID, Instance: r.ID}, State: r.State, Fingerprint: jkt, Level: level,
 	}, nil
+}
+
+// pendingEntry opens the ADMISSION entry the owner decides on. Attested
+// claims are trusted evidence; what the workload reports is not.
+func pendingEntry(ctx context.Context, q *dbq.Queries, org ids.OrgID, a dbq.PcAgent, r dbq.PcAgentInstance,
+	in EnrollInput, enrollment *ids.UUID, pick *attested,
+) error {
+	trusted := map[string]string{"fingerprint": r.Jkt, "enrolled_via": r.EnrolledVia}
+	if enrollment != nil {
+		trusted["enrollment_id"] = enrollment.String()
+	}
+	if pick != nil {
+		trusted = withClaims(pick.match.Binding, trusted)
+		trusted["issuer"], trusted["issuer_entry_id"] = pick.issuer, pick.rev.EntryID.String()
+		if pick.match.ReleaseDigest != "" {
+			trusted["attested_release_digest"] = pick.match.ReleaseDigest
+		}
+	}
+	ev, err := json.Marshal(map[string]map[string]string{
+		"trusted":   trusted,
+		"untrusted": {"declared_release_digest": in.DeclaredRelease, "client_network": network(in.ClientAddress)},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = q.InsertWaitlistEntry(ctx, dbq.InsertWaitlistEntryParams{
+		OrgID: org, ID: ids.NewV7(), SubjectType: "instance", SubjectID: r.ID, AgentID: a.ID, Evidence: ev,
+	})
+	return err
+}
+
+// autoAdmitted records an admission made by an issuer entry (HR-094).
+func autoAdmitted(ctx context.Context, q *dbq.Queries, tx db.TenantTx, org ids.OrgID, a dbq.PcAgent, id ids.UUID,
+	rev dbq.PcTrustedIssuer,
+) error {
+	if err := agents.MarkVerified(ctx, q, org, a.ID, adomain.System); err != nil {
+		return err
+	}
+	details := map[string]string{
+		"instance_id": id.String(), "issuer_entry_id": rev.EntryID.String(), "issuer_revision": fmt.Sprint(rev.Revision),
+	}
+	if err := agents.RecordChange(ctx, q, org, a.ID, adomain.Change{
+		Kind: adomain.ChangeInstanceAutoAdmitted, Actor: adomain.System, Details: details,
+	}); err != nil {
+		return err
+	}
+	details["agent_id"] = a.ID.String()
+	return recordAs(ctx, tx, evdomainSystem(), "identity.instance_auto_admitted", "instance", id, details)
 }

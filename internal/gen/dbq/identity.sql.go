@@ -10,6 +10,7 @@ package dbq
 
 import (
 	"context"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -25,6 +26,44 @@ RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment
 // not passed.
 func (q *Queries) AdmitInstance(ctx context.Context, decidedBy *string, orgID ids.OrgID, iD ids.UUID) (PcAgentInstance, error) {
 	row := q.db.QueryRow(ctx, admitInstance, decidedBy, orgID, iD)
+	var i PcAgentInstance
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Jkt,
+		&i.PublicJwk,
+		&i.State,
+		&i.EnrolledVia,
+		&i.EnrollmentTokenID,
+		&i.IssuerRevisionID,
+		&i.Binding,
+		&i.AttLevel,
+		&i.AttestedUntil,
+		&i.ReleaseState,
+		&i.ReleaseDigest,
+		&i.NeedsReview,
+		&i.LastNetwork,
+		&i.LastSeenAt,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.RevokeReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const attestInstance = `-- name: AttestInstance :one
+UPDATE pc.agent_instances SET attested_until = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'ADMITTED' AND att_level = 2
+RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id, issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, needs_review, last_network, last_seen_at, decided_by, decided_at, revoke_reason, created_at, updated_at, expires_at
+`
+
+// Renews L2 until a fresh attestation expires (HR-143).
+func (q *Queries) AttestInstance(ctx context.Context, attestedUntil *time.Time, orgID ids.OrgID, iD ids.UUID) (PcAgentInstance, error) {
+	row := q.db.QueryRow(ctx, attestInstance, attestedUntil, orgID, iD)
 	var i PcAgentInstance
 	err := row.Scan(
 		&i.OrgID,
@@ -272,6 +311,127 @@ func (q *Queries) GetNonceForMinute(ctx context.Context, orgID ids.OrgID, minute
 	var nonce string
 	err := row.Scan(&nonce)
 	return nonce, err
+}
+
+const insertAttestation = `-- name: InsertAttestation :execrows
+INSERT INTO pc.attestations (org_id, id, instance_id, issuer_revision_id, issuer, token_key, claims, release_digest,
+    issued_at, expires_at)
+VALUES ($1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10)
+ON CONFLICT (org_id, issuer, token_key) DO NOTHING
+`
+
+type InsertAttestationParams struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	InstanceID       ids.UUID
+	IssuerRevisionID ids.UUID
+	Issuer           string
+	TokenKey         []byte
+	Claims           []byte
+	ReleaseDigest    *string
+	IssuedAt         time.Time
+	ExpiresAt        time.Time
+}
+
+// Attestations (HR-143): the unique (issuer, token_key) makes a token
+// single use; no row means a replay.
+func (q *Queries) InsertAttestation(ctx context.Context, arg InsertAttestationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertAttestation,
+		arg.OrgID,
+		arg.ID,
+		arg.InstanceID,
+		arg.IssuerRevisionID,
+		arg.Issuer,
+		arg.TokenKey,
+		arg.Claims,
+		arg.ReleaseDigest,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertAttestedInstance = `-- name: InsertAttestedInstance :one
+INSERT INTO pc.agent_instances (org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id,
+    issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, last_network, last_seen_at,
+    decided_by, decided_at, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, 2,
+    $11, $12, $13, $14, now(),
+    $15, CASE WHEN $6::text = 'ADMITTED' THEN now() END,
+    CASE WHEN $6::text = 'ADMITTED' THEN NULL ELSE now() + interval '7 days' END)
+RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id, issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, needs_review, last_network, last_seen_at, decided_by, decided_at, revoke_reason, created_at, updated_at, expires_at
+`
+
+type InsertAttestedInstanceParams struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	AgentID           ids.UUID
+	Jkt               string
+	PublicJwk         []byte
+	State             string
+	EnrolledVia       string
+	EnrollmentTokenID *ids.UUID
+	IssuerRevisionID  *ids.UUID
+	Binding           []byte
+	AttestedUntil     *time.Time
+	ReleaseState      *string
+	ReleaseDigest     *string
+	LastNetwork       *string
+	DecidedBy         *string
+}
+
+// An instance enrolled with an attestation: admitted at once when its
+// entry auto-admits, otherwise waiting for the owner.
+func (q *Queries) InsertAttestedInstance(ctx context.Context, arg InsertAttestedInstanceParams) (PcAgentInstance, error) {
+	row := q.db.QueryRow(ctx, insertAttestedInstance,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.Jkt,
+		arg.PublicJwk,
+		arg.State,
+		arg.EnrolledVia,
+		arg.EnrollmentTokenID,
+		arg.IssuerRevisionID,
+		arg.Binding,
+		arg.AttestedUntil,
+		arg.ReleaseState,
+		arg.ReleaseDigest,
+		arg.LastNetwork,
+		arg.DecidedBy,
+	)
+	var i PcAgentInstance
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Jkt,
+		&i.PublicJwk,
+		&i.State,
+		&i.EnrolledVia,
+		&i.EnrollmentTokenID,
+		&i.IssuerRevisionID,
+		&i.Binding,
+		&i.AttLevel,
+		&i.AttestedUntil,
+		&i.ReleaseState,
+		&i.ReleaseDigest,
+		&i.NeedsReview,
+		&i.LastNetwork,
+		&i.LastSeenAt,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.RevokeReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
 }
 
 const insertEnrollmentToken = `-- name: InsertEnrollmentToken :one

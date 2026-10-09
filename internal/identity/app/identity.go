@@ -59,6 +59,7 @@ type Service struct {
 	keys   KeySource
 	issuer string
 	clk    clock.Clock
+	att    Attestors
 }
 
 // New returns the identity use cases. issuer is the server's public URL,

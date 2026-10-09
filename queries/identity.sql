@@ -113,3 +113,31 @@ WHERE org_id = sqlc.arg(org_id) AND slot = ANY (sqlc.arg(slots)::smallint[])
 
 -- name: DeleteExpiredNonces :execrows
 DELETE FROM pc.dpop_nonces WHERE org_id = sqlc.arg(org_id) AND minute < sqlc.arg(before_minute);
+
+-- Attestations (HR-143): the unique (issuer, token_key) makes a token
+-- single use; no row means a replay.
+-- name: InsertAttestation :execrows
+INSERT INTO pc.attestations (org_id, id, instance_id, issuer_revision_id, issuer, token_key, claims, release_digest,
+    issued_at, expires_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(instance_id), sqlc.arg(issuer_revision_id), sqlc.arg(issuer),
+    sqlc.arg(token_key), sqlc.arg(claims), sqlc.narg(release_digest), sqlc.arg(issued_at), sqlc.arg(expires_at))
+ON CONFLICT (org_id, issuer, token_key) DO NOTHING;
+
+-- An instance enrolled with an attestation: admitted at once when its
+-- entry auto-admits, otherwise waiting for the owner.
+-- name: InsertAttestedInstance :one
+INSERT INTO pc.agent_instances (org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id,
+    issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, last_network, last_seen_at,
+    decided_by, decided_at, expires_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(agent_id), sqlc.arg(jkt), sqlc.arg(public_jwk), sqlc.arg(state),
+    sqlc.arg(enrolled_via), sqlc.narg(enrollment_token_id), sqlc.arg(issuer_revision_id), sqlc.arg(binding), 2,
+    sqlc.arg(attested_until), sqlc.narg(release_state), sqlc.narg(release_digest), sqlc.narg(last_network), now(),
+    sqlc.narg(decided_by), CASE WHEN sqlc.arg(state)::text = 'ADMITTED' THEN now() END,
+    CASE WHEN sqlc.arg(state)::text = 'ADMITTED' THEN NULL ELSE now() + interval '7 days' END)
+RETURNING *;
+
+-- Renews L2 until a fresh attestation expires (HR-143).
+-- name: AttestInstance :one
+UPDATE pc.agent_instances SET attested_until = sqlc.arg(attested_until), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ADMITTED' AND att_level = 2
+RETURNING *;

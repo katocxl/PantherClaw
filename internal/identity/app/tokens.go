@@ -21,6 +21,9 @@ type TokenInput struct {
 	// Proof is the verified key-only proof of the request.
 	Proof      pap.Checked
 	Identifier string
+	// Attestation is an optional fresh attestation that renews L2; it must
+	// match the binding the instance enrolled with (HR-147).
+	Attestation *Attestation
 	// DeclaredRelease is what the workload reports about itself; it is
 	// always "declared" and never replaces an attested digest.
 	DeclaredRelease string
@@ -36,8 +39,11 @@ type Issued struct {
 
 // IssueToken issues a workload token to an admitted instance whose key
 // signed the proof. The level is L2 only while the instance's attestation
-// is current and never for a desktop agent (HR-092, HR-143); the token
-// never outlives that attestation. A changed release digest is drift
+// is current, its issuer entry still active, and never for a desktop
+// agent (HR-092, HR-141, HR-143); the token never outlives that
+// attestation. A fresh attestation renews L2 only with exactly the binding
+// the instance enrolled with (HR-147); its digest, when the preset reads
+// one, becomes the attested release. A changed release digest is drift
 // (F033): the instance is flagged for review. A request from a new network
 // writes the alert event (HR-092).
 func (s *Service) IssueToken(ctx context.Context, in TokenInput) (Issued, error) {
@@ -50,6 +56,12 @@ func (s *Service) IssueToken(ctx context.Context, in TokenInput) (Issued, error)
 	}
 	if err := s.Consume(ctx, id.Org, in.Proof); err != nil {
 		return Issued{}, err
+	}
+	var cands []attested
+	if in.Attestation != nil {
+		if cands, err = s.attest(ctx, id.Org, *in.Attestation); err != nil {
+			return Issued{}, err
+		}
 	}
 	signer, err := s.keys.Signer(keys.PurposeWorkloadTokens)
 	if err != nil {
@@ -77,13 +89,36 @@ func (s *Service) IssueToken(ctx context.Context, in TokenInput) (Issued, error)
 		if !agentUsable(a) || a.EnvironmentID == nil || a.ExecutionContext == nil {
 			return pap.Err(pap.CodeInstanceNotAdmitted)
 		}
-		now := s.clk.Now()
-		level, notAfter := 1, time.Time{}
-		if r.AttLevel == 2 && r.AttestedUntil != nil && r.AttestedUntil.After(now) &&
-			adomain.ExecutionContext(*a.ExecutionContext).MaxAttestationLevel() >= 2 {
-			level, notAfter = 2, *r.AttestedUntil
+		var active *dbq.PcTrustedIssuer
+		if r.IssuerRevisionID != nil {
+			if rev, err := q.ActiveRevisionFor(ctx, id.Org, *r.IssuerRevisionID); err == nil {
+				active = &rev
+			} else if !db.IsNoRows(err) {
+				return err
+			}
 		}
 		relState, relDigest, drift := release(r, in.DeclaredRelease)
+		if in.Attestation != nil {
+			fresh, err := reattest(cands, r, active)
+			if err != nil {
+				return err
+			}
+			if err := fresh.record(ctx, q, id.Org, r.ID); err != nil {
+				return err
+			}
+			if r, err = q.AttestInstance(ctx, &fresh.window.ExpiresAt, id.Org, r.ID); err != nil {
+				return err
+			}
+			if d := fresh.match.ReleaseDigest; d != "" {
+				prev := deref(r.ReleaseDigest)
+				relState, relDigest, drift = ptr(pap.ReleaseAttested), &d, prev != "" && prev != d
+			}
+		}
+		now := s.clk.Now()
+		level, notAfter := 1, time.Time{}
+		if r.AttLevel == 2 && active != nil && r.AttestedUntil != nil && r.AttestedUntil.After(now) && maxLevel(a) >= 2 {
+			level, notAfter = 2, *r.AttestedUntil
+		}
 		net := network(in.ClientAddress)
 		lastNet := deref(r.LastNetwork)
 		if net == "" {

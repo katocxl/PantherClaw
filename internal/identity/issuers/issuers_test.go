@@ -194,6 +194,15 @@ func TestHR143_AttestationLifetimeAndReplayKeys(t *testing.T) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
+	w, err := issuers.ParseWindow([]byte(`{"iat":1791457140,"exp":1791457740,"jti":"j1","nbf":1791457140}`))
+	if err != nil || w.JTI != "j1" || !w.ExpiresAt.Equal(now.Add(9*time.Minute)) || w.Check(now) != nil {
+		t.Fatalf("window: %+v, %v", w, err)
+	}
+	for _, p := range []string{`{"iat":1791457140}`, `{"iat":1791457140,"exp":1791464400}`, `{"iat":1.5,"exp":2}`, `{"exp":1,"exp":2}`} {
+		if w, err := issuers.ParseWindow([]byte(p)); err == nil && w.Check(now) == nil {
+			t.Errorf("%s: accepted", p)
+		}
+	}
 	if issuers.ReplayKey("abc", "") == issuers.ReplayKey("", "abc") || issuers.ReplayKey("", "t1") == issuers.ReplayKey("", "t2") {
 		t.Fatal("replay keys collide")
 	}

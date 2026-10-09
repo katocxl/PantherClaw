@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +35,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/identityrpc"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/workloadrpc"
 	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
+	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
@@ -44,6 +47,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc/protoperms"
+	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
@@ -252,5 +256,87 @@ func TestIntWorkloadEnrollAdmitAndToken(t *testing.T) {
 	_, err = stolen.IssueToken(ctx, &pantherclawv1.IssueTokenRequest{Identifier: enrolled.GetIdentifier()})
 	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "key_mismatch") {
 		t.Errorf("thief's key: %v", err)
+	}
+}
+
+// fakeGitHub stands in for issuerkeys.Fetcher: a token whose signature
+// segment is "sig" verifies.
+type fakeGitHub struct{}
+
+func (fakeGitHub) Verify(_ context.Context, tok string) ([]byte, error) {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 || parts[2] != "sig" {
+		return nil, errors.New("signature")
+	}
+	return base64.RawURLEncoding.DecodeString(parts[1])
+}
+
+// TestHR094_AttestedWorkloadEnrollsWithoutAnEnrollmentToken: the org comes
+// from the attestation's audience, so the first call gets that org's nonce,
+// and an auto-admitting entry admits the instance at L2 at once.
+func TestHR094_AttestedWorkloadEnrollsWithoutAnEnrollmentToken(t *testing.T) {
+	s := newStack(t)
+	s.svc.WithAttestors(iapp.Attestors{GitHub: fakeGitHub{}})
+	ctx := context.Background()
+	org := ids.New[ids.Org]()
+	s.exec(t, org, "INSERT INTO pc.orgs (id, name) VALUES ($1, 'acme')", org)
+	team, env := ids.NewV7(), ids.NewV7()
+	s.exec(t, org, "INSERT INTO pc.teams (org_id, id, slug, name) VALUES ($1, $2, 'eng', 'Eng')", org, team)
+	s.exec(t, org, "INSERT INTO pc.environments (org_id, id, team_id, slug, name, kind) VALUES ($1, $2, $3, 'ci', 'CI', 'DEVELOPMENT')", org, env, team)
+	owner, tok := s.login(t, org, td.RoleAgentOwner)
+	a, err := pantherclawv1connect.NewAgentServiceClient(s.connectClient(bearer{tok})).CreateAgent(ctx, &pantherclawv1.CreateAgentRequest{
+		Name: "ci-bot", TeamId: team.String(), EnvironmentId: env.String(), OwnerUserId: owner.String(),
+		ExecutionContext: pantherclawv1.ExecutionContext_EXECUTION_CONTEXT_CI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, _ := ids.ParseUUID(a.GetAgent().GetId())
+	as := func(role td.RoleName) context.Context {
+		return tenancy.WithCaller(ctx, tenancy.Caller{Subject: td.Subject{
+			Org: org, Principal: td.PrincipalRef{Kind: td.KindUser, ID: ids.NewV7()},
+			Bindings: []td.Binding{{Role: role, Scope: td.Scope{Type: td.ScopeOrg, ID: org.UUID()}}},
+		}})
+	}
+	const ref = "octo-org/agent-repo/.github/workflows/agent.yml@refs/heads/main"
+	r, err := s.svc.ProposeIssuer(as(td.RoleOrgAdmin), iapp.ProposeInput{AgentID: agent, AutoAdmit: true, Reason: "CI", Binding: iapp.Binding{
+		GitHub: &issuers.GitHubBinding{RepositoryID: "123456", RepositoryOwnerID: "7890", JobType: issuers.JobWorkflow, WorkflowRefs: []string{ref}},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.svc.ActivateIssuer(as(td.RoleIdentityPublisher), r.EntryID, r.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	claims, _ := json.Marshal(map[string]any{
+		"iss": issuers.GitHubIssuer, "aud": "pantherclaw:" + org.String(), "jti": ids.NewV7().String(),
+		"repository_id": "123456", "repository_owner_id": "7890", "ref": "refs/heads/main", "ref_protected": "true",
+		"event_name": "push", "workflow_ref": ref, "iat": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
+	})
+	enc := base64.RawURLEncoding.EncodeToString
+	att := &pantherclawv1.Attestation{
+		Kind:  pantherclawv1.AttestationKind_ATTESTATION_KIND_GITHUB_ACTIONS,
+		Token: enc([]byte(`{"alg":"RS256","kid":"k1"}`)) + "." + enc(claims) + ".sig",
+	}
+	pub, key, _ := ed25519.GenerateKey(nil)
+	wt := &workloadclient.Transport{Key: key}
+	workload := pantherclawv1connect.NewWorkloadServiceClient(s.connectClient(wt))
+	jwk, _ := json.Marshal(jws.PublicJWK(pub, ""))
+	enrolled, err := workload.Enroll(ctx, &pantherclawv1.EnrollRequest{PublicJwk: string(jwk), Attestation: att})
+	if err != nil || enrolled.GetState() != pantherclawv1.InstanceState_INSTANCE_STATE_ADMITTED || enrolled.GetAttestationLevel() != 2 {
+		t.Fatalf("Enroll = %v, %v", enrolled, err)
+	}
+	issued, err := workload.IssueToken(ctx, &pantherclawv1.IssueTokenRequest{Identifier: enrolled.GetIdentifier()})
+	if err != nil || issued.GetAttestationLevel() != 2 || issued.GetExpireTime().AsTime().After(now.Add(10*time.Minute)) {
+		t.Fatalf("IssueToken = %v, %v", issued, err)
+	}
+	// The same attestation cannot enroll another key (HR-143).
+	otherPub, other, _ := ed25519.GenerateKey(nil)
+	again := pantherclawv1connect.NewWorkloadServiceClient(s.connectClient(&workloadclient.Transport{Key: other}))
+	otherJWK, _ := json.Marshal(jws.PublicJWK(otherPub, ""))
+	_, err = again.Enroll(ctx, &pantherclawv1.EnrollRequest{PublicJwk: string(otherJWK), Attestation: att})
+	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "invalid_token") {
+		t.Errorf("reused attestation: %v", err)
 	}
 }

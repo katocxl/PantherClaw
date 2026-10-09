@@ -39,9 +39,11 @@ import (
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/identityrpc"
+	"github.com/katocxl/pantherclaw/internal/identity/adapters/issuerkeys"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/workloadrpc"
 	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
+	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/keystore"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
@@ -364,7 +366,11 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
 	pantherclawv1connect.RegisterAgentServiceHandler(rs, agentsrpc.NewAgents(aapp.NewInventory(pool, d.billing)))
 	pantherclawv1connect.RegisterWaitlistServiceHandler(rs, waitlistrpc.NewWaitlist(wapp.NewReader(pool)))
-	identity := iapp.New(pool, reg, d.publicURL, clock.System{})
+	attestors, err := newAttestors(d.clusters)
+	if err != nil {
+		return nil, err
+	}
+	identity := iapp.New(pool, reg, d.publicURL, clock.System{}).WithAttestors(attestors)
 	pantherclawv1connect.RegisterIdentityServiceHandler(rs, identityrpc.NewIdentity(identity, d.clusters))
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, d.publicURL, clock.System{}))
 	mux := http.NewServeMux()
@@ -400,6 +406,23 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		_, _ = w.Write(b)
 	})
 	return workloadrpc.RawBody(mux, d.clientIP), nil
+}
+
+// attestTimeout bounds one call to an issuer or a cluster API server.
+const attestTimeout = 10 * time.Second
+
+// newAttestors returns the L2 verifiers: GitHub keys through the egress
+// client (public addresses only) and the configured clusters (HR-142).
+func newAttestors(clusters *kube.Directory) (iapp.Attestors, error) {
+	gh, err := issuerkeys.New(httpx.NewEgressClient(httpx.EgressConfig{Timeout: attestTimeout}), issuers.GitHubIssuer, nil)
+	if err != nil {
+		return iapp.Attestors{}, err
+	}
+	kc, err := kube.NewClient(clusters, attestTimeout)
+	if err != nil {
+		return iapp.Attestors{}, err
+	}
+	return iapp.Attestors{GitHub: gh, Kube: kc, Clusters: clusters}, nil
 }
 
 // startupActor records start-up actions in the audit log.

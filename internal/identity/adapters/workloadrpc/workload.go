@@ -28,6 +28,7 @@ import (
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/app"
+	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
@@ -139,30 +140,33 @@ func (s *Workload) Enroll(ctx context.Context, req *pantherclawv1.EnrollRequest)
 	if err != nil {
 		return nil, err
 	}
-	if req.GetAttestation() != nil && req.GetEnrollmentToken() == "" {
-		// L2 enrollment arrives with the attestation presets (slice 10).
-		return nil, connect.NewError(connect.CodeUnimplemented, "attestation enrollment is not available yet")
-	}
+	att := attestation(req.GetAttestation())
 	var org ids.OrgID
 	if tok, err := credential.Parse(credential.EnrollmentToken, req.GetEnrollmentToken()); err == nil {
 		org = tok.Org()
+	} else if req.GetEnrollmentToken() == "" && att != nil {
+		org = app.AttestationOrg(att.Token)
 	}
 	c, rb, err := s.verify(ctx, info)
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
 	}
 	e, err := s.svc.Enroll(ctx, app.EnrollInput{
-		Proof: c, EnrollmentToken: req.GetEnrollmentToken(), PublicJWK: []byte(req.GetPublicJwk()),
+		Proof: c, EnrollmentToken: req.GetEnrollmentToken(), Attestation: att, PublicJWK: []byte(req.GetPublicJwk()),
 		DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
 	})
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
 	}
 	s.setNonce(ctx, info, org)
-	return &pantherclawv1.EnrollResponse{
+	resp := &pantherclawv1.EnrollResponse{
 		InstanceId: e.Instance.Instance.String(), Identifier: e.Instance.String(),
 		State: pantherclawv1.InstanceState_INSTANCE_STATE_PENDING_ADMISSION, Fingerprint: e.Fingerprint,
-	}, nil
+	}
+	if e.State == "ADMITTED" {
+		resp.State, resp.AttestationLevel = pantherclawv1.InstanceState_INSTANCE_STATE_ADMITTED, int32(e.Level) //nolint:gosec // G115: 1 or 2
+	}
+	return resp, nil
 }
 
 // IssueToken implements WorkloadServiceHandler.
@@ -170,9 +174,6 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 	info, err := callInfo(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if req.GetAttestation() != nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, "re-attestation is not available yet")
 	}
 	var org ids.OrgID
 	if id, err := pap.ParseInstance(req.GetIdentifier()); err == nil {
@@ -183,7 +184,7 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 		return nil, s.papError(ctx, info, org, err)
 	}
 	iss, err := s.svc.IssueToken(ctx, app.TokenInput{
-		Proof: c, Identifier: req.GetIdentifier(), DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
+		Proof: c, Identifier: req.GetIdentifier(), Attestation: attestation(req.GetAttestation()), DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
 	})
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
@@ -192,6 +193,18 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 	return &pantherclawv1.IssueTokenResponse{
 		WorkloadToken: iss.Token, ExpireTime: ts(iss.ExpiresAt), AttestationLevel: int32(iss.Level), //nolint:gosec // G115: 1 or 2
 	}, nil
+}
+
+// attestation maps the request's attestation to its preset.
+func attestation(a *pantherclawv1.Attestation) *app.Attestation {
+	if a == nil {
+		return nil
+	}
+	kind := issuers.KindGitHub
+	if a.GetKind() == pantherclawv1.AttestationKind_ATTESTATION_KIND_KUBERNETES {
+		kind = issuers.KindKubernetes
+	}
+	return &app.Attestation{Kind: kind, Token: a.GetToken()}
 }
 
 func ts(t time.Time) *timestamppb.Timestamp {
