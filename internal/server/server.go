@@ -208,6 +208,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
+	m6, err := newM6(cfg, pool, reg)
+	if err != nil {
+		return err
+	}
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
@@ -274,8 +278,12 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters, subjects: subjects,
 			web: web,
 			m5:  m5,
+			m6:  m6,
 		})
 		if err != nil {
+			return err
+		}
+		if err := m6.serveGateways(ctx, g, cfg, svc, log, nil); err != nil {
 			return err
 		}
 		srv, ln, err := listen(ctx, cfg, handler, log)
@@ -403,6 +411,8 @@ type apiDeps struct {
 	// M5 part 1: browser pages, accounts, notifications.
 	web *webhttp.Handler
 	m5  *m5Services
+	// M6: gateway identity.
+	m6 *m6Services
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -449,6 +459,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		pantherclawv1connect.RegisterAccountServiceHandler(rs, accountrpc.New(authnapp.NewAccount(pool, d.m5.webauthn, d.m5.notifications)))
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
 	}
+	d.m6.registerPublic(rs)
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)

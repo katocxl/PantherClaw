@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+package server
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"sync"
+	"time"
+
+	"connectrpc.com/connect/v2"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/katocxl/pantherclaw/internal/authority"
+	"github.com/katocxl/pantherclaw/internal/gateways/adapters/gatewaysrpc"
+	gwapp "github.com/katocxl/pantherclaw/internal/gateways/app"
+	"github.com/katocxl/pantherclaw/internal/gateways/ca"
+	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/platform/clock"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
+	"github.com/katocxl/pantherclaw/internal/platform/httpx"
+	"github.com/katocxl/pantherclaw/internal/platform/keys"
+	"github.com/katocxl/pantherclaw/internal/platform/rpc"
+)
+
+// m6Services are the M6 services (G0 M6): the internal CA and gateway
+// identity.
+type m6Services struct {
+	ca       *ca.Authority
+	gateways *gwapp.Service
+}
+
+func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry) (*m6Services, error) {
+	authority, err := ca.New(reg)
+	if err != nil {
+		return nil, err
+	}
+	return &m6Services{ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{})}, nil
+}
+
+// registerPublic adds gateway administration and gateway enrollment to the
+// public API. GatewayService's other procedures declare gateway permissions,
+// which the public API never grants (HR-181).
+func (m *m6Services) registerPublic(rs *connect.Server) {
+	if m == nil {
+		return
+	}
+	pantherclawv1connect.RegisterGatewayAdminServiceHandler(rs, gatewaysrpc.NewAdmin(m.gateways))
+	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
+}
+
+// gatewayHandler is the gateway listener's handler: AuthorityService and
+// GatewayService only, every call authenticated by its client certificate
+// (HR-181, HR-020).
+func (m *m6Services) gatewayHandler(svc *authority.Service, log *slog.Logger) (http.Handler, error) {
+	rs, err := rpc.NewServer(rpc.Options{Logger: log, Authenticate: gatewaysrpc.Authenticator(m.gateways, procedurePermissions)})
+	if err != nil {
+		return nil, err
+	}
+	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
+	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
+	mux := http.NewServeMux()
+	rpc.Mount(mux, rs)
+	return gatewaysrpc.TLSIdentity(mux), nil
+}
+
+// listenerCerts serves the gateway listener's own certificate from the
+// internal CA: valid 7 days, reissued (with a new key) after a day.
+type listenerCerts struct {
+	ca    *ca.Authority
+	names []string
+	clk   clock.Clock
+
+	mu     sync.Mutex
+	cert   *tls.Certificate
+	issued time.Time
+}
+
+const listenerReissue = 24 * time.Hour
+
+func (l *listenerCerts) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.clk.Now()
+	if l.cert != nil && now.Sub(l.issued) < listenerReissue {
+		return l.cert, nil
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	iss, err := l.ca.IssueServer(pub, l.names, now)
+	if err != nil {
+		return nil, err
+	}
+	l.cert = &tls.Certificate{Certificate: [][]byte{iss.DER}, PrivateKey: priv}
+	l.issued = now
+	return l.cert, nil
+}
+
+// gatewayTLS is the gateway listener's TLS profile: TLS 1.3, hybrid key
+// exchange preferred, and a client certificate that chains to the internal
+// CA required on every connection.
+func (m *m6Services) gatewayTLS(names []string) *tls.Config {
+	certs := &listenerCerts{ca: m.ca, names: names, clk: clock.System{}}
+	conf := httpx.ServerTLSConfig(tls.Certificate{})
+	conf.Certificates = nil
+	conf.GetCertificate = certs.get
+	conf.ClientAuth = tls.RequireAndVerifyClientCert
+	conf.ClientCAs = m.ca.Pool()
+	return conf
+}
+
+// serveGateways starts the gateway listener when gateway_api.addr is set.
+func (m *m6Services) serveGateways(ctx context.Context, g *errgroup.Group, cfg *Config, svc *authority.Service, log *slog.Logger,
+	onStart func(addr string),
+) error {
+	if m == nil || cfg.GatewayAPI.Addr == "" {
+		return nil
+	}
+	handler, err := m.gatewayHandler(svc, log)
+	if err != nil {
+		return err
+	}
+	srv, err := httpx.NewServer(httpx.ServerConfig{Addr: cfg.GatewayAPI.Addr, Handler: handler, TLS: m.gatewayTLS(cfg.GatewayAPI.Hostnames), Logger: log})
+	if err != nil {
+		return err
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", cfg.GatewayAPI.Addr)
+	if err != nil {
+		return fmt.Errorf("server: gateway listener: %w", err)
+	}
+	if onStart != nil {
+		onStart(ln.Addr().String())
+	}
+	log.InfoContext(ctx, "server.gateway_listener", slog.String("addr", ln.Addr().String()),
+		slog.String("ca_sha256", ca.Fingerprint(m.ca.Certificate())))
+	g.Go(func() error {
+		if err := srv.ServeTLS(ln, "", ""); !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	})
+	g.Go(func() error {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+		defer cancel()
+		return srv.Shutdown(sctx)
+	})
+	return nil
+}
