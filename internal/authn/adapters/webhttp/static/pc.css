@@ -11,3 +11,5 @@ table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;
 button{font-size:.95rem;padding:.35rem .8rem;cursor:pointer}
 code{font-family:ui-monospace,monospace;font-size:.85rem}
 @media (prefers-color-scheme:dark){body{background:#111;color:#eee}header{border-color:#333}dt,.note,.untrusted{color:#aaa}th,td{border-color:#222}}
+.ok{color:#166534}@media (prefers-color-scheme:dark){.ok{color:#86efac}}
+label{margin-right:.5rem}input[type=text]{font-size:.95rem;padding:.3rem}

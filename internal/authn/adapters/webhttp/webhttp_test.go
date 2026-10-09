@@ -74,6 +74,9 @@ func newHandler(t *testing.T, publicURL string) (*webhttp.Handler, *fakeBrowser,
 	t.Helper()
 	fb := &fakeBrowser{}
 	h, err := webhttp.New(fb, publicURL, nil, nil)
+	if err == nil {
+		h.WithKeys(&fakeKeys{})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

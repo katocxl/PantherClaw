@@ -8,6 +8,7 @@ package webhttp_test
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -54,7 +55,9 @@ func newSite(t *testing.T) *site {
 	idp := oidctest.New(t)
 	mux := http.NewServeMux()
 	ts := httptest.NewUnstartedServer(mux)
-	issuer := "http://" + ts.Listener.Addr().String()
+	// localhost, not 127.0.0.1: WebAuthn refuses IP addresses as RP ids.
+	_, port, _ := net.SplitHostPort(ts.Listener.Addr().String())
+	issuer := "http://localhost:" + port
 	tokens, err := token.New(reg, issuer, token.Audience)
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +76,11 @@ func newSite(t *testing.T) *site {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wa, err := authnapp.NewWebAuthn(pool, authnapp.WebAuthnConfig{RPID: "localhost", PublicURL: issuer}, nil, clock.System{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.WithKeys(wa)
 	web.Mount(mux)
 	dev, err := devicehttp.New(authnapp.NewDevice(pool, tokens, issuer, []authnapp.IdP{prov}, clock.System{}, nil), issuer, limiter, nil)
 	if err != nil {

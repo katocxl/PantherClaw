@@ -80,6 +80,7 @@ type Handler struct {
 	limiter *httpx.Limiter
 	log     *slog.Logger
 	routes  []Route
+	keys    Keys
 }
 
 // New returns the handler. publicURL is the server's public URL: its origin
@@ -108,6 +109,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.withSession(mux, http.MethodPost, authnapp.LogoutPath, h.logout)
 	h.withSession(mux, http.MethodGet, authnapp.AccountPath, h.account)
 	h.withSession(mux, http.MethodPost, authnapp.AccountPath+"/sessions/{id}/revoke", h.revokeSession)
+	h.mountKeys(mux)
 }
 
 // Routes lists the mounted routes.
@@ -259,6 +261,10 @@ type page struct {
 	Profile        authnapp.Profile
 	Session        authnapp.BrowserSession
 	Sessions       []authnapp.SessionInfo
+	// Keys is nil when security keys are not configured.
+	Keys        []authnapp.CredentialInfo
+	KeysEnabled bool
+	SteppedUp   bool
 }
 
 func (h *Handler) render(w http.ResponseWriter, status int, name string, p page) {
@@ -377,7 +383,21 @@ func (h *Handler) account(w http.ResponseWriter, r *http.Request, s authnapp.Bro
 		h.fail(w, r, err)
 		return
 	}
-	h.render(w, http.StatusOK, "account.html", page{Title: "Your account", Profile: prof, Session: s, Sessions: sessions})
+	p := page{Title: "Your account", Profile: prof, Session: s, Sessions: sessions, SteppedUp: s.SteppedUpWithin(authnapp.StepUpLifetime)}
+	if h.keys != nil {
+		keys, err := h.keys.ListCredentials(r.Context(), s)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		for _, k := range keys {
+			if k.State != "REMOVED" {
+				p.Keys = append(p.Keys, k)
+			}
+		}
+		p.KeysEnabled = true
+	}
+	h.render(w, http.StatusOK, "account.html", p)
 }
 
 // revokeSession ends one of the caller's own sessions.

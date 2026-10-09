@@ -7,6 +7,34 @@
 <dt>User id</dt><dd><code>{{.Profile.User}}</code></dd>
 </dl>
 <p><button type="button" id="sign-out">Sign out</button></p>
+{{if .KeysEnabled}}
+<h2>Security keys and passkeys</h2>
+<p class="note">PantherClaw asks for one of these before sensitive changes and, later, before approvals. Adding or removing one needs a recent sign-in or a key you already have.</p>
+{{if .SteppedUp}}<p class="ok">Verified with a security key in the last 5 minutes.</p>{{end}}
+<table>
+<thead><tr><th>Name</th><th>Kind</th><th>Added</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+<tbody>
+{{range .Keys}}
+<tr>
+<td>{{.Name}}</td>
+<td>{{if .Synced}}Passkey (synced){{else}}Security key{{end}}</td>
+<td>{{.CreatedAt.UTC.Format "2006-01-02"}}</td>
+<td>{{if .LastUsedAt}}{{.LastUsedAt.UTC.Format "2006-01-02 15:04 UTC"}}{{else}}Never{{end}}</td>
+<td>{{if eq .State "ACTIVE"}}Active{{else}}Suspended{{if eq .StateReason "CLONE_SUSPECTED"}} (its counter went backwards: possible copy){{end}}{{end}}</td>
+<td>{{if eq .State "ACTIVE"}}<button type="button" class="rename-key" data-id="{{.ID}}">Rename</button> {{end}}<button type="button" class="remove-key" data-id="{{.ID}}">Remove</button></td>
+</tr>
+{{else}}
+<tr><td colspan="6">No security keys yet.</td></tr>
+{{end}}
+</tbody>
+</table>
+<p>
+<label for="key-name">Name for a new key</label>
+<input id="key-name" type="text" maxlength="64" value="Security key">
+<button type="button" id="add-key">Add a security key or passkey</button>
+<button type="button" id="step-up">Verify with a security key</button>
+</p>
+{{end}}
 
 <h2>Browser sessions</h2>
 <p class="note">Device and address are what this server observed; they are not verified.</p>
