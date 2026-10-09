@@ -8,7 +8,7 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 **Phase**
 
-- `MVP`: in the v1.0 backend (milestones M1–M13).
+- `MVP`: in the v1.0 backend (milestones M1–M14, delivered in the order given below the milestone table).
 - `Next`: planned after 1.0.
 - `Later`: wanted, but not scheduled.
 

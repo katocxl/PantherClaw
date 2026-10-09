@@ -117,7 +117,7 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | T-032 | Token/proof replay, alg confusion, token substitution | A4, A9 | TB1 | Impersonation | HR-090, HR-091, HR-095 | M2/M3 |
 | T-033 | Local workload key theft from desktop key store | A1, malware | Host | Impersonation from elsewhere | HR-092; hardware keys preferred | M3 |
 | T-034 | Licence-key forgery or check removal | A12 | Code | Revenue loss | Offline Ed25519 root (HR-063); legal (BSL) | M1 |
-| T-035 | GitHub OIDC mis-binding (name reuse, forks, `pull_request_target`) | A4 | Attestation | Impersonation | HR-093 | M3 |
+| T-035 | GitHub OIDC mis-binding (name reuse, forks, same-repository pull-request runs, `pull_request_target`) | A4 | Attestation | Impersonation | HR-093 | M3 |
 | T-036 | Package signing compromise, rollback to bad mapping, malicious mapping | A10, A7 | Packages | Total bypass | HR-063, HR-123, HR-124 | M4 |
 | T-037 | API attacks: IDOR, mass assignment, injection, CSRF, OIDC mix-up, session fixation | A5, A8, A9 | TB4 | Unauthorized changes | SB-2, HR-104; authz on every call; sqlc parameterization | M2/M5 |
 | T-038 | Red-team scenario run against live targets | A5 | Range | Real damage | HR-120 | M12 |

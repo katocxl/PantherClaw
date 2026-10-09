@@ -8,7 +8,7 @@ This document says how PantherClaw is explained, demonstrated and sold to securi
 
 **Category:** agent transaction firewall (reference specification §2).
 
-**One line:** PantherClaw gives every AI agent a verified identity, only the access its current task needs, and a firewall it cannot route around, with evidence your auditors can check.
+**One line:** PantherClaw verifies which AI agent is acting and for whom, gives it only the access its current task needs, and puts its actions behind a firewall that proves, route by route, where it cannot be bypassed, with evidence your auditors can check.
 
 **The question the whole product is designed around** (incumbents answer parts of it; we make all of it the unit of design):
 
@@ -50,7 +50,7 @@ Naming follows one rule: a short brand word the admin remembers, always shown wi
 
 Two features sit in a different component from their pillar, because that is where buyers look for them: the containment sandbox (PN-008.1, pillar 10) belongs to **Checkpoint**, and credential-reach findings (F048, pillar 2) belong to **Stash**.
 
-**Claim boundary for "instantly":** Reflex's tagline is marketing shorthand. The measured promise is containment that reaches every gateway at p99 under 1 second, with gateways failing closed after 2 seconds without a heartbeat; requests already dispatched complete (ARCHITECTURE §15–16). Contracts, security questionnaires and technical documents state the measured figure, never "instant" (F801).
+**Claim boundary for "instantly":** Reflex's tagline is marketing shorthand. The real promise is a performance target, not a guarantee: containment reaches every gateway in under 1 second at p99 (PN-011.3), with gateways failing closed after 2 seconds without a heartbeat; requests already dispatched complete (ARCHITECTURE §15–16). Contracts, security questionnaires and technical documents state the measured figure, never "instant" (F801).
 
 ## 4. Components in detail
 

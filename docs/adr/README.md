@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Format: Context → Decision → Consequences → Alternatives considered. Status: Proposed | Accepted | Superseded by ADR-XXXX. New ADRs are numbered sequentially and reviewed at G0/G1. All ADRs below were accepted at G0 on 2026-10-08 after an adversarial security review and a toolchain-currency review.
+Format: Context → Decision → Consequences → Alternatives considered. Status: Proposed | Accepted | Superseded by ADR-XXXX. New ADRs are numbered sequentially and reviewed at G0/G1. ADR-0001 to ADR-0014 were accepted at G0 on 2026-10-08 after an adversarial security review and a toolchain-currency review; later ADRs state their own status and date.
 
 | ADR | Title |
 |---|---|
