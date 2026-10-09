@@ -294,7 +294,7 @@ docs/                    this guide and companions
 | M1 | `orgs` (root, RLS on id), `cross_org_list_audit` (global), `ledger_entries`, `ledger_chain` (insert-only links), `ledger_heads`, `keys` (public material + wrapped private refs), `deks`, `licence_state` (global), River tables (no RLS; River's migrations run as goose Go migrations) |
 | M1.5 | `transactions`, `decision_receipts`, `permits`, `execution_attempts`, `budgets`, `budget_ledger`, `org_containment` |
 | M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes`, `cli_sessions` (CLI refresh tokens), `auth_replay` (client-assertion `jti`s) |
-| M3 | `agents`, `agent_owners`, `agent_changes`, `agent_instances`, `enrollment_tokens`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries` |
+| M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
 | M4 | `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `envelopes`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `facts`, `policies`, `policy_versions`, `idempotency` (or columns on `transactions`) |
 | M5 | `sessions`, `webauthn_credentials`, `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
 | M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
@@ -357,14 +357,14 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Exit:** authenticated, authorized CRUD for tenancy via Connect + CLI.
 
 ### M3 — Agents & PAP/1 identity
-**Threat slice:** T-001, T-004, T-032, T-033, T-035 · **HR:** HR-022, HR-090..094 · **F:** F015–F037, F224–F236 · **PN:** PN-001 (part), PN-002 (incl. PN-002.8), PN-004 (ADMISSION) · **ADR:** 0018.
+**Threat slice:** T-001, T-004, T-032, T-033, T-035, T-044..T-050 · **HR:** HR-022, HR-090..094, HR-140..148 · **F:** F015–F037, F224–F236 · **PN:** PN-001 (part), PN-002 (incl. PN-002.8), PN-004 (ADMISSION) · **ADR:** 0018 · **G0:** [g0/M3.md](g0/M3.md).
 - Agents inventory, owners/backup, purpose, environment, lifecycle state machine, change history.
 - Enrollment tokens, instance key registration, ADMISSION waitlist entries, fingerprint confirmation.
 - Workload tokens, proofs, server nonces, replay store (partitioned), attestation L1 + L2.
 - **L2 through configured trusted issuers** (ADR-0018): each entry pins issuer, key source, audience, algorithms and immutable binding claims; presets carry rules configuration cannot disable. Ships the GitHub Actions OIDC and Kubernetes TokenReview presets; further presets are PN-002.3 (Next). Issuer changes are protected changes (F582).
 - Runs (server-minted, launcher vs represented principal, child runs). **`StartRun` accepts an RFC 8693 subject token** from a configured OIDC provider to prove the represented user, with the launcher as actor (PN-002.8); it grants nothing by itself.
 - Discovery: gateway-observed unknown workloads → unclaimed queue.
-- The G0 brief turns the ADR-0018 constraints into HR rules and threat rows (issuer without pinned claims, key fetch through egress guards, single-use attestation tokens, subject-token audience and freshness).
+- The G0 brief turns the ADR-0018 constraints into HR-140..148 and T-044..T-050 (issuer without pinned claims, protected issuer changes, key fetch through egress guards, single-use attestation tokens, Kubernetes binding, subject-token audience and freshness, represented principal, no authority moving between instances, discovery limits).
 - **Tests:** replay, stolen token without key, wrong `htu`/`bh`, stale nonce, GitHub `pull_request` (fork and same-repository) and `pull_request_target` rejection, an unprotected triggering ref (`ref_protected` false) or workflow ref rejected, ordinary-job (`workflow_ref`) and reusable-workflow (`job_workflow_ref`) bindings, name-collision instances not inheriting authority, issuer entry without binding claims rejected, token from an unconfigured issuer or for another org's audience rejected, subject token from an unconfigured IdP, for another audience, stale or replayed rejected, subject token never widening a grant.
 
 ### M4 — Authority core
