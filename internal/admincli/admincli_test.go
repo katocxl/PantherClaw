@@ -88,6 +88,7 @@ func TestUsage(t *testing.T) {
 		{"licence"},
 		{"keygen"},
 		{"keygen", "--purpose", "admin", "--out-dir", "."},
+		{"keygen", "--purpose", "org-packages", "--out-dir", "."}, // an org key, not a PantherClaw root
 		{"packages"},
 		{"packages", "sign", "--key", "k", "--version", "1", "--out", "o", "p.yaml"},                          // no expiry
 		{"packages", "sign", "--key", "k", "--version", "0", "--expires-days", "180", "--out", "o", "p.yaml"}, // version 0

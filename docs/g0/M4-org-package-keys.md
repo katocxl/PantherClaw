@@ -9,7 +9,7 @@ This brief is written before implementation (G0). It plans the follow-up that [G
 - `internal/definitions/app`: register, revoke and list keys; the importer routes org-signed targets to the org's own keys, with anti-rollback per key; activation refuses versions of a key revoked as compromised; the edition check.
 - Migration `00026_package_keys.sql` (M4's reserved range): `package_signing_keys` (one row per key, with its anti-rollback state), and `package_versions.signing_key_id`. The Postgres store implements the `Keys` port and the operation rule.
 - `PackageService` gains `RegisterSigningKey`, `RevokeSigningKey` and `ListSigningKeys`; `PackageVersion` gains the signing key's kid. New permission `package.key.manage` on the Org Admin role.
-- `pclaw package key create|register|revoke|list` and `pclaw package sign` (keys are generated and used on the customer's machine, encrypted with a passphrase; never sent to the server).
+- `pclaw package-key create|register|revoke|list` and `pclaw package sign` (keys are generated and used on the customer's machine, encrypted with a passphrase; never sent to the server).
 
 **Out of scope:** customer-authored definitions through an API instead of package files (F361's guided authoring), package tests as a publication gate (M11), a review diff for capability-widening updates (F373), more than one person to register a key (decision 3 below), and hardware-backed signing keys.
 
@@ -39,6 +39,30 @@ This brief is written before implementation (G0). It plans the follow-up that [G
 - `TestT056_*`: unregistered, revoked and other orgs' keys are untrusted; org packages never redefine PantherClaw operations (both directions); a compromised key withdraws its versions, raises the epoch, and its versions cannot be activated again.
 - The generated table check (`TestHR053_EveryTenantTableIsIsolated`) covers the new table; store integration tests for cross-org isolation, the conditional updates and the per-org lock; RPC tests for permissions, editions and IDOR.
 
-**Delivery plan (stacked pull requests):** 1 this brief, ADR-0020, HR-162, T-056, the trust and application layers on in-memory fakes, and the permission · 2 migration `00026` and the Postgres store · 3 the `PackageService` RPCs and server wiring · 4 the `pclaw` commands (stacked on #103, which adds `pclaw package`).
+**Delivery plan (stacked pull requests):** 1 this brief, ADR-0020, HR-162, T-056, the trust and application layers on in-memory fakes, and the permission · 2 migration `00026` and the Postgres store · 3 the `PackageService` RPCs and server wiring · 4 the `pclaw` commands.
 
 **Decision:** APPROVED — Joshua Kato, 2026-10-09 (decision 2 at G0 M4; the four follow-up decisions above, recommended option on each)
+
+---
+
+### Status — 2026-10-09
+
+**Delivered** as four stacked pull requests: #113 (brief, ADR-0020, HR-162, T-056, trust and use cases), #116 (migration `00026`, Postgres store), #118 (`PackageService` RPCs, server wiring) and the `pclaw` commands. `task check`, `task test:integration` and `task trace` through M4 pass on each.
+
+**How an org uses it** (Team edition and above):
+
+```bash
+pclaw package-key create --name release --out-dir ~/keys --passphrase-file ~/keys/pp
+pclaw package-key register --name "release 2026" --public-key-file ~/keys/release.pub.json
+pclaw package sign --key ~/keys/release.key --passphrase-file ~/keys/pp --version 1 --expires-days 180 --out targets.jws package.yaml
+pclaw package import --name acme.payments --version 1.0.0 --targets-file targets.jws --file package.yaml
+```
+
+A Policy Publisher then activates the version (`pclaw package transition … --to active`, from #103). After a rotation, revoke the old key with `--reason rotated`; after a leak, with `--reason compromised`.
+
+**Deviations:**
+1. `package.key.manage` is not in the human-only catalog (design decision 4): the Org Admin role may be bound to service accounts, and a human-only permission would make the whole role unbindable for them. The use case refuses a non-person registering a key instead, and `TestHR162_RegisteringAKeyNeedsAPersonTeamAndAValidKey` and the RPC test cover it.
+2. The command group is `pclaw package-key …`, not `pclaw package key …`, because `pclaw` commands are at most two words.
+3. Signing tools share `trust.TargetOf`; `pclaw-admin keygen` refuses the new `org-packages` key purpose, which only `pclaw` creates.
+
+**Still open:** a review diff for capability-widening package updates (F373) and package tests as a publication gate (M11).

@@ -32,6 +32,21 @@ service PackageService {
   rpc GetDefinition(GetDefinitionRequest) returns (GetDefinitionResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  // RegisterSigningKey registers an org package-signing public key (HR-162,
+  // Team edition and above). Only a person can register one; packages listed
+  // in targets signed with it can then be imported into this org.
+  // permission: package.key.manage
+  rpc RegisterSigningKey(RegisterSigningKeyRequest) returns (RegisterSigningKeyResponse);
+  // RevokeSigningKey revokes an org package-signing key. COMPROMISED also
+  // withdraws every version it signed and invalidates permits already
+  // issued; ROTATED keeps them.
+  // permission: package.key.manage
+  rpc RevokeSigningKey(RevokeSigningKeyRequest) returns (RevokeSigningKeyResponse);
+  // ListSigningKeys lists the org's package-signing keys.
+  // permission: package.read
+  rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // PackageState is a package version's lifecycle state (F394).
@@ -73,6 +88,9 @@ message PackageVersion {
   bool pinned = 6;
   // When it was imported.
   google.protobuf.Timestamp import_time = 7;
+  // Kid of the org package-signing key that signed it; empty when
+  // PantherClaw's package root did.
+  string signing_key = 8;
 }
 
 // ImportPackageRequest carries a package and the signed metadata that
@@ -165,4 +183,93 @@ message GetDefinitionResponse {
   string version = 5;
   // The version's state.
   PackageState state = 6;
+}
+
+// SigningKeyState is an org package-signing key's state.
+enum SigningKeyState {
+  SIGNING_KEY_STATE_UNSPECIFIED = 0;
+  // Packages signed with it can be imported.
+  SIGNING_KEY_STATE_ACTIVE = 1;
+  // It verifies nothing any more and can never be registered again.
+  SIGNING_KEY_STATE_REVOKED = 2;
+}
+
+// SigningKeyRevokeReason says why a key was revoked.
+enum SigningKeyRevokeReason {
+  SIGNING_KEY_REVOKE_REASON_UNSPECIFIED = 0;
+  // Replaced by another key; what it signed keeps working.
+  SIGNING_KEY_REVOKE_REASON_ROTATED = 1;
+  // Someone else may hold it: what it signed is withdrawn for good.
+  SIGNING_KEY_REVOKE_REASON_COMPROMISED = 2;
+}
+
+// SigningKey is an org package-signing key (its public half only).
+message SigningKey {
+  // Key id: "org-packages-" and the start of the key's JWK thumbprint.
+  string kid = 1;
+  // Name.
+  string name = 2;
+  // The public key as a JWK (JSON).
+  string public_jwk = 3;
+  // State.
+  SigningKeyState state = 4;
+  // Why it was revoked (when revoked).
+  SigningKeyRevokeReason revoke_reason = 5;
+  // Who registered it ("user:<id>").
+  string created_by = 6;
+  // When it was registered.
+  google.protobuf.Timestamp create_time = 7;
+  // Who revoked it.
+  string revoked_by = 8;
+  // When it was revoked.
+  google.protobuf.Timestamp revoke_time = 9;
+  // The highest targets version accepted under it (0 before its first
+  // import). Sign the next targets with a higher version.
+  int64 metadata_version = 10;
+}
+
+// RegisterSigningKeyRequest carries the public half of a key the org keeps
+// offline (pclaw package key create).
+message RegisterSigningKeyRequest {
+  // A name for people.
+  string name = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$"];
+  // The Ed25519 public key as a JWK (JSON). Private members are refused.
+  string public_jwk = 2 [(buf.validate.field).string = {
+    min_len: 16
+    max_len: 1024
+  }];
+}
+
+// RegisterSigningKeyResponse returns the key.
+message RegisterSigningKeyResponse {
+  // The key.
+  SigningKey key = 1;
+}
+
+// RevokeSigningKeyRequest names a key and why it is revoked.
+message RevokeSigningKeyRequest {
+  // Key id.
+  string kid = 1 [(buf.validate.field).string.pattern = "^org-packages-[A-Za-z0-9_-]{22}$"];
+  // Reason.
+  SigningKeyRevokeReason reason = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// RevokeSigningKeyResponse returns the key and what was withdrawn.
+message RevokeSigningKeyResponse {
+  // The key.
+  SigningKey key = 1;
+  // For COMPROMISED: each version withdrawn, with its new state.
+  repeated PackageVersion withdrawn = 2;
+}
+
+// ListSigningKeysRequest lists the org's keys.
+message ListSigningKeysRequest {}
+
+// ListSigningKeysResponse returns them, newest first.
+message ListSigningKeysResponse {
+  // Keys.
+  repeated SigningKey keys = 1;
 }

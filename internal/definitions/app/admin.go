@@ -44,6 +44,9 @@ type VersionInfo struct {
 	Definitions   []DefinitionRef
 	Pinned        bool
 	ImportedAt    time.Time
+	// SigningKey is the kid of the org key that signed it; empty when a
+	// package root did (HR-162).
+	SigningKey string
 }
 
 // DefinitionRef names one definition of a version.

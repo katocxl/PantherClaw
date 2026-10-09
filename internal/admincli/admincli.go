@@ -133,7 +133,7 @@ func keygen(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	p := rootkey.Purpose(*purpose)
-	if !p.Valid() || *outDir == "" || fs.NArg() != 0 {
+	if !p.Root() || *outDir == "" || fs.NArg() != 0 {
 		fs.Usage()
 		return errUsage
 	}
