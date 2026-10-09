@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-// Package connectionsrpc serves ConnectionService (G0 M6). The credential
-// procedures (GetSealingKey, PutCredential, ListCredentials,
-// RevokeCredential) are slice 11.
+// Package connectionsrpc serves ConnectionService (G0 M6): connections and
+// their route modes, and credential custody (sealing keys, sealed uploads,
+// metadata and revocation). No procedure returns sealed bytes (HR-061).
 package connectionsrpc
 
 import (
@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	capp "github.com/katocxl/pantherclaw/internal/connections/app"
+	credapp "github.com/katocxl/pantherclaw/internal/credentials/app"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
@@ -24,11 +25,12 @@ var errInvalidID = pcerr.New(pcerr.InvalidArgument, "INVALID_ID", "invalid id")
 // Handler serves ConnectionService.
 type Handler struct {
 	pantherclawv1connect.UnimplementedConnectionServiceHandler
-	s *capp.Service
+	s     *capp.Service
+	creds *credapp.Service
 }
 
 // New returns the ConnectionService handler.
-func New(s *capp.Service) *Handler { return &Handler{s: s} }
+func New(s *capp.Service, creds *credapp.Service) *Handler { return &Handler{s: s, creds: creds} }
 
 var _ pantherclawv1connect.ConnectionServiceHandler = (*Handler)(nil)
 
@@ -130,7 +132,11 @@ func (h *Handler) GetConnection(ctx context.Context, req *pb.GetConnectionReques
 	if err != nil {
 		return nil, err
 	}
-	return &pb.GetConnectionResponse{Connection: connectionOf(c)}, nil
+	out := &pb.GetConnectionResponse{Connection: connectionOf(c)}
+	if out.ActiveCredential, err = h.activeCredential(ctx, out.Connection); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ListConnections implements ConnectionServiceHandler.

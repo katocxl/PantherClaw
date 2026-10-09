@@ -23,6 +23,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/connections/adapters/connectionsrpc"
 	capp "github.com/katocxl/pantherclaw/internal/connections/app"
+	credapp "github.com/katocxl/pantherclaw/internal/credentials/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/adapters/gatewaysrpc"
 	gwapp "github.com/katocxl/pantherclaw/internal/gateways/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/ca"
@@ -48,6 +49,8 @@ type m6Services struct {
 	response *rapp.Service
 	// connections are the targets gateways serve (HR-183).
 	connections *capp.Service
+	// credentials hold sealed credentials (HR-182).
+	credentials *credapp.Service
 }
 
 // newM6 builds the M6 services; notify (M5 notifications) may be nil.
@@ -60,6 +63,7 @@ func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry, notify rapp.Notifier,
 		reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{}), hub: gwapp.NewHub(pool, log),
 		response:    rapp.New(pool, notify, cfg.Auth.PublicURL),
 		connections: capp.New(pool, notify, cfg.Auth.PublicURL, cfg.GatewayAPI.URL),
+		credentials: credapp.New(pool, notify),
 	}, nil
 }
 
@@ -74,7 +78,7 @@ func (m *m6Services) registerPublic(rs *connect.Server) {
 	pantherclawv1connect.RegisterGatewayAdminServiceHandler(rs, gatewaysrpc.NewAdmin(m.gateways))
 	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
 	pantherclawv1connect.RegisterContainmentServiceHandler(rs, responserpc.New(m.response))
-	pantherclawv1connect.RegisterConnectionServiceHandler(rs, connectionsrpc.New(m.connections))
+	pantherclawv1connect.RegisterConnectionServiceHandler(rs, connectionsrpc.New(m.connections, m.credentials))
 }
 
 // mountPages adds the emergency-stop page, the only place the kill switch
