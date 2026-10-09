@@ -358,6 +358,38 @@ type PcExecutionAttempt struct {
 	RecordedAt     time.Time
 }
 
+type PcFact struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	Name        string
+	SubjectType string
+	SubjectID   string
+	ProviderID  ids.UUID
+	Value       []byte
+	ObservedAt  time.Time
+	RecordedAt  time.Time
+}
+
+type PcFactDeclaration struct {
+	OrgID       ids.OrgID
+	ProviderID  ids.UUID
+	Name        string
+	ValueType   string
+	SubjectType string
+	MaxLagS     int32
+	Active      bool
+}
+
+type PcFactProvider struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	Name             string
+	ServiceAccountID ids.UUID
+	State            string
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
 type PcGrant struct {
 	OrgID           ids.OrgID
 	ID              ids.UUID
