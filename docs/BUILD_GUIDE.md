@@ -185,17 +185,16 @@ Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-know
 
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
-  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
+  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
+  --workload-out deploy/dev/secrets/workload.json   # also an admitted PAP/1 workload with a run
 # copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
 # copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
 go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
-curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000-8000-0000000000c1' \
-  -H "PC-Run-Id: $(uuidgen)" -H "PC-Action-Id: $(uuidgen)" \
-  -d '{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}'
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1 --duration 2s --warmup 0s
 ```
 
-The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
+The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
 **Sign in and administer (M2):** people sign in through an OpenID provider; locally that is the Keycloak development realm in `deploy/keycloak` (users `alice` / `alice-dev-only` and `bob` / `bob-dev-only`, development only). The server is the relying party; `pclaw` never talks to the provider.
 
@@ -215,6 +214,22 @@ go run ./cmd/pclaw sa create --name ci && go run ./cmd/pclaw sa key-generate <sa
 go run ./cmd/pclaw sa token --key-file ci-key.json                          # private_key_jwt client credentials
 ```
 
+**Agents and workloads (M3):** an owner registers an agent, and its workload proves who it is with its own key (PAP/1). The workload commands run inside the workload and use only its key file.
+
+```bash
+go run ./cmd/pclaw agent create --name coder --team <team id> --env <env id> --owner <user id> --context ci
+go run ./cmd/pclaw agent enroll-token <agent id> --out enroll.token   # single use, 15 minutes
+# inside the workload:
+go run ./cmd/pclaw workload init --key-file workload.json
+go run ./cmd/pclaw workload enroll --key-file workload.json --server http://127.0.0.1:8080 --enrollment-token-file enroll.token
+# the owner compares the printed fingerprint, then:
+go run ./cmd/pclaw instance admit <instance id> --fingerprint <fingerprint>
+go run ./cmd/pclaw run start <agent id> --instance <instance id> --task "nightly refunds"
+go run ./cmd/pclaw workload token --key-file workload.json             # a workload token, valid 10 minutes
+```
+
+CI jobs and pods can attest instead of using an enrollment token: an admin proposes a trusted-issuer entry (`pclaw issuer propose-github …` or `pclaw issuer propose-kubernetes …`), a person with the Identity Publisher role activates it (`pclaw issuer activate ENTRY REVISION`), and the workload enrolls with `--github` (an Actions job with `id-token: write`) or `--kubernetes-token FILE` (a projected service-account token with audience `pantherclaw:<org id>`). Unknown keys that reach the gateway show up as discovered agents: `pclaw agent list --state discovered`, then `pclaw agent claim` or `pclaw agent retire`. `pclaw scan` looks for shadow agents on a machine: the MCP servers configured for Claude Desktop, Claude Code, Cursor and VS Code, agent-framework projects under `--path`, and credentials in the environment (shown redacted). Results stay local; `--submit` adds the MCP servers and agent projects to the discovered agents (credentials are never sent).
+
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
 
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.
@@ -222,8 +237,7 @@ To let a service start runs on behalf of a signed-in user (M3), add `"subject_to
 **Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
 
 ```bash
-go run ./cmd/pantherclaw-sim load --workload 01920000-0000-7000-8000-0000000000c1 --rate 1000 --duration 30s --warmup 5s --out perf.json
-k6 run -e WORKLOAD=01920000-0000-7000-8000-0000000000c1 -e RATE=1000 test/load/refund.js   # Linux/nightly; thresholds are the SLOs
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1000 --duration 30s --warmup 5s --out perf.json
 ```
 
 Results and the machines they were measured on are recorded in `docs/perf/M1.5.md`.

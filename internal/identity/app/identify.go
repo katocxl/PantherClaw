@@ -63,7 +63,7 @@ func (s *Service) Identify(ctx context.Context, org ids.OrgID, in IdentifyInput)
 	out := Identified{Instance: tok.Instance, Environment: tok.Environment, Level: tok.Level}
 	err = s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		r, err := q.LockInstance(ctx, org, tok.Instance.Instance)
+		r, err := q.GetInstance(ctx, org, tok.Instance.Instance)
 		if db.IsNoRows(err) || (err == nil && (r.AgentID != tok.Instance.Agent || r.State != "ADMITTED")) {
 			return pap.Err(pap.CodeInstanceNotAdmitted)
 		} else if err != nil {
@@ -80,12 +80,11 @@ func (s *Service) Identify(ctx context.Context, org ids.OrgID, in IdentifyInput)
 		if net == "" {
 			net = last
 		}
-		if _, err := q.TouchInstance(ctx, dbq.TouchInstanceParams{
-			OrgID: org, ID: r.ID, LastNetwork: optString(net), ReleaseState: r.ReleaseState, ReleaseDigest: r.ReleaseDigest,
-		}); err != nil {
+		seen, err := q.SeeInstance(ctx, optString(net), org, r.ID)
+		if err != nil {
 			return err
 		}
-		if last != "" && net != last {
+		if seen == 1 && last != "" && net != last {
 			if err := s.networkChanged(ctx, q, tx, r, a, last, net); err != nil {
 				return err
 			}

@@ -67,3 +67,9 @@ WHERE org_id = sqlc.arg(org_id) AND issuer = sqlc.arg(issuer) AND subject = sqlc
 -- name: BindRunInstance :execrows
 UPDATE pc.runs SET instance_id = sqlc.arg(instance_id)
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND instance_id IS NULL AND state = 'ACTIVE' AND expires_at > now();
+
+-- Janitor: records the expiry of runs past expires_at (they already read
+-- EXPIRED); a child never outlives its parent, so children expire too.
+-- name: ExpireRuns :execrows
+UPDATE pc.runs SET state = 'EXPIRED', end_reason = 'expired', ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND state = 'ACTIVE' AND expires_at <= now();

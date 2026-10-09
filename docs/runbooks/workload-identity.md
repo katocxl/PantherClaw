@@ -1,0 +1,131 @@
+# Workload identity (PAP/1)
+
+**Milestone:** M3 · **Owner:** the org's Identity Publisher and agent owners · **Status:** tested procedure (M3 end-to-end tests)
+
+How an agent's workload gets an identity PantherClaw can verify: enrollment with an owner's token, or L2 attestation from GitHub Actions or Kubernetes. Background: [PAP-1](../protocol/PAP-1.md) §3–§5, [ADR-0018](../adr/0018-federated-workload-identity-and-represented-principals.md), [g0/M3.md](../g0/M3.md).
+
+## 1. Enroll with an owner's token (any workload)
+
+1. The owner creates the agent and a single-use enrollment token (15 minutes):
+   ```bash
+   pclaw agent create --name coder --team <team> --env <env> --owner <user> --context service
+   pclaw agent enroll-token <agent> --out enroll.token
+   ```
+2. On the workload, create a key (it never leaves the machine) and enroll:
+   ```bash
+   pclaw workload init --key-file workload.json
+   pclaw workload enroll --key-file workload.json --server https://pantherclaw.example.com --enrollment-token-file enroll.token
+   ```
+   The command prints the instance id and the key fingerprint.
+3. The owner compares the fingerprint through a separate channel, then admits the instance:
+   ```bash
+   pclaw instance admit <instance> --fingerprint <fingerprint>
+   ```
+4. The workload gets 10-minute workload tokens with `pclaw workload token --key-file workload.json` and signs every request (the PantherClaw clients do this; see `internal/identity/workloadclient`).
+
+A reused or expired enrollment token is refused and audited. A wrong fingerprint is refused: admit nothing you cannot match.
+
+## 2. GitHub Actions (L2)
+
+1. An admin proposes an entry that pins the repository and owner **ids** (never names) and the workflow refs:
+   ```bash
+   pclaw issuer propose-github --agent <agent> --repository-id 123456 --owner-id 7890 \
+     --workflow-ref octo-org/agent-repo/.github/workflows/agent.yml@refs/heads/main \
+     --auto-admit --reason "CI agent"
+   ```
+   Find the ids with `gh api repos/OWNER/REPO --jq '.id, .owner.id'`. For a reusable workflow use `--job-type reusable-workflow` and pin `--workflow-sha`.
+2. A person with the **Identity Publisher** role reviews what the proposal widens and activates it (`pclaw issuer activate ENTRY REVISION`; add `--confirm-reusable-refs-protected` for reusable workflows after checking that each ref is a protected branch or tag of its repository).
+3. In the workflow (on a protected branch or tag; the preset refuses `pull_request`, `pull_request_target` and any `refs/pull/` ref):
+   ```yaml
+   permissions:
+     id-token: write
+     contents: read
+   steps:
+     - run: pclaw workload init --key-file "$RUNNER_TEMP/workload.json"
+     - run: pclaw workload enroll --key-file "$RUNNER_TEMP/workload.json" --server "$PANTHERCLAW_SERVER" --github --org "$PANTHERCLAW_ORG"
+   ```
+   With `--auto-admit` active the instance is admitted at once; otherwise it waits for the owner. To stay at L2, renew with `pclaw workload token --github`.
+
+### Agents that must look at pull requests (founder decision 1)
+
+Do not run the agent **in** the pull request. Run it from a workflow on the protected branch that reads the pull request as data, triggered by a maintainer:
+
+```yaml
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  review:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5   # checks out the default branch: the bot's own reviewed code
+      - run: ./review-bot --pr "${{ github.event.issue.number }}"   # reads the PR through the API, as untrusted data
+```
+
+A label (`pull_request` with `types: [labeled]` cannot be used: it runs the PR's code) or a `workflow_run` trigger works the same way. The pull request's content is untrusted input; the bot's authority comes only from its grants (M4).
+
+## 3. Kubernetes (L2)
+
+1. The operator lists each cluster in the server configuration; tenants can only name these:
+   ```json
+   "identity": {"kubernetes_clusters": [{
+     "name": "prod", "api_server": "https://10.0.0.1:6443", "ca_file": "/etc/pantherclaw/prod-ca.pem",
+     "token_file": "/etc/pantherclaw/prod-reviewer.token", "allowed_prefixes": ["10.0.0.0/24"],
+     "orgs": ["<org id>"]
+   }]}
+   ```
+2. In each cluster, give PantherClaw's reviewer account exactly this (TokenReview, and `get` on pods in the namespaces that entries pin; nothing else):
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata: {name: pantherclaw-reviewer, namespace: pantherclaw}
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: ClusterRoleBinding
+   metadata: {name: pantherclaw-reviewer-tokenreview}
+   roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+   subjects: [{kind: ServiceAccount, name: pantherclaw-reviewer, namespace: pantherclaw}]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: Role
+   metadata: {name: pantherclaw-pod-reader, namespace: agents}
+   rules: [{apiGroups: [""], resources: [pods], verbs: [get]}]
+   ---
+   apiVersion: rbac.authorization.k8s.io/v1
+   kind: RoleBinding
+   metadata: {name: pantherclaw-pod-reader, namespace: agents}
+   roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: pantherclaw-pod-reader}
+   subjects: [{kind: ServiceAccount, name: pantherclaw-reviewer, namespace: pantherclaw}]
+   ```
+   Create the reviewer token with `kubectl -n pantherclaw create token pantherclaw-reviewer --duration 24h` and rotate it like any secret.
+3. Propose and activate an entry that pins the namespace, the service account **name and UID** (`kubectl -n agents get sa coder -o jsonpath='{.metadata.uid}'`), and optionally image repositories or digests:
+   ```bash
+   pclaw issuer propose-kubernetes --agent <agent> --cluster prod --namespace agents --service-account coder \
+     --service-account-uid <uid> --image-repository ghcr.io/acme/agent --auto-admit --reason "pod agent"
+   ```
+4. Give the pod a projected token with the org's audience (at most one hour) and enroll with it:
+   ```yaml
+   volumes:
+     - name: pantherclaw-token
+       projected:
+         sources:
+           - serviceAccountToken: {path: token, audience: "pantherclaw:<org id>", expirationSeconds: 3600}
+   ```
+   ```bash
+   pclaw workload enroll --key-file /var/run/agent/workload.json --server "$PANTHERCLAW_SERVER" \
+     --kubernetes-token /var/run/secrets/pantherclaw/token --org <org id>
+   ```
+   The image digest PantherClaw records is the pod's, read from the API server; a digest the workload reports is only `declared`.
+
+## 4. When something goes wrong
+
+- **Disable an entry** at once: `pclaw issuer disable ENTRY --reason …`. It stops auto-admission, and its instances drop to L1 at their next token.
+- **Revoke an instance**: `pclaw instance revoke INSTANCE --reason …`. Outstanding permits fail at `BeginDispatch`.
+- **Unknown keys** reaching the gateway appear as discovered agents (`pclaw agent list --state discovered`); claim, merge or retire them. A `security.discovery_flood` audit event means the per-gateway rate or the per-org cap was reached.
+- **Network change alerts** (`security.instance_network_changed`) mean the same key was used from a new network: check whether the key was copied.

@@ -115,6 +115,21 @@ func (q *Queries) EndRunTree(ctx context.Context, arg EndRunTreeParams) ([]PcRun
 	return items, nil
 }
 
+const expireRuns = `-- name: ExpireRuns :execrows
+UPDATE pc.runs SET state = 'EXPIRED', end_reason = 'expired', ended_at = now()
+WHERE org_id = $1 AND state = 'ACTIVE' AND expires_at <= now()
+`
+
+// Janitor: records the expiry of runs past expires_at (they already read
+// EXPIRED); a child never outlives its parent, so children expire too.
+func (q *Queries) ExpireRuns(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, expireRuns, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getRun = `-- name: GetRun :one
 SELECT r.org_id, r.id, r.agent_id, r.instance_id, r.environment_id, r.launcher_user_id, r.launcher_sa_id, r.launcher_instance_id, r.principal_user_id, r.principal_sa_id, r.principal_source, r.subject_issuer, r.subject_subject, r.actor_chain, r.parent_run_id, r.depth, r.grant_id, r.task_ref, r.state, r.end_reason, r.created_at, r.expires_at, r.ended_at,
     (CASE WHEN r.state = 'ACTIVE' AND r.expires_at <= now() THEN 'EXPIRED' ELSE r.state END)::text AS effective_state

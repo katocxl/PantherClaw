@@ -66,7 +66,6 @@ type Service struct {
 
 	workloads Workloads
 	runs      Runs
-	legacyDev bool
 }
 
 // Config configures the Service.
@@ -75,10 +74,6 @@ type Config struct {
 	Issuer    string
 	PermitTTL time.Duration
 	Logger    *slog.Logger
-	// LegacyDevWorkloads accepts actions without PAP/1 credentials, as in
-	// M1.5, for the development gateway until it forwards them (M3 slice
-	// 13 removes it). Never in production.
-	LegacyDevWorkloads bool
 }
 
 // New returns a Service.
@@ -91,7 +86,7 @@ func New(pool *db.Pool, reg *keys.Registry, cfg Config) *Service {
 	if issuer == "" {
 		issuer = "pantherclaw"
 	}
-	return &Service{pool: pool, reg: reg, grant: cfg.Grant, issuer: issuer, ttl: ttl, log: cfg.Logger, legacyDev: cfg.LegacyDevWorkloads}
+	return &Service{pool: pool, reg: reg, grant: cfg.Grant, issuer: issuer, ttl: ttl, log: cfg.Logger}
 }
 
 // Result is the answer to Authorize.
@@ -109,7 +104,7 @@ type Result struct {
 }
 
 // Authorize decides on raw canonical ActionIR bytes sent with the
-// workload's PAP/1 credentials (nil only on the legacy development path).
+// workload's PAP/1 credentials; without them it is CANNOT_AUTHORIZE.
 func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *Credentials) (Result, error) {
 	p, perr := actionir.Parse(raw)
 	if perr != nil {
@@ -627,6 +622,7 @@ type decisionPAP struct {
 type Workloads interface {
 	Identify(ctx context.Context, org ids.OrgID, in iapp.IdentifyInput) (iapp.Identified, error)
 	NonceExpiry(ctx context.Context, org ids.OrgID) (string, time.Time, error)
+	Discover(ctx context.Context, org ids.OrgID, in iapp.DiscoverInput) (ids.UUID, error)
 }
 
 // Runs checks and binds runs (runs app).
@@ -665,9 +661,6 @@ func identityOutcome(d domain.Decision, code, detail string) domain.Outcome {
 // another. ok reports that the action may proceed to the grant.
 func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c *Credentials) (domain.Outcome, bool, error) {
 	if c == nil {
-		if s.legacyDev {
-			return domain.Outcome{}, true, nil
-		}
 		return identityOutcome(domain.CannotAuthorize, domain.ReasonIdentityUnverified, string(pap.CodeInvalidToken)), false, nil
 	}
 	if s.workloads == nil || s.runs == nil {
@@ -719,4 +712,24 @@ func (s *Service) nonce(ctx context.Context, gw Gateway) string {
 		s.log.WarnContext(ctx, "authz.nonce_unavailable", slog.String("gateway_id", gw.ID))
 	}
 	return n
+}
+
+// UnknownWorkload is a gateway's report of a request it could not tie to an
+// admitted instance (HR-148). The observations are UNTRUSTED.
+type UnknownWorkload struct {
+	Credentials
+	Route, UserAgent string
+}
+
+// ReportUnknown records the report as a discovery after verifying its
+// key-only proof; the request itself stays refused. The zero id means the
+// sighting was only counted.
+func (s *Service) ReportUnknown(ctx context.Context, gw Gateway, u UnknownWorkload) (ids.UUID, error) {
+	if s.workloads == nil {
+		return ids.UUID{}, errors.New("authority: workload identity is not configured")
+	}
+	return s.workloads.Discover(ctx, gw.Org, iapp.DiscoverInput{
+		Request: pap.Request{Method: u.Method, URL: u.URL, BodySHA256: u.BodySHA256, Token: u.Token},
+		Proof:   u.Proof, Gateway: gw.ID, Route: u.Route, ClientAddress: u.ClientAddress, UserAgent: u.UserAgent,
+	})
 }

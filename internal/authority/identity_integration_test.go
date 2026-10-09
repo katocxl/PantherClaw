@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katocxl/pantherclaw/internal/actionir"
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
 	"github.com/katocxl/pantherclaw/internal/authority"
@@ -29,8 +28,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
-	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
-	"github.com/katocxl/pantherclaw/internal/platform/money"
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
@@ -56,17 +53,16 @@ type workload struct {
 	token string
 }
 
-type idFixture struct {
-	fixture
-	ident            *iapp.Service
-	runs             *runsapp.Service
-	inv              *aapp.Inventory
-	team, env, owner ids.UUID
-}
+type idFixture = fixture
 
-func setupIdentity(t *testing.T) idFixture {
+func setupIdentity(t *testing.T) fixture { return setup(t, "1000.00", nil, time.Minute) }
+
+// setup is setupBase with workload identity: a verified agent with an
+// admitted instance (wl) and a run bound to it.
+func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixture {
 	t.Helper()
-	f := idFixture{fixture: setup(t, "1000.00", nil, time.Minute), team: ids.NewV7(), env: ids.NewV7(), owner: ids.NewV7()}
+	f := setupBase(t, limit, maxCount, ttl)
+	f.team, f.env, f.owner = ids.NewV7(), ids.NewV7(), ids.NewV7()
 	k, _ := keys.GenerateSigningKey(keys.PurposeWorkloadTokens)
 	if err := f.reg.Put(k); err != nil {
 		t.Fatal(err)
@@ -74,14 +70,13 @@ func setupIdentity(t *testing.T) idFixture {
 	f.ident = iapp.New(f.pool, f.reg, pcIssuer, clock.System{})
 	f.runs = runsapp.New(f.pool)
 	f.inv = aapp.NewInventory(f.pool, unlimited{})
-	maxPer, _ := money.ParseMoney("100", "USD")
-	f.svc = authority.New(f.pool, f.reg, authority.Config{
-		Grant:  domain.DevGrant{Name: "dev-refunds", Operation: actionir.OpRefundCreate, MaxPerAction: maxPer, BudgetName: "dev-refunds"},
-		Logger: pclog.Discard(),
-	}).WithWorkloads(f.ident, f.runs)
+	f.svc.WithWorkloads(f.ident, f.runs)
 	f.exec(t, "INSERT INTO pc.teams (org_id, id, slug, name) VALUES ($1, $2, 'eng', 'Eng')", f.gw.Org, f.team)
 	f.exec(t, "INSERT INTO pc.environments (org_id, id, team_id, slug, name, kind) VALUES ($1, $2, $3, 'dev', 'Dev', 'DEVELOPMENT')", f.gw.Org, f.env, f.team)
 	f.exec(t, "INSERT INTO pc.users (org_id, id, issuer, subject) VALUES ($1, $2, 'https://idp.test', 'alice')", f.gw.Org, f.owner)
+	agent := f.agent(t)
+	f.wl = f.admitted(t, agent)
+	f.run = f.startRun(t, agent, &f.wl.inst.Instance)
 	return f
 }
 
@@ -159,7 +154,13 @@ func (f idFixture) creds(t *testing.T, wl workload, token string) *authority.Cre
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := pap.NewProof(wl.key, pap.ProofParams{Method: "POST", URL: gwURL, Body: refundBody, Token: token, Nonce: n, Now: time.Now()})
+	return f.credsWith(t, wl, token, n)
+}
+
+// credsWith is creds with a known nonce.
+func (f fixture) credsWith(t *testing.T, wl workload, token, nonce string) *authority.Credentials {
+	t.Helper()
+	proof, err := pap.NewProof(wl.key, pap.ProofParams{Method: "POST", URL: gwURL, Body: refundBody, Token: token, Nonce: nonce, Now: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,5 +302,43 @@ func TestHR022_FirstUseBindingIsRaceSafe(t *testing.T) {
 	wg.Wait()
 	if len(won) != 1 {
 		t.Fatalf("instances that may use the run: %v, want exactly one", won)
+	}
+}
+
+// TestHR148_ReportUnknownWorkloadVerifiesTheReport: the Authority records a
+// gateway's report only when its key-only proof verifies; the reported
+// request gains nothing.
+func TestHR148_ReportUnknownWorkloadVerifiesTheReport(t *testing.T) {
+	f := setupIdentity(t)
+	h := authority.NewHandler(f.svc)
+	ctx := authority.WithGateway(context.Background(), f.gw)
+	_, key, _ := ed25519.GenerateKey(nil)
+	stranger := workload{key: key}
+	report := func(c *authority.Credentials) (*pantherclawv1.ReportUnknownWorkloadResponse, error) {
+		return h.ReportUnknownWorkload(ctx, &pantherclawv1.ReportUnknownWorkloadRequest{
+			Workload: &pantherclawv1.WorkloadCredentials{
+				WorkloadToken: c.Token, Proof: c.Proof, BodySha256: c.BodySHA256[:], Htm: c.Method, Htu: c.URL,
+			},
+			Route: "payments-refund", UserAgent: "curl/8",
+		})
+	}
+	got, err := report(f.creds(t, stranger, ""))
+	if err != nil || got.GetDiscoveryId() == "" || got.GetNonce() == "" {
+		t.Fatalf("report: %v, %v", got, err)
+	}
+	replayed := f.creds(t, stranger, "")
+	if _, err := report(replayed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := report(replayed); err == nil {
+		t.Error("a replayed report was accepted")
+	}
+	agent := f.agent(t)
+	wl := f.admitted(t, agent)
+	if _, err := report(f.creds(t, wl, wl.token)); err == nil {
+		t.Error("a report with a workload token was accepted")
+	}
+	if n := f.count(t, "SELECT count(*) FROM pc.discoveries WHERE org_id = $1"); n != 1 {
+		t.Errorf("discoveries %d, want 1", n)
 	}
 }

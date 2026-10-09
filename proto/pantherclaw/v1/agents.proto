@@ -55,6 +55,12 @@ service AgentService {
   rpc ListAgentChanges(ListAgentChangesRequest) returns (ListAgentChangesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  // SubmitScanFindings records the findings of a local `pclaw scan` as
+  // DISCOVERED agents with ADMISSION entries (PN-001.1, F015); a finding
+  // submitted before is only counted. Findings are UNTRUSTED observations
+  // and grant nothing; credentials never leave the scanning machine.
+  // permission: agent.manage
+  rpc SubmitScanFindings(SubmitScanFindingsRequest) returns (SubmitScanFindingsResponse);
 }
 
 // AgentState is the lifecycle state (F020).
@@ -434,4 +440,49 @@ message ListAgentChangesResponse {
   repeated AgentChange changes = 1;
   // Token for the next page; empty on the last page.
   string next_page_token = 2;
+}
+
+// ScanFinding is one finding of a local scan.
+message ScanFinding {
+  // "mcp_server" or "agent_project".
+  string kind = 1 [(buf.validate.field).string = {
+    in: [
+      "mcp_server",
+      "agent_project"
+    ]
+  }];
+  // Stable key of the finding on the scanning machine (hex SHA-256), so a
+  // later scan of the same thing is only counted.
+  string key = 2 [(buf.validate.field).string.pattern = "^[0-9a-f]{64}$"];
+  // UNTRUSTED attributes (client, config, name, command, path, frameworks).
+  map<string, string> attributes = 3 [(buf.validate.field).map = {
+    max_pairs: 16
+    keys: {
+      string: {pattern: "^[a-z_]{1,32}$"}
+    }
+    values: {
+      string: {max_len: 256}
+    }
+  }];
+}
+
+// SubmitScanFindingsRequest submits findings.
+message SubmitScanFindingsRequest {
+  // The findings.
+  repeated ScanFinding findings = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 200
+  }];
+  // UNTRUSTED name of the scanned machine.
+  string host = 2 [(buf.validate.field).string.max_len = 128];
+}
+
+// SubmitScanFindingsResponse counts what was recorded.
+message SubmitScanFindingsResponse {
+  // New discovered agents.
+  int32 created = 1;
+  // Findings already known (only counted).
+  int32 counted = 2;
+  // Findings dropped because the org already has 200 open discoveries.
+  int32 dropped = 3;
 }
