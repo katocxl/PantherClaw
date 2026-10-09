@@ -48,6 +48,9 @@ const (
 	// Browser sign-in and sessions (G0 M5 part 1).
 	BrowserSession Kind = "pcb"
 	LoginState     Kind = "pcl"
+	// GatewayEnrollmentToken is a single-use gateway enrollment token
+	// (G0 M6, HR-180).
+	GatewayEnrollmentToken Kind = "pcg"
 )
 
 // Env labels API keys by deployment, so that a key made for one deployment
@@ -199,7 +202,7 @@ func (k Kind) valid() bool {
 	switch k {
 	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState, EnrollmentToken:
 		return true
-	case BrowserSession, LoginState:
+	case BrowserSession, LoginState, GatewayEnrollmentToken:
 		return true
 	}
 	return false

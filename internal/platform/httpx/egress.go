@@ -77,9 +77,13 @@ func embeddedIPv4(a netip.Addr) []netip.Addr {
 }
 
 // DeniedAddr reports whether a is forbidden as an egress destination, given
-// explicitly allowed prefixes.
+// explicitly allowed prefixes. Cloud metadata endpoints are denied even
+// inside an allowed prefix (HR-077).
 func DeniedAddr(a netip.Addr, allowed []netip.Prefix) bool {
 	a = a.WithZone("")
+	if MetadataAddr(a) {
+		return true
+	}
 	for _, p := range allowed {
 		if p.Contains(a) {
 			return false

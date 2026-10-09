@@ -114,6 +114,7 @@ type clients struct {
 	// M5 part 1.
 	account       pantherclawv1connect.AccountServiceClient
 	notifications pantherclawv1connect.NotificationServiceClient
+	m6Clients
 }
 
 func (a *app) clients() (clients, error) {
@@ -132,6 +133,11 @@ func (a *app) clients() (clients, error) {
 		runs:          pantherclawv1connect.NewRunServiceClient(c),
 		account:       pantherclawv1connect.NewAccountServiceClient(c),
 		notifications: pantherclawv1connect.NewNotificationServiceClient(c),
+		m6Clients: m6Clients{
+			gateways:    pantherclawv1connect.NewGatewayAdminServiceClient(c),
+			containment: pantherclawv1connect.NewContainmentServiceClient(c),
+			connections: pantherclawv1connect.NewConnectionServiceClient(c),
+		},
 	}, nil
 }
 

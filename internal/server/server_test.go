@@ -41,15 +41,8 @@ func TestConfigValidation(t *testing.T) {
 		"permit ttl":   func(c *Config) { c.Authority.PermitTTL = 0 },
 		"long ttl":     func(c *Config) { c.Authority.PermitTTL = config.Duration(time.Hour) },
 		"stale":        func(c *Config) { c.Authority.StaleDispatch = config.Duration(5 * time.Second) },
-		"gw no token":  func(c *Config) { c.DevGateway = DevGatewayConfig{Enabled: true, Org: devOrg, ID: "gw"} },
-		"gw no org":    func(c *Config) { c.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: "t", ID: "gw"} },
-		"gw public": func(c *Config) {
-			c.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: "t", Org: devOrg, ID: "gw"}
-			c.HTTP.Addr = "0.0.0.0:8080"
-		},
-		"gw proxy": func(c *Config) {
-			c.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: "t", Org: devOrg, ID: "gw"}
-			c.HTTP.PlaintextBehindProxy = true
+		"gateway api without names": func(c *Config) {
+			c.GatewayAPI = GatewayAPIConfig{Addr: "127.0.0.1:8443", URL: "https://127.0.0.1:8443"}
 		},
 		"public url http":     func(c *Config) { c.Auth.PublicURL = "http://pantherclaw.example.com" },
 		"public url path":     func(c *Config) { c.Auth.PublicURL = "https://pc.example.com/api" },
@@ -89,48 +82,26 @@ func TestConfigValidation(t *testing.T) {
 			t.Errorf("public url %s refused: %v", u, err)
 		}
 	}
-	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:0"} {
-		cc := c
-		cc.HTTP.Addr = addr
-		cc.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: "t", Org: devOrg, ID: "gw"}
-		if err := cc.Validate(); err != nil {
-			t.Errorf("dev gateway on %s refused: %v", addr, err)
-		}
+	gw := c
+	gw.GatewayAPI = GatewayAPIConfig{Addr: "127.0.0.1:8443", Hostnames: []string{"127.0.0.1"}, URL: "https://127.0.0.1:8443"}
+	if err := gw.Validate(); err != nil {
+		t.Errorf("a gateway listener refused: %v", err)
 	}
 }
 
 const devOrg = "01920000-0000-7000-8000-0000000000a1"
 
-func TestDevGatewayAuthRequiresAStrongToken(t *testing.T) {
-	dir := t.TempDir()
-	c := DefaultConfig()
-	if auth, err := devGatewayAuth(&c); auth != nil || err != nil {
-		t.Fatalf("disabled dev gateway = %v, %v", auth, err)
-	}
-	short := filepath.Join(dir, "short")
-	if err := os.WriteFile(short, []byte("abc\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c.DevGateway = DevGatewayConfig{Enabled: true, TokenFile: short, Org: devOrg, ID: "gw"}
-	if _, err := devGatewayAuth(&c); err == nil {
-		t.Fatal("short token accepted")
-	}
-	good := filepath.Join(dir, "good")
-	if err := writeDevToken(good); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeDevToken(good); err == nil {
-		t.Fatal("token file overwritten")
-	}
-	c.DevGateway.TokenFile = good
-	if auth, err := devGatewayAuth(&c); auth == nil || err != nil {
-		t.Fatalf("good token = %v, %v", auth, err)
-	}
-}
-
 func TestDevSeedUsage(t *testing.T) {
 	var out, errb bytes.Buffer
-	for _, args := range [][]string{{"dev"}, {"dev", "drop"}, {"dev", "seed", "extra"}, {"dev", "seed", "--max-count", "-1"}} {
+	for _, args := range [][]string{
+		{"dev"},
+		{"dev", "drop"},
+		{"dev", "seed", "extra"},
+		{"dev", "seed", "--max-count", "-1"},
+		{"dev", "gateway"},
+		{"dev", "gateway", "--org", "nope", "--out", "f"},
+		{"dev", "gateway", "--org", devOrg},
+	} {
 		if code := Run(context.Background(), args, &out, &errb, noEnv); code != 2 {
 			t.Errorf("%v: %d, want 2", args, code)
 		}

@@ -225,8 +225,15 @@ func TestJWKSDocument(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Keys) != 3 {
-		t.Fatalf("JWKS has %d keys, want 3 (checkpoint keys are not published)", len(doc.Keys))
+	if len(doc.Keys) != 4 {
+		t.Fatalf("JWKS has %d keys, want 4 (checkpoint, access-token and gateway CA keys are not published)", len(doc.Keys))
+	}
+	for _, k := range doc.Keys {
+		for _, hidden := range []Purpose{PurposeCheckpoints, PurposeAccessTokens, PurposeGatewayCA} {
+			if strings.HasPrefix(k.Kid, strings.ReplaceAll(string(hidden), "_", "-")+"-") {
+				t.Errorf("JWKS publishes a %s key", hidden)
+			}
+		}
 	}
 	for _, k := range doc.Keys {
 		if k.Alg != "EdDSA" || k.Use != "sig" || k.Kty != "OKP" || k.Crv != "Ed25519" {
