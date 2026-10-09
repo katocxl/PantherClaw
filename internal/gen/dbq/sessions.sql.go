@@ -160,6 +160,19 @@ func (q *Queries) DeleteOldWebAuthnCeremonies(ctx context.Context, orgID ids.Org
 	return result.RowsAffected(), nil
 }
 
+const endAllUserBrowserSessions = `-- name: EndAllUserBrowserSessions :execrows
+UPDATE pc.sessions SET state = 'ENDED', end_reason = $1, ended_at = now()
+WHERE org_id = $2 AND user_id = $3 AND state = 'ACTIVE'
+`
+
+func (q *Queries) EndAllUserBrowserSessions(ctx context.Context, reason *string, orgID ids.OrgID, userID ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, endAllUserBrowserSessions, reason, orgID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const endBrowserSession = `-- name: EndBrowserSession :execrows
 UPDATE pc.sessions SET state = 'ENDED', end_reason = $1, ended_at = now()
 WHERE org_id = $2 AND id = $3 AND state = 'ACTIVE'
@@ -393,6 +406,98 @@ func (q *Queries) ListUserBrowserSessions(ctx context.Context, idleSeconds int32
 	return items, nil
 }
 
+const listUserCLISessions = `-- name: ListUserCLISessions :many
+
+SELECT id, device_name, state, revoke_reason, created_at, refreshed_at, expires_at, revoked_at,
+       (state = 'ACTIVE' AND expires_at > now())::bool AS live
+FROM pc.cli_sessions
+WHERE org_id = $1 AND user_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 50
+`
+
+type ListUserCLISessionsRow struct {
+	ID           ids.UUID
+	DeviceName   string
+	State        string
+	RevokeReason *string
+	CreatedAt    time.Time
+	RefreshedAt  *time.Time
+	ExpiresAt    time.Time
+	RevokedAt    *time.Time
+	Live         bool
+}
+
+// Account administration (AccountService): a user's CLI sessions (M2's
+// cli_sessions) beside the browser ones, and ending all of them at once.
+func (q *Queries) ListUserCLISessions(ctx context.Context, orgID ids.OrgID, userID ids.UUID) ([]ListUserCLISessionsRow, error) {
+	rows, err := q.db.Query(ctx, listUserCLISessions, orgID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserCLISessionsRow{}
+	for rows.Next() {
+		var i ListUserCLISessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceName,
+			&i.State,
+			&i.RevokeReason,
+			&i.CreatedAt,
+			&i.RefreshedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+			&i.Live,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeAllUserCLISessions = `-- name: RevokeAllUserCLISessions :execrows
+UPDATE pc.cli_sessions SET state = 'REVOKED', revoke_reason = $1, revoked_at = now()
+WHERE org_id = $2 AND user_id = $3 AND state = 'ACTIVE'
+`
+
+func (q *Queries) RevokeAllUserCLISessions(ctx context.Context, reason *string, orgID ids.OrgID, userID ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllUserCLISessions, reason, orgID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const revokeUserCLISession = `-- name: RevokeUserCLISession :execrows
+UPDATE pc.cli_sessions SET state = 'REVOKED', revoke_reason = $1, revoked_at = now()
+WHERE org_id = $2 AND id = $3 AND user_id = $4 AND state = 'ACTIVE'
+`
+
+type RevokeUserCLISessionParams struct {
+	Reason *string
+	OrgID  ids.OrgID
+	ID     ids.UUID
+	UserID ids.UUID
+}
+
+func (q *Queries) RevokeUserCLISession(ctx context.Context, arg RevokeUserCLISessionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeUserCLISession,
+		arg.Reason,
+		arg.OrgID,
+		arg.ID,
+		arg.UserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const rotateBrowserSession = `-- name: RotateBrowserSession :execrows
 UPDATE pc.sessions
 SET prev_secret_hash = secret_hash, rotated_at = now(), secret_hash = $1, generation = generation + 1,
@@ -439,6 +544,17 @@ SELECT EXISTS (SELECT 1 FROM pc.sessions WHERE org_id = $1 AND id = $2 AND user_
 
 func (q *Queries) UserBrowserSessionExists(ctx context.Context, orgID ids.OrgID, iD ids.UUID, userID ids.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, userBrowserSessionExists, orgID, iD, userID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const userCLISessionExists = `-- name: UserCLISessionExists :one
+SELECT EXISTS (SELECT 1 FROM pc.cli_sessions WHERE org_id = $1 AND id = $2 AND user_id = $3)::bool
+`
+
+func (q *Queries) UserCLISessionExists(ctx context.Context, orgID ids.OrgID, iD ids.UUID, userID ids.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, userCLISessionExists, orgID, iD, userID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

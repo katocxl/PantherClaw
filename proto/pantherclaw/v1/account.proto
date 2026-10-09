@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// AccountService shows people their own sessions and security keys, and lets
+// administrators sign a person out everywhere or remove a lost key (G0 M5
+// part 1, HR-150, HR-155). Adding, renaming and removing one's own keys and
+// stepping up are browser actions on the account page: WebAuthn needs the
+// browser. Service accounts and API keys have no sessions or keys: the
+// self-service calls refuse them.
+service AccountService {
+  // ListMySessions lists the caller's browser and CLI sessions, newest
+  // first (at most 100).
+  // permission: authenticated
+  rpc ListMySessions(ListMySessionsRequest) returns (ListMySessionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeMySession ends one of the caller's sessions.
+  // permission: authenticated
+  rpc RevokeMySession(RevokeMySessionRequest) returns (RevokeMySessionResponse);
+  // ListMyKeys lists the caller's security keys and passkeys.
+  // permission: authenticated
+  rpc ListMyKeys(ListMyKeysRequest) returns (ListMyKeysResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // ListUserSessions lists a user's sessions, newest first (at most 100).
+  // permission: user.read
+  rpc ListUserSessions(ListUserSessionsRequest) returns (ListUserSessionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListUserKeys lists a user's security keys.
+  // permission: user.read
+  rpc ListUserKeys(ListUserKeysRequest) returns (ListUserKeysResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeUserSessions ends every browser and CLI session of a user (for
+  // example when a laptop is lost). The user is told by email.
+  // permission: user.manage
+  rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeUserSessionsResponse);
+  // RemoveUserKey removes a user's security key (a lost key). Administrators
+  // can never add one for someone else. The user is told by email.
+  // permission: user.manage
+  rpc RemoveUserKey(RemoveUserKeyRequest) returns (RemoveUserKeyResponse);
+}
+
+// SessionKind says how a session was created.
+enum SessionKind {
+  SESSION_KIND_UNSPECIFIED = 0;
+  // A browser sign-in (the session cookie).
+  SESSION_KIND_BROWSER = 1;
+  // A pclaw device login.
+  SESSION_KIND_CLI = 2;
+}
+
+// Session is one browser or CLI session.
+message Session {
+  // Session id.
+  string id = 1;
+  // Kind.
+  SessionKind kind = 2;
+  // For browser sessions, the user agent the server saw; for CLI sessions,
+  // the device name pclaw reported. Untrusted.
+  string device = 3;
+  // For browser sessions, the address the server saw. Untrusted.
+  string client_address = 4;
+  // Whether the session can still be used.
+  bool active = 5;
+  // Why it ended (LOGOUT, REVOKED, ADMIN_REVOKED, IDLE, EXPIRED, REUSE,
+  // SESSION_LIMIT, REFRESH_REUSE, ...), empty while active.
+  string end_reason = 6;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 7;
+  // Last use (browser) or refresh (CLI).
+  google.protobuf.Timestamp last_seen_time = 8;
+  // Absolute expiry.
+  google.protobuf.Timestamp expire_time = 9;
+}
+
+// KeyState is the state of a security key.
+enum KeyState {
+  KEY_STATE_UNSPECIFIED = 0;
+  KEY_STATE_ACTIVE = 1;
+  // Suspended because its signature counter did not move forward (a
+  // possible copy, HR-154).
+  KEY_STATE_SUSPENDED = 2;
+  KEY_STATE_REMOVED = 3;
+}
+
+// SecurityKey is a WebAuthn credential (security key or passkey).
+message SecurityKey {
+  // Key id (not the WebAuthn credential id).
+  string id = 1;
+  // Name the user chose.
+  string name = 2;
+  // COSE algorithm (-7 ES256, -8 EdDSA, -257 RS256).
+  int32 algorithm = 3;
+  // A passkey that can sync between devices.
+  bool synced = 4;
+  // State.
+  KeyState state = 5;
+  // Why it is not active (CLONE_SUSPECTED, USER_REMOVED, ADMIN_REMOVED).
+  string state_reason = 6;
+  // Registration time.
+  google.protobuf.Timestamp create_time = 7;
+  // Last step-up with it.
+  google.protobuf.Timestamp last_use_time = 8;
+  // Transports the authenticator reported (usb, nfc, internal, ...).
+  repeated string transports = 9;
+}
+
+// ListMySessionsRequest is empty.
+message ListMySessionsRequest {}
+
+// ListMySessionsResponse returns the caller's sessions.
+message ListMySessionsResponse {
+  // Sessions, newest first.
+  repeated Session sessions = 1;
+}
+
+// RevokeMySessionRequest names one of the caller's sessions.
+message RevokeMySessionRequest {
+  // Session id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RevokeMySessionResponse is empty.
+message RevokeMySessionResponse {}
+
+// ListMyKeysRequest is empty.
+message ListMyKeysRequest {}
+
+// ListMyKeysResponse returns the caller's keys.
+message ListMyKeysResponse {
+  // Keys, newest first.
+  repeated SecurityKey keys = 1;
+}
+
+// ListUserSessionsRequest names a user.
+message ListUserSessionsRequest {
+  // User id.
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// ListUserSessionsResponse returns the user's sessions.
+message ListUserSessionsResponse {
+  // Sessions, newest first.
+  repeated Session sessions = 1;
+}
+
+// ListUserKeysRequest names a user.
+message ListUserKeysRequest {
+  // User id.
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// ListUserKeysResponse returns the user's keys.
+message ListUserKeysResponse {
+  // Keys, newest first.
+  repeated SecurityKey keys = 1;
+}
+
+// RevokeUserSessionsRequest names a user.
+message RevokeUserSessionsRequest {
+  // User id.
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RevokeUserSessionsResponse counts the sessions ended.
+message RevokeUserSessionsResponse {
+  // Browser and CLI sessions ended.
+  int32 revoked = 1;
+}
+
+// RemoveUserKeyRequest names a user's key.
+message RemoveUserKeyRequest {
+  // User id.
+  string user_id = 1 [(buf.validate.field).string.uuid = true];
+  // Key id.
+  string key_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// RemoveUserKeyResponse is empty.
+message RemoveUserKeyResponse {}

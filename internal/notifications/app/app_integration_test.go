@@ -38,6 +38,11 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	return newEnvConfig(t, napp.Config{PublicURL: "https://pc.example.test"})
+}
+
+func newEnvConfig(t *testing.T, cfg napp.Config) *env {
+	t.Helper()
 	d := dbtest.New(t)
 	pool := d.AppPool(t)
 	p := filepath.Join(t.TempDir(), "kek")
@@ -53,7 +58,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := napp.New(pool, jc, envelope, napp.Config{PublicURL: "https://pc.example.test"}, clock.System{}, nil)
+	svc, err := napp.New(pool, jc, envelope, cfg, clock.System{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

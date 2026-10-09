@@ -19,8 +19,9 @@ import (
 // Encrypted channel columns: the AAD binds org, table, column and row, so
 // a secret copied to another channel or column does not decrypt (HR-062).
 const (
-	channelsTable = "notification_channels"
-	secretColumn  = "secret"
+	channelsTable    = "notification_channels"
+	secretColumn     = "secret"
+	prevSecretColumn = "prev_secret"
 )
 
 // ErrChannelExists reports a live channel with the same name.

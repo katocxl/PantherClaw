@@ -114,3 +114,29 @@ DELETE FROM pc.sessions s
 WHERE s.org_id = sqlc.arg(org_id)
   AND (s.ended_at < now() - interval '30 days' OR s.expires_at < now() - interval '30 days')
   AND NOT EXISTS (SELECT 1 FROM pc.webauthn_ceremonies c WHERE c.org_id = s.org_id AND c.session_id = s.id);
+
+-- Account administration (AccountService): a user's CLI sessions (M2's
+-- cli_sessions) beside the browser ones, and ending all of them at once.
+
+-- name: ListUserCLISessions :many
+SELECT id, device_name, state, revoke_reason, created_at, refreshed_at, expires_at, revoked_at,
+       (state = 'ACTIVE' AND expires_at > now())::bool AS live
+FROM pc.cli_sessions
+WHERE org_id = sqlc.arg(org_id) AND user_id = sqlc.arg(user_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 50;
+
+-- name: RevokeUserCLISession :execrows
+UPDATE pc.cli_sessions SET state = 'REVOKED', revoke_reason = sqlc.arg(reason), revoked_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND state = 'ACTIVE';
+
+-- name: UserCLISessionExists :one
+SELECT EXISTS (SELECT 1 FROM pc.cli_sessions WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND user_id = sqlc.arg(user_id))::bool;
+
+-- name: RevokeAllUserCLISessions :execrows
+UPDATE pc.cli_sessions SET state = 'REVOKED', revoke_reason = sqlc.arg(reason), revoked_at = now()
+WHERE org_id = sqlc.arg(org_id) AND user_id = sqlc.arg(user_id) AND state = 'ACTIVE';
+
+-- name: EndAllUserBrowserSessions :execrows
+UPDATE pc.sessions SET state = 'ENDED', end_reason = sqlc.arg(reason), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND user_id = sqlc.arg(user_id) AND state = 'ACTIVE';
