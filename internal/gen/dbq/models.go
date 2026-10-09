@@ -15,6 +15,15 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
 
+type PcActionDefinition struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	VersionID ids.UUID
+	Operation string
+	Digest    string
+	Canonical []byte
+}
+
 type PcAgent struct {
 	OrgID             ids.OrgID
 	ID                ids.UUID
@@ -122,6 +131,23 @@ type PcBudget struct {
 	CreatedAt     time.Time
 }
 
+type PcBudgetAccount struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	OwnerKind     string
+	OwnerID       ids.UUID
+	Rule          string
+	KeyHash       []byte
+	PeriodStart   time.Time
+	Rank          int16
+	Currency      *string
+	Reserved      money.Decimal
+	Spent         money.Decimal
+	ReservedCount int32
+	SpentCount    int32
+	CreatedAt     time.Time
+}
+
 type PcBudgetLedger struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -161,6 +187,28 @@ type PcCliSession struct {
 	RevokedAt       *time.Time
 }
 
+type PcConsequenceRule struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	VersionID ids.UUID
+	Position  int32
+	Canonical []byte
+}
+
+type PcCounter struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	OwnerKind   string
+	OwnerID     ids.UUID
+	Rule        string
+	KeyHash     []byte
+	WindowStart time.Time
+	Rank        int16
+	Reserved    int32
+	Spent       int32
+	CreatedAt   time.Time
+}
+
 type PcCrossOrgListAudit struct {
 	ID       int64
 	Purpose  string
@@ -175,6 +223,15 @@ type PcDecisionReceipt struct {
 	ReceiptJws    string
 	LedgerEntryID ids.UUID
 	CreatedAt     time.Time
+	Evaluation    int32
+}
+
+type PcDedupeClaim struct {
+	OrgID         ids.OrgID
+	DedupeKey     string
+	TransactionID ids.UUID
+	State         string
+	ChangedAt     time.Time
 }
 
 type PcDek struct {
@@ -257,6 +314,34 @@ type PcEnrollmentToken struct {
 	RevokedAt     *time.Time
 }
 
+type PcEnvelope struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	ScopeKind       string
+	ScopeKey        string
+	CurrentRevision int32
+	CreatedAt       time.Time
+}
+
+type PcEnvelopeRevision struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	EnvelopeID       ids.UUID
+	Revision         int32
+	Name             string
+	Bounds           []byte
+	Requirements     []byte
+	Limits           []byte
+	MaxDepth         pgtype.Int2
+	MaxChildren      pgtype.Int2
+	MaxRootLifetimeS pgtype.Int8
+	RepeatWindowS    pgtype.Int8
+	MinAttestation   int16
+	Widens           bool
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
 type PcEnvironment struct {
 	OrgID       ids.OrgID
 	ID          ids.UUID
@@ -280,6 +365,85 @@ type PcExecutionAttempt struct {
 	ResponseDigest []byte
 	DispatchMs     *int32
 	RecordedAt     time.Time
+}
+
+type PcFact struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	Name        string
+	SubjectType string
+	SubjectID   string
+	ProviderID  ids.UUID
+	Value       []byte
+	ObservedAt  time.Time
+	RecordedAt  time.Time
+}
+
+type PcFactDeclaration struct {
+	OrgID       ids.OrgID
+	ProviderID  ids.UUID
+	Name        string
+	ValueType   string
+	SubjectType string
+	MaxLagS     int32
+	Active      bool
+}
+
+type PcFactProvider struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	Name             string
+	ServiceAccountID ids.UUID
+	State            string
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
+type PcGrant struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	AgentID         ids.UUID
+	InstanceID      *ids.UUID
+	PrincipalUserID *ids.UUID
+	PrincipalSaID   *ids.UUID
+	EnvironmentID   ids.UUID
+	ParentID        *ids.UUID
+	Depth           int16
+	State           string
+	CurrentRevision int32
+	GrantorKind     string
+	GrantorID       ids.UUID
+	Basis           string
+	ChildrenTotal   int32
+	CreatedAt       time.Time
+	RevokedAt       *time.Time
+	RevokeReason    *string
+}
+
+type PcGrantLineage struct {
+	OrgID      ids.OrgID
+	GrantID    ids.UUID
+	AncestorID ids.UUID
+	Distance   int16
+}
+
+type PcGrantRevision struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	GrantID         ids.UUID
+	Revision        int32
+	TaskRef         string
+	NotBefore       time.Time
+	ExpiresAt       time.Time
+	Bounds          []byte
+	Requirements    []byte
+	Limits          []byte
+	DelegationDepth int16
+	MaxChildren     int16
+	MinAttestation  int16
+	Widens          bool
+	CreatedBy       string
+	CreatedAt       time.Time
 }
 
 type PcInvitation struct {
@@ -372,6 +536,35 @@ type PcOrgContainment struct {
 	UpdatedAt  time.Time
 }
 
+type PcPackagePin struct {
+	OrgID     ids.OrgID
+	PackageID ids.UUID
+	VersionID ids.UUID
+	Version   string
+	Digest    string
+	UpdatedAt time.Time
+}
+
+type PcPackageTrust struct {
+	OrgID         ids.OrgID
+	Version       int64
+	PayloadDigest string
+	ExpiresAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type PcPackageVersion struct {
+	OrgID      ids.OrgID
+	ID         ids.UUID
+	PackageID  ids.UUID
+	Version    string
+	FileDigest string
+	Raw        []byte
+	State      string
+	ImportedAt time.Time
+	ChangedAt  time.Time
+}
+
 type PcPermit struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -379,12 +572,45 @@ type PcPermit struct {
 	GatewayID     string
 	Epoch         int64
 	State         string
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 	IssuedAt      time.Time
 	ExpiresAt     time.Time
 	DispatchingAt *time.Time
 	FinishedAt    *time.Time
+}
+
+type PcPolicy struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	BundleID  string
+	CreatedAt time.Time
+}
+
+type PcPolicyVersion struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	PolicyID    ids.UUID
+	Version     int32
+	Bundle      []byte
+	State       string
+	CreatedBy   string
+	CreatedAt   time.Time
+	PublishedBy *string
+	PublishedAt *time.Time
+}
+
+type PcReservation struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	TransactionID ids.UUID
+	PermitID      ids.UUID
+	AccountID     *ids.UUID
+	CounterID     *ids.UUID
+	Amount        money.Decimal
+	State         string
+	CreatedAt     time.Time
+	SettledAt     *time.Time
 }
 
 type PcRoleBinding struct {
@@ -464,20 +690,34 @@ type PcTeam struct {
 	UpdatedAt      time.Time
 }
 
+type PcToolPackage struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	Name      string
+	CreatedAt time.Time
+}
+
 type PcTransaction struct {
-	OrgID      ids.OrgID
-	ID         ids.UUID
-	RunID      ids.UUID
-	ActionID   ids.UUID
-	ActionHash []byte
-	Operation  string
-	Decision   string
-	ReasonCode string
-	BudgetID   *ids.UUID
-	Amount     *money.Decimal
-	Currency   *string
-	GatewayID  string
-	CreatedAt  time.Time
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	RunID         ids.UUID
+	ActionID      ids.UUID
+	ActionHash    []byte
+	Operation     string
+	Decision      string
+	ReasonCode    string
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
+	Currency      *string
+	GatewayID     string
+	CreatedAt     time.Time
+	State         string
+	Evaluations   int32
+	GrantID       *ids.UUID
+	GrantRevision *int32
+	BasisDigest   *string
+	EffectiveHash []byte
+	DedupeKey     *string
 }
 
 type PcTrustedIssuer struct {

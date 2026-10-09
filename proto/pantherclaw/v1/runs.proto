@@ -12,8 +12,9 @@ import "google/protobuf/timestamp.proto";
 // M3). Only the Authority mints run ids. A run is bound to an agent,
 // optionally one instance, the launcher (the authenticated caller) and the
 // represented principal: the launcher itself, or a user proven by an
-// RFC 8693 subject token. A subject token grants nothing. M3 runs carry no
-// grant; grant selection arrives in M4.
+// RFC 8693 subject token. A subject token grants nothing. From M4 a run
+// gets its authority only from the grant StartRun binds (HR-022) or, for a
+// child run, from WorkloadService.DelegateGrant.
 service RunService {
   // StartRun starts a run of an agent. Presenting a subject token also needs
   // the run.represent permission.
@@ -115,13 +116,14 @@ message Run {
   google.protobuf.Timestamp expire_time = 17;
   // End time.
   google.protobuf.Timestamp end_time = 18;
+  // The grant whose authority the run uses; empty for a run without one,
+  // whose actions are denied (NO_GRANT).
+  string grant_id = 19;
 }
 
-// StartRunRequest starts a run. Grant selection (field 7) is reserved for
-// M4; until then a run carries no grant.
+// StartRunRequest starts a run.
 message StartRunRequest {
-  reserved 7;
-  reserved "grant_id", "task_template";
+  reserved "task_template";
 
   // Agent to run.
   string agent_id = 1 [(buf.validate.field).string.uuid = true];
@@ -140,6 +142,10 @@ message StartRunRequest {
   string subject_token = 5 [(buf.validate.field).string.max_len = 16384];
   // Its type; required with a subject token.
   SubjectTokenType subject_token_type = 6 [(buf.validate.field).enum.defined_only = true];
+  // The grant the run uses (G0 M4, PN-002.5). It must be active and valid,
+  // and bind the same agent (and instance, if it pins one), principal and
+  // environment; the run's expiry is cut to the grant's.
+  optional string grant_id = 7 [(buf.validate.field).string.uuid = true];
 
   option (buf.validate.message).cel = {
     id: "subject_token_type"

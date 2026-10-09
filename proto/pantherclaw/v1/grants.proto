@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/guardrails.proto";
+import "pantherclaw/v1/runs.proto";
+
+// GrantService issues, revises, revokes and reads grants (G0 M4 part 2;
+// HR-045..048, HR-161). Only people issue grants until M11 (decision 7): a
+// service account or API key is refused even when it holds grant.issue.
+// Bounds, requirements and limits are JSON documents (grant bounds v1) that
+// the server decodes strictly (duplicate keys, unknown members, nulls and
+// JSON numbers are rejected). Workloads delegate with
+// WorkloadService.DelegateGrant, never here.
+service GrantService {
+  // IssueGrant issues a root grant to an agent. The grant must fit inside
+  // every guardrail that applies to it; the caller needs grant.issue on the
+  // agent's team.
+  // permission: grant.issue
+  rpc IssueGrant(IssueGrantRequest) returns (IssueGrantResponse);
+  // ReviseGrant stores a new revision of a root grant. A narrowing applies at
+  // once (permits already issued can no longer dispatch); a widening is
+  // checked like an issuance and audited as one.
+  // permission: grant.issue
+  rpc ReviseGrant(ReviseGrantRequest) returns (ReviseGrantResponse);
+  // RevokeGrant revokes a grant and every grant delegated from it, in one
+  // transaction (HR-047).
+  // permission: grant.revoke
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+  // GetGrant returns a grant with its lineage and effective authority.
+  // permission: grant.read
+  rpc GetGrant(GetGrantRequest) returns (GetGrantResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListGrants lists grants.
+  // permission: grant.read
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetBudgetState returns the budget accounts a grant's actions debit, its
+  // ancestors' and its guardrails' included, with what is reserved, spent
+  // and still available (F113, F119).
+  // permission: budget.read
+  rpc GetBudgetState(GetBudgetStateRequest) returns (GetBudgetStateResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// GrantState is a grant's state. Expiry is checked at use time, not stored
+// as a state.
+enum GrantState {
+  GRANT_STATE_UNSPECIFIED = 0;
+  GRANT_STATE_ACTIVE = 1;
+  GRANT_STATE_REVOKED = 2;
+}
+
+// GrantDelegation says whether and how far a grant can be handed down
+// (HR-047, decision 5).
+message GrantDelegation {
+  // Further levels allowed below this grant; 0 means it cannot delegate.
+  int32 depth = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 4
+  }];
+  // Most active children at once.
+  int32 max_children = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 50
+  }];
+}
+
+// Grant is one revision of a grant.
+message Grant {
+  // Grant id; it never changes, so runs keep it across revisions.
+  string id = 1;
+  // Revision number, from 1.
+  int32 revision = 2;
+  // State.
+  GrantState state = 3;
+  // The agent, by id (HR-147).
+  string agent_id = 4;
+  // One instance only; empty for any admitted instance of the agent.
+  string instance_id = 5;
+  // The represented principal (a user or a service account).
+  Actor principal = 6;
+  // The agent's environment.
+  string environment_id = 7;
+  // UNTRUSTED task label; it never changes scope (HR-023).
+  string task_ref = 8;
+  // Valid from.
+  google.protobuf.Timestamp start_time = 9;
+  // Valid until (exclusive).
+  google.protobuf.Timestamp expire_time = 10;
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 11;
+  // Approval and step-up requirements (JSON array).
+  bytes requirements = 12;
+  // Budget and count rules (JSON).
+  bytes limits = 13;
+  // Delegation settings.
+  GrantDelegation delegation = 14;
+  // Lowest workload attestation level (0-2) that may use the grant.
+  int32 min_attestation_level = 15;
+  // Parent grant; empty for a root grant.
+  string parent_grant_id = 16;
+  // Depth below the root grant; 0 for a root grant.
+  int32 depth = 17;
+  // Who issued it: a person for a root grant, the delegating instance for a
+  // delegated one (F039).
+  Actor grantor = 18;
+  // What let the grantor issue it: a permission at a scope, or the parent
+  // grant's revision.
+  string basis = 19;
+  // When this revision was created.
+  google.protobuf.Timestamp create_time = 20;
+}
+
+// GuardrailVersion names one guardrail revision that applies to a grant.
+message GuardrailVersion {
+  // Guardrail id.
+  string envelope_id = 1;
+  // Revision.
+  int32 revision = 2;
+  // Its scope.
+  GuardrailScope scope = 3;
+}
+
+// IssueGrantRequest issues a root grant.
+message IssueGrantRequest {
+  // Agent.
+  string agent_id = 1 [(buf.validate.field).string.uuid = true];
+  // Optional: one admitted instance only.
+  optional string instance_id = 2 [(buf.validate.field).string.uuid = true];
+  // The represented principal: "user" or "service_account".
+  Actor principal = 3 [(buf.validate.field).required = true];
+  // UNTRUSTED task label.
+  string task_ref = 4 [(buf.validate.field).string.max_len = 256];
+  // Valid from (default: now).
+  google.protobuf.Timestamp start_time = 5;
+  // Valid until; at most the lifetime the guardrails allow (decision 5).
+  google.protobuf.Timestamp expire_time = 6 [(buf.validate.field).required = true];
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 7 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 65536
+  }];
+  // Requirements (JSON array; empty for none).
+  bytes requirements = 8 [(buf.validate.field).bytes.max_len = 65536];
+  // Limits (JSON; empty for none).
+  bytes limits = 9 [(buf.validate.field).bytes.max_len = 65536];
+  // Delegation settings (default: no delegation).
+  GrantDelegation delegation = 10;
+  // Lowest attestation level (0-2).
+  int32 min_attestation_level = 11 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2
+  }];
+}
+
+// IssueGrantResponse returns the grant.
+message IssueGrantResponse {
+  // The grant, revision 1.
+  Grant grant = 1;
+}
+
+// ReviseGrantRequest replaces a grant's terms with a new revision.
+message ReviseGrantRequest {
+  // Grant id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The revision the change is based on; a stale revision is refused.
+  int32 revision = 2 [(buf.validate.field).int32.gte = 1];
+  // UNTRUSTED task label.
+  string task_ref = 3 [(buf.validate.field).string.max_len = 256];
+  // New expiry (unset keeps the current one).
+  google.protobuf.Timestamp expire_time = 4;
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 5 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 65536
+  }];
+  // Requirements (JSON array; empty for none).
+  bytes requirements = 6 [(buf.validate.field).bytes.max_len = 65536];
+  // Limits (JSON; empty for none).
+  bytes limits = 7 [(buf.validate.field).bytes.max_len = 65536];
+  // Delegation settings.
+  GrantDelegation delegation = 8;
+  // Lowest attestation level (0-2).
+  int32 min_attestation_level = 9 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2
+  }];
+}
+
+// ReviseGrantResponse returns the new revision.
+message ReviseGrantResponse {
+  // The grant.
+  Grant grant = 1;
+  // Whether the revision widened anything (audited as an issuance).
+  bool widens = 2;
+}
+
+// RevokeGrantRequest revokes a grant.
+message RevokeGrantRequest {
+  // Grant id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason, recorded with the revocation.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+// RevokeGrantResponse says what was revoked.
+message RevokeGrantResponse {
+  // Grants revoked: the grant and its descendants.
+  int32 revoked = 1;
+}
+
+// GetGrantRequest names a grant.
+message GetGrantRequest {
+  // Grant id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetGrantResponse returns a grant and what it allows now.
+message GetGrantResponse {
+  // The grant's current revision.
+  Grant grant = 1;
+  // Its ancestors, root first (empty for a root grant).
+  repeated Grant lineage = 2;
+  // The guardrails that apply to it.
+  repeated GuardrailVersion guardrails = 3;
+  // Effective bounds: the intersection of the grant, its ancestors and the
+  // guardrails (JSON, F046). What the run can use is at most this.
+  bytes effective_bounds = 4;
+}
+
+// ListGrantsRequest pages through grants.
+message ListGrantsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only grants of this agent.
+  optional string agent_id = 3 [(buf.validate.field).string.uuid = true];
+  // Only grants delegated from this one.
+  optional string parent_grant_id = 4 [(buf.validate.field).string.uuid = true];
+  // Only grants in this state (all when unspecified).
+  GrantState state = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+// ListGrantsResponse is one page.
+message ListGrantsResponse {
+  // Grants, newest first.
+  repeated Grant grants = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// GetBudgetStateRequest names a grant.
+message GetBudgetStateRequest {
+  // Grant id.
+  string grant_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// BudgetAccount is the state of one budget account. Amounts are decimal
+// strings in the account's currency.
+message BudgetAccount {
+  // Who owns the rule: "grant" or "envelope".
+  string owner_kind = 1;
+  // The grant or guardrail id.
+  string owner_id = 2;
+  // Rule id within the owner's limits.
+  string rule = 3;
+  // Grouping: "task", "principal", "account", "team" or "org".
+  string grouping = 4;
+  // Period: "none", "day", "week" or "month" (UTC).
+  string period = 5;
+  // Start of the current period; unset for "none".
+  google.protobuf.Timestamp period_start = 6;
+  // Currency (ISO 4217).
+  string currency = 7;
+  // Amount limit; empty when the rule only counts.
+  string limit = 8;
+  // Reserved by permits not yet settled, UNKNOWN outcomes included (F115).
+  string reserved = 9;
+  // Spent by accepted outcomes.
+  string spent = 10;
+  // Still available; empty when there is no amount limit.
+  string available = 11;
+  // Count limit; unset when the rule has none.
+  optional int64 max_count = 12;
+  // Reserved count.
+  int64 reserved_count = 13;
+  // Spent count.
+  int64 spent_count = 14;
+}
+
+// GetBudgetStateResponse lists the accounts, in lock order.
+message GetBudgetStateResponse {
+  // Accounts: guardrails first, then grants from the root down.
+  repeated BudgetAccount accounts = 1;
+}

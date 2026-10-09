@@ -213,7 +213,7 @@ func TestRoleCatalogIsWellFormed(t *testing.T) {
 		domain.RoleOrgAdmin, domain.RoleSecurityAdmin, domain.RoleAgentOwner,
 		domain.RolePolicyAuthor, domain.RolePolicyPublisher, domain.RoleApprover, domain.RoleResponder,
 		domain.RoleAuditor, domain.RoleDeveloper, domain.RoleViewer, domain.RoleRunLauncher,
-		domain.RoleAgentAdmitter, domain.RoleIdentityPublisher,
+		domain.RoleAgentAdmitter, domain.RoleIdentityPublisher, domain.RoleGrantIssuer, domain.RoleFactProvider,
 	} {
 		if !seen[n] {
 			t.Errorf("default role %s missing (SB-2)", n)
@@ -346,10 +346,83 @@ func TestHR141_IssuerActivationIsHumanOnlyAndSeparate(t *testing.T) {
 // workloads and gateways exercise them; no role, binding or API key can.
 func TestWorkloadAndGatewayPermissionsAreNeverGrantable(t *testing.T) {
 	for _, p := range []domain.Permission{
-		domain.PermWorkloadEnroll, domain.PermWorkloadToken, domain.PermWorkloadRun, domain.PermGatewayObserve,
+		domain.PermWorkloadEnroll, domain.PermWorkloadToken, domain.PermWorkloadRun, domain.PermWorkloadDelegate,
+		domain.PermGatewayObserve,
 	} {
 		if p.Known() || !p.Declarable() || p.APIKeyScopable() {
 			t.Errorf("%s: known=%v declarable=%v scopable=%v", p, p.Known(), p.Declarable(), p.APIKeyScopable())
+		}
+	}
+}
+
+// TestHR161_GrantIssuanceAndGuardrailChangesAreHumanOnly: only people
+// issue grants (decision 7) and change guardrails; platform and security
+// administration imply neither, and the issuer cannot change the
+// guardrails its grants must fit in.
+func TestHR161_GrantIssuanceAndGuardrailChangesAreHumanOnly(t *testing.T) {
+	for _, p := range []domain.Permission{domain.PermGrantIssue, domain.PermGuardrailsManage} {
+		if !p.HumanOnly() || p.APIKeyScopable() {
+			t.Errorf("%s must be human only", p)
+		}
+	}
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermGrantIssue) != (r.Name == domain.RoleGrantIssuer) {
+			t.Errorf("role %s: grant.issue = %v", r.Name, r.Has(domain.PermGrantIssue))
+		}
+		if r.Has(domain.PermGuardrailsManage) != (r.Name == domain.RolePolicyPublisher) {
+			t.Errorf("role %s: guardrails.manage = %v", r.Name, r.Has(domain.PermGuardrailsManage))
+		}
+		if r.Has(domain.PermGrantIssue) && r.Has(domain.PermGuardrailsManage) {
+			t.Errorf("role %s both issues grants and changes guardrails", r.Name)
+		}
+	}
+	tr := newTree()
+	for _, r := range []domain.RoleName{domain.RoleOrgAdmin, domain.RoleSecurityAdmin} {
+		admin := user(tr.org, bind(r, domain.ScopeOrg, tr.org.UUID()))
+		if admin.CanAnywhere(domain.PermGrantIssue) || admin.CanAnywhere(domain.PermGuardrailsManage) {
+			t.Errorf("%s can issue grants or change guardrails", r)
+		}
+	}
+	sa := serviceAccount(tr.org, bind(domain.RoleGrantIssuer, domain.ScopeOrg, tr.org.UUID()))
+	if sa.CanAnywhere(domain.PermGrantIssue) {
+		t.Error("a service account bound to Grant Issuer can issue grants")
+	}
+	if _, err := domain.CheckBindable(domain.RoleGrantIssuer, domain.KindServiceAccount, domain.ScopeTeam); !errors.Is(err, domain.ErrHumanOnlyRole) {
+		t.Errorf("Grant Issuer bindable to a service account: %v", err)
+	}
+}
+
+// TestHR160_FactProvidersAreManagedByPeopleAndWrittenByTheirAccounts:
+// registering a provider is human only; reporting facts is for service
+// accounts (the provider's own, checked by the use case), and no role does
+// both.
+func TestHR160_FactProvidersAreManagedByPeopleAndWrittenByTheirAccounts(t *testing.T) {
+	if !domain.PermFactProviderManage.HumanOnly() || domain.PermFactWrite.HumanOnly() {
+		t.Fatal("fact.provider.manage must be human only and fact.write must not be")
+	}
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermFactProviderManage) && r.Has(domain.PermFactWrite) {
+			t.Errorf("role %s both registers providers and writes facts", r.Name)
+		}
+		if r.Has(domain.PermFactWrite) != (r.Name == domain.RoleFactProvider) {
+			t.Errorf("role %s: fact.write = %v", r.Name, r.Has(domain.PermFactWrite))
+		}
+	}
+	if _, err := domain.CheckBindable(domain.RoleFactProvider, domain.KindServiceAccount, domain.ScopeOrg); err != nil {
+		t.Errorf("Fact Provider must be bindable to a service account: %v", err)
+	}
+}
+
+// TestHR123_PackageImportAndActivationAreSeparate: importing a signed
+// package changes nothing; activating it is a separate, human-only step
+// that no role combines with importing.
+func TestHR123_PackageImportAndActivationAreSeparate(t *testing.T) {
+	if !domain.PermPackageActivate.HumanOnly() || domain.PermPackageActivate.APIKeyScopable() {
+		t.Fatal("package.activate must be human only")
+	}
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermPackageImport) && r.Has(domain.PermPackageActivate) {
+			t.Errorf("role %s both imports and activates packages", r.Name)
 		}
 	}
 }

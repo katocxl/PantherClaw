@@ -7,6 +7,7 @@ package pantherclaw.v1;
 
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/grants.proto";
 import "pantherclaw/v1/identity.proto";
 import "pantherclaw/v1/runs.proto";
 
@@ -32,6 +33,13 @@ service WorkloadService {
   // inherits the represented principal and cannot outlive its parent.
   // permission: workload.run
   rpc StartChildRun(StartChildRunRequest) returns (StartChildRunResponse);
+  // DelegateGrant gives a child run of the caller's run part of the
+  // caller's run's grant (HR-045, HR-047, HR-161). The delegated grant must
+  // fit inside its parent and every guardrail, expire no later than its
+  // parent and stay within the depth, fan-out and lifetime caps. The child
+  // shares its ancestors' budgets and may set smaller limits of its own.
+  // permission: workload.delegate
+  rpc DelegateGrant(DelegateGrantRequest) returns (DelegateGrantResponse);
 }
 
 // AttestationKind names the preset an attestation token is for.
@@ -140,4 +148,40 @@ message StartChildRunRequest {
 message StartChildRunResponse {
   // The run.
   Run run = 1;
+}
+
+// DelegateGrantRequest delegates part of the caller's run's grant.
+message DelegateGrantRequest {
+  // The caller's active run; it must be bound to the caller's instance and
+  // have a grant that allows delegation.
+  string run_id = 1 [(buf.validate.field).string.uuid = true];
+  // The child run (from StartChildRun); it must not have a grant yet.
+  string child_run_id = 2 [(buf.validate.field).string.uuid = true];
+  // UNTRUSTED task label.
+  string task_ref = 3 [(buf.validate.field).string.max_len = 256];
+  // Valid until (default and maximum: the parent's expiry, and at most 24
+  // hours).
+  google.protobuf.Timestamp expire_time = 4;
+  // Bounds (grant bounds v1, JSON); at most the parent's.
+  bytes bounds = 5 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 65536
+  }];
+  // Requirements (JSON array); the parent's always apply as well.
+  bytes requirements = 6 [(buf.validate.field).bytes.max_len = 65536];
+  // The child's own limits (JSON); its ancestors' still apply.
+  bytes limits = 7 [(buf.validate.field).bytes.max_len = 65536];
+  // Delegation settings; depth below the parent's.
+  GrantDelegation delegation = 8;
+  // Lowest attestation level (0-2); at least the parent's.
+  int32 min_attestation_level = 9 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2
+  }];
+}
+
+// DelegateGrantResponse returns the delegated grant.
+message DelegateGrantResponse {
+  // The grant, bound to the child run.
+  Grant grant = 1;
 }

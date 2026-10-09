@@ -240,7 +240,7 @@ func (s *Service) finalize(ctx context.Context, gw Gateway, p actionir.Parsed, r
 			exp := now.Add(s.ttl)
 			if err := q.InsertPermit(ctx, dbq.InsertPermitParams{
 				OrgID: gw.Org, ID: permitID, TransactionID: txnID, GatewayID: gw.ID, Epoch: cont.Epoch,
-				BudgetID: budget.ID, Amount: o.Amount.Amount, ExpiresAt: exp,
+				BudgetID: &budget.ID, Amount: &o.Amount.Amount, ExpiresAt: exp,
 			}); err != nil {
 				return err
 			}
@@ -470,7 +470,7 @@ func (s *Service) RecordExecution(ctx context.Context, gw Gateway, e Execution) 
 		case Unknown:
 		}
 		if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
-			OrgID: gw.Org, ID: ids.NewV7(), BudgetID: row.BudgetID, TransactionID: row.TransactionID, Kind: kind, Amount: row.Amount,
+			OrgID: gw.Org, ID: ids.NewV7(), BudgetID: *row.BudgetID, TransactionID: row.TransactionID, Kind: kind, Amount: *row.Amount,
 		}); err != nil {
 			return err
 		}
@@ -480,9 +480,9 @@ func (s *Service) RecordExecution(ctx context.Context, gw Gateway, e Execution) 
 		// Budget last, as in Authorize: the hot row is locked only until COMMIT.
 		switch e.Outcome {
 		case Accepted:
-			err = db.ExpectOneRow(q.CommitReservation(ctx, row.Amount, gw.Org, row.BudgetID))
+			err = db.ExpectOneRow(q.CommitReservation(ctx, *row.Amount, gw.Org, *row.BudgetID))
 		case Failed:
-			err = db.ExpectOneRow(q.ReleaseReservation(ctx, row.Amount, gw.Org, row.BudgetID))
+			err = db.ExpectOneRow(q.ReleaseReservation(ctx, *row.Amount, gw.Org, *row.BudgetID))
 		case Unknown:
 		}
 		if err != nil {
@@ -554,16 +554,16 @@ func (s *Service) SweepOrg(ctx context.Context, org ids.OrgID, staleAfter time.D
 		perBudget := map[ids.UUID]sum{}
 		for _, p := range released {
 			if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
-				OrgID: org, ID: ids.NewV7(), BudgetID: p.BudgetID, TransactionID: p.TransactionID, Kind: "release", Amount: p.Amount,
+				OrgID: org, ID: ids.NewV7(), BudgetID: *p.BudgetID, TransactionID: p.TransactionID, Kind: "release", Amount: *p.Amount,
 			}); err != nil {
 				return err
 			}
-			s := perBudget[p.BudgetID]
-			if s.amount, err = s.amount.Add(p.Amount); err != nil {
+			s := perBudget[*p.BudgetID]
+			if s.amount, err = s.amount.Add(*p.Amount); err != nil {
 				return err
 			}
 			s.count++
-			perBudget[p.BudgetID] = s
+			perBudget[*p.BudgetID] = s
 		}
 		unknown, err := q.MarkStaleDispatchingUnknown(ctx, org, staleAfter.Seconds())
 		if err != nil {
@@ -571,7 +571,7 @@ func (s *Service) SweepOrg(ctx context.Context, org ids.OrgID, staleAfter time.D
 		}
 		for _, p := range unknown {
 			if err := q.InsertBudgetLedger(ctx, dbq.InsertBudgetLedgerParams{
-				OrgID: org, ID: ids.NewV7(), BudgetID: p.BudgetID, TransactionID: p.TransactionID, Kind: "hold_unknown", Amount: p.Amount,
+				OrgID: org, ID: ids.NewV7(), BudgetID: *p.BudgetID, TransactionID: p.TransactionID, Kind: "hold_unknown", Amount: *p.Amount,
 			}); err != nil {
 				return err
 			}

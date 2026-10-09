@@ -291,7 +291,10 @@ type Run struct {
 	// Expiry time.
 	ExpireTime *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
 	// End time.
-	EndTime       *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	EndTime *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	// The grant whose authority the run uses; empty for a run without one,
+	// whose actions are denied (NO_GRANT).
+	GrantId       string `protobuf:"bytes,19,opt,name=grant_id,json=grantId,proto3" json:"grant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -452,8 +455,14 @@ func (x *Run) GetEndTime() *timestamppb.Timestamp {
 	return nil
 }
 
-// StartRunRequest starts a run. Grant selection (field 7) is reserved for
-// M4; until then a run carries no grant.
+func (x *Run) GetGrantId() string {
+	if x != nil {
+		return x.GrantId
+	}
+	return ""
+}
+
+// StartRunRequest starts a run.
 type StartRunRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Agent to run.
@@ -470,8 +479,12 @@ type StartRunRequest struct {
 	SubjectToken string `protobuf:"bytes,5,opt,name=subject_token,json=subjectToken,proto3" json:"subject_token,omitempty"`
 	// Its type; required with a subject token.
 	SubjectTokenType SubjectTokenType `protobuf:"varint,6,opt,name=subject_token_type,json=subjectTokenType,proto3,enum=pantherclaw.v1.SubjectTokenType" json:"subject_token_type,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The grant the run uses (G0 M4, PN-002.5). It must be active and valid,
+	// and bind the same agent (and instance, if it pins one), principal and
+	// environment; the run's expiry is cut to the grant's.
+	GrantId       *string `protobuf:"bytes,7,opt,name=grant_id,json=grantId,proto3,oneof" json:"grant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartRunRequest) Reset() {
@@ -544,6 +557,13 @@ func (x *StartRunRequest) GetSubjectTokenType() SubjectTokenType {
 		return x.SubjectTokenType
 	}
 	return SubjectTokenType_SUBJECT_TOKEN_TYPE_UNSPECIFIED
+}
+
+func (x *StartRunRequest) GetGrantId() string {
+	if x != nil && x.GrantId != nil {
+		return *x.GrantId
+	}
+	return ""
 }
 
 // StartRunResponse returns the run.
@@ -920,7 +940,7 @@ const file_pantherclaw_v1_runs_proto_rawDesc = "" +
 	"\x19pantherclaw/v1/runs.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"+\n" +
 	"\x05Actor\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\"\x89\x06\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\"\xa4\x06\n" +
 	"\x03Run\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x1f\n" +
@@ -945,7 +965,8 @@ const file_pantherclaw_v1_runs_proto_rawDesc = "" +
 	"createTime\x12;\n" +
 	"\vexpire_time\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"expireTime\x125\n" +
-	"\bend_time\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\"\xff\x03\n" +
+	"\bend_time\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12\x19\n" +
+	"\bgrant_id\x18\x13 \x01(\tR\agrantId\"\xa6\x04\n" +
 	"\x0fStartRunRequest\x12#\n" +
 	"\bagent_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\aagentId\x12.\n" +
 	"\vinstance_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\n" +
@@ -955,9 +976,11 @@ const file_pantherclaw_v1_runs_proto_rawDesc = "" +
 	"\xbaH\a\x1a\x05\x18\xa0\v(\x00R\n" +
 	"ttlMinutes\x12.\n" +
 	"\rsubject_token\x18\x05 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\fsubjectToken\x12X\n" +
-	"\x12subject_token_type\x18\x06 \x01(\x0e2 .pantherclaw.v1.SubjectTokenTypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x10subjectTokenType:\x8b\x01\xbaH\x87\x01\x1a\x84\x01\n" +
+	"\x12subject_token_type\x18\x06 \x01(\x0e2 .pantherclaw.v1.SubjectTokenTypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x10subjectTokenType\x12(\n" +
+	"\bgrant_id\x18\a \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x01R\agrantId\x88\x01\x01:\x8b\x01\xbaH\x87\x01\x1a\x84\x01\n" +
 	"\x12subject_token_type\x120subject_token and subject_token_type go together\x1a<(this.subject_token == '') == (this.subject_token_type == 0)B\x0e\n" +
-	"\f_instance_idJ\x04\b\a\x10\bR\bgrant_idR\rtask_template\"9\n" +
+	"\f_instance_idB\v\n" +
+	"\t_grant_idR\rtask_template\"9\n" +
 	"\x10StartRunResponse\x12%\n" +
 	"\x03run\x18\x01 \x01(\v2\x13.pantherclaw.v1.RunR\x03run\")\n" +
 	"\rGetRunRequest\x12\x18\n" +

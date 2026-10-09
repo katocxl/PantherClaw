@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// PackageService imports tool packages and manages their lifecycle (HR-123,
+// HR-124, T-036; G0 M4). A package gives every operation its reviewed
+// meaning. Only packages listed in a targets document signed by a trusted
+// package root can be imported, and version pins only move forward.
+// Importing and activating are separate steps: activation is human only.
+service PackageService {
+  // ImportPackage verifies and stores one package version. It starts as
+  // REVIEWED and decides nothing until it is activated.
+  // permission: package.import
+  rpc ImportPackage(ImportPackageRequest) returns (ImportPackageResponse);
+  // TransitionPackage moves a package version through its lifecycle.
+  // Quarantining or retiring one invalidates permits already issued.
+  // permission: package.activate
+  rpc TransitionPackage(TransitionPackageRequest) returns (TransitionPackageResponse);
+  // ListPackages lists imported package versions.
+  // permission: package.read
+  rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetDefinition returns one action definition by digest.
+  // permission: package.read
+  rpc GetDefinition(GetDefinitionRequest) returns (GetDefinitionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// PackageState is a package version's lifecycle state (F394).
+enum PackageState {
+  PACKAGE_STATE_UNSPECIFIED = 0;
+  PACKAGE_STATE_UNCLASSIFIED = 1;
+  PACKAGE_STATE_DRAFT = 2;
+  PACKAGE_STATE_REVIEWED = 3;
+  // Its definitions decide actions.
+  PACKAGE_STATE_ACTIVE = 4;
+  // Past a definition's review date: CANNOT_AUTHORIZE.
+  PACKAGE_STATE_STALE = 5;
+  // Withdrawn for a problem: DENY.
+  PACKAGE_STATE_QUARANTINED = 6;
+  PACKAGE_STATE_RETIRED = 7;
+}
+
+// DefinitionRef names one action definition of a package.
+message DefinitionRef {
+  // Operation, for example payments.refund.create.
+  string operation = 1;
+  // Definition digest ("sha256:" and 64 hex digits), as ActionIR pins it.
+  string digest = 2;
+}
+
+// PackageVersion is one imported package version.
+message PackageVersion {
+  // Package name, for example pc.mock-payments.
+  string name = 1;
+  // Version.
+  string version = 2;
+  // Lifecycle state.
+  PackageState state = 3;
+  // SHA-256 (hex) of the exact signed package bytes.
+  string file_digest = 4;
+  // Its definitions.
+  repeated DefinitionRef definitions = 5;
+  // Whether the org's pin points at this version.
+  bool pinned = 6;
+  // When it was imported.
+  google.protobuf.Timestamp import_time = 7;
+}
+
+// ImportPackageRequest carries a package and the signed metadata that
+// lists it.
+message ImportPackageRequest {
+  // Package name.
+  string name = 1 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){0,3}$"
+  }];
+  // Version.
+  string version = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})$"
+  }];
+  // Targets metadata (compact JWS, typ pc-package-targets+jwt).
+  string targets = 3 [(buf.validate.field).string = {
+    min_len: 16
+    max_len: 262144
+  }];
+  // The exact package bytes (YAML, format 1).
+  bytes package = 4 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 1048576
+  }];
+}
+
+// ImportPackageResponse returns the stored version.
+message ImportPackageResponse {
+  // The version.
+  PackageVersion package = 1;
+  // Whether the same bytes were already imported (nothing changed).
+  bool already_imported = 2;
+}
+
+// TransitionPackageRequest changes a version's state.
+message TransitionPackageRequest {
+  // Package name.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Version.
+  string version = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  // Target state.
+  PackageState state = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// TransitionPackageResponse returns the version.
+message TransitionPackageResponse {
+  // The version.
+  PackageVersion package = 1;
+}
+
+// ListPackagesRequest lists package versions.
+message ListPackagesRequest {
+  // Only this package (all when empty).
+  string name = 1 [(buf.validate.field).string.max_len = 128];
+}
+
+// ListPackagesResponse returns them.
+message ListPackagesResponse {
+  // Versions, by name then version.
+  repeated PackageVersion packages = 1;
+}
+
+// GetDefinitionRequest names a definition.
+message GetDefinitionRequest {
+  // Definition digest.
+  string digest = 1 [(buf.validate.field).string.pattern = "^sha256:[0-9a-f]{64}$"];
+}
+
+// GetDefinitionResponse returns it.
+message GetDefinitionResponse {
+  // Operation.
+  string operation = 1;
+  // Digest.
+  string digest = 2;
+  // The definition as canonical JSON (RFC 8785).
+  bytes definition = 3;
+  // Package name.
+  string package = 4;
+  // Package version.
+  string version = 5;
+  // The version's state.
+  PackageState state = 6;
+}

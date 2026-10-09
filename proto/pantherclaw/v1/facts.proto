@@ -1,0 +1,248 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// FactService registers fact providers and records the facts they report
+// (HR-160, T-055; G0 M4 part 2). A decision trusts a fact only when it came
+// from the provider registered for that fact name, authenticated as that
+// provider's service account, and only while it is fresh. Values a
+// workload sends are never facts.
+service FactService {
+  // RegisterProvider registers a provider bound to one service account,
+  // with the facts it may write. Each fact name has one active provider.
+  // permission: fact.provider.manage
+  rpc RegisterProvider(RegisterProviderRequest) returns (RegisterProviderResponse);
+  // DisableProvider disables a provider; its facts stop counting at once.
+  // permission: fact.provider.manage
+  rpc DisableProvider(DisableProviderRequest) returns (DisableProviderResponse);
+  // ListProviders lists providers.
+  // permission: fact.read
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // PutFacts records observations. Only the service account bound to the
+  // provider of each fact may send it; each observation is accepted or
+  // refused on its own.
+  // permission: fact.write
+  rpc PutFacts(PutFactsRequest) returns (PutFactsResponse);
+  // ListFacts returns the current facts about one subject.
+  // permission: fact.read
+  rpc ListFacts(ListFactsRequest) returns (ListFactsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// FactType is the type of a fact's value.
+enum FactType {
+  FACT_TYPE_UNSPECIFIED = 0;
+  // {"bool": true}
+  FACT_TYPE_BOOLEAN = 1;
+  // {"int": "42"} (a decimal string, never a JSON number)
+  FACT_TYPE_INTEGER = 2;
+  // {"decimal": "1.5"}
+  FACT_TYPE_DECIMAL = 3;
+  // {"amount": "30.00", "currency": "USD"}
+  FACT_TYPE_MONEY = 4;
+  // {"id": "acct_1"}
+  FACT_TYPE_IDENTIFIER = 5;
+  // {"time": "2026-10-09T12:00:00Z"}
+  FACT_TYPE_TIMESTAMP = 6;
+}
+
+// ProviderState is a provider's state.
+enum ProviderState {
+  PROVIDER_STATE_UNSPECIFIED = 0;
+  PROVIDER_STATE_ACTIVE = 1;
+  PROVIDER_STATE_DISABLED = 2;
+}
+
+// FactDeclaration is one fact a provider may write.
+message FactDeclaration {
+  // Fact name, for example payments.charge.refundable.
+  string name = 1 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){1,7}$"
+  }];
+  // Value type.
+  FactType type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Target type the fact is about, for example payments.charge.
+  string subject_type = 3 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){0,7}$"
+  }];
+  // How old an observation may be when it is recorded.
+  google.protobuf.Duration max_lag = 4 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration = {
+      gt: {}
+      lte: {seconds: 86400}
+    }
+  ];
+}
+
+// FactProvider is a registered provider.
+message FactProvider {
+  // Provider id.
+  string id = 1;
+  // Name.
+  string name = 2;
+  // The service account it authenticates as.
+  string service_account_id = 3;
+  // State.
+  ProviderState state = 4;
+  // The facts it may write.
+  repeated FactDeclaration facts = 5;
+}
+
+// RegisterProviderRequest registers a provider.
+message RegisterProviderRequest {
+  // Name.
+  string name = 1 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[a-z][a-z0-9_.-]{0,63}$"
+  }];
+  // The service account the provider authenticates as.
+  string service_account_id = 2 [(buf.validate.field).string.uuid = true];
+  // The facts it may write.
+  repeated FactDeclaration facts = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+  }];
+}
+
+// RegisterProviderResponse returns the provider.
+message RegisterProviderResponse {
+  // The provider.
+  FactProvider provider = 1;
+}
+
+// DisableProviderRequest names a provider.
+message DisableProviderRequest {
+  // Provider id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// DisableProviderResponse confirms it.
+message DisableProviderResponse {}
+
+// ListProvidersRequest lists providers.
+message ListProvidersRequest {
+  // Also disabled providers.
+  bool include_disabled = 1;
+}
+
+// ListProvidersResponse returns them.
+message ListProvidersResponse {
+  // Providers, by name.
+  repeated FactProvider providers = 1;
+}
+
+// FactObservation is one observation a provider reports.
+message FactObservation {
+  // Fact name.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Subject type.
+  string subject_type = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Subject id, for example ch_1.
+  string subject_id = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  // Value as typed JSON (see FactType).
+  bytes value = 4 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 4096
+  }];
+  // When the provider observed it; neither later than the server's clock
+  // nor older than the declaration's maximum lag.
+  google.protobuf.Timestamp observe_time = 5 [(buf.validate.field).required = true];
+}
+
+// PutFactsRequest carries observations.
+message PutFactsRequest {
+  // Observations (at most 100).
+  repeated FactObservation observations = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+  }];
+}
+
+// FactResult is the outcome of one observation.
+message FactResult {
+  // Index in the request.
+  int32 index = 1;
+  // Whether it was recorded. An observation older than the stored one is
+  // not recorded and not an error.
+  bool accepted = 2;
+  // Why it was refused, for example FACT_NOT_DECLARED or FACT_IN_FUTURE.
+  string code = 3;
+  // Detail (never echoes the value).
+  string detail = 4;
+}
+
+// PutFactsResponse returns one result per observation.
+message PutFactsResponse {
+  // Results, in request order.
+  repeated FactResult results = 1;
+}
+
+// Fact is a recorded fact.
+message Fact {
+  // Name.
+  string name = 1;
+  // Subject type.
+  string subject_type = 2;
+  // Subject id.
+  string subject_id = 3;
+  // Value as typed JSON.
+  bytes value = 4;
+  // When it was observed.
+  google.protobuf.Timestamp observe_time = 5;
+  // When it was recorded.
+  google.protobuf.Timestamp record_time = 6;
+  // Provider.
+  string provider_id = 7;
+}
+
+// ListFactsRequest names a subject.
+message ListFactsRequest {
+  // Subject type.
+  string subject_type = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Subject id.
+  string subject_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  // Only these facts (all when empty).
+  repeated string names = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    items: {
+      string: {max_len: 128}
+    }
+  }];
+}
+
+// ListFactsResponse returns the facts from active providers.
+message ListFactsResponse {
+  // Facts, by name.
+  repeated Fact facts = 1;
+}

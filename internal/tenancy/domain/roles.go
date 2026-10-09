@@ -24,6 +24,8 @@ const (
 	RoleRunLauncher       RoleName = "run_launcher"
 	RoleAgentAdmitter     RoleName = "agent_admitter"
 	RoleIdentityPublisher RoleName = "identity_publisher"
+	RoleGrantIssuer       RoleName = "grant_issuer"
+	RoleFactProvider      RoleName = "fact_provider"
 )
 
 // Role is a named set of permissions and the scope types it may be bound at.
@@ -50,6 +52,9 @@ var (
 	orgScope = []ScopeType{ScopeOrg}
 	// basicReads lets a principal see the hierarchy it works in.
 	basicReads = []Permission{PermOrgRead, PermBusinessUnitRead, PermTeamRead, PermEnvironmentRead}
+	// authorityReads lets a principal see what agents may do (M4): grants,
+	// guardrails, budgets, packages and policies.
+	authorityReads = []Permission{PermGrantRead, PermGuardrailsRead, PermBudgetRead, PermPackageRead, PermPolicyRead}
 )
 
 func with(ps ...[]Permission) []Permission {
@@ -70,39 +75,43 @@ func with(ps ...[]Permission) []Permission {
 var roles = []Role{
 	{
 		Name: RoleOrgAdmin, Title: "Org Admin", Scopes: orgScope,
-		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts. Cannot approve actions, publish policies or read restricted evidence.",
+		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails or read restricted evidence.",
 		Permissions: with(basicReads, []Permission{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
-			PermWaitlistRead, PermIssuerRead, PermIssuerManage,
-		}),
+			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport,
+		}, authorityReads),
 	},
 	{
 		Name: RoleSecurityAdmin, Title: "Security Admin", Scopes: orgScope,
-		Description: "Watches and contains: reads users, roles and audit, disables compromised users and service accounts, responds to incidents.",
+		Description: "Watches and contains: reads users, roles and audit, disables compromised users and service accounts, revokes grants, responds to incidents.",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermUserManage, PermRoleRead, PermInvitationRead, PermServiceAccountRead,
 			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
-			PermWaitlistRead, PermIssuerRead,
-		}),
+			PermWaitlistRead, PermIssuerRead, PermGrantRevoke, PermFactRead,
+		}, authorityReads),
 	},
 	{
 		Name: RoleAgentOwner, Title: "Agent Owner", Scopes: anyScope,
-		Description: "Owns agents in scope and is accountable for them.",
+		Description: "Owns agents in scope and is accountable for them; can revoke their grants but not issue them.",
 		Permissions: with(basicReads, []Permission{
 			PermAgentRead, PermAgentManage, PermRunRead, PermRunStart, PermRunManage, PermWaitlistRead, PermAgentEnroll,
-		}),
+			PermGrantRevoke,
+		}, authorityReads),
 	},
 	{
 		Name: RolePolicyAuthor, Title: "Policy Author", Scopes: anyScope,
 		Description: "Drafts policies and grants in scope; cannot publish them.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermPolicyAuthor}),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermPolicyAuthor, PermFactRead}, authorityReads),
 	},
 	{
 		Name: RolePolicyPublisher, Title: "Policy Publisher", Scopes: anyScope,
-		Description: "Publishes reviewed policies in scope (human only).",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermPolicyPublish}),
+		Description: "Publishes reviewed policies, changes guardrails, activates imported tool packages and registers fact providers in scope (human only). Cannot author policies or import packages.",
+		Permissions: with(basicReads, []Permission{
+			PermAgentRead, PermPolicyPublish, PermGuardrailsManage, PermPackageActivate, PermFactRead,
+			PermFactProviderManage, PermServiceAccountRead,
+		}, authorityReads),
 	},
 	{
 		Name: RoleApprover, Title: "Approver", Scopes: anyScope,
@@ -112,20 +121,22 @@ var roles = []Role{
 	{
 		Name: RoleResponder, Title: "Responder", Scopes: anyScope,
 		Description: "Investigates and contains incidents in scope.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage}),
+		Permissions: with(basicReads, []Permission{
+			PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage, PermGrantRead, PermGrantRevoke,
+		}),
 	},
 	{
 		Name: RoleAuditor, Title: "Auditor", Scopes: orgScope,
 		Description: "Reads configuration, audit and restricted evidence (human only); changes nothing.",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
-			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead,
-		}),
+			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead, PermFactRead,
+		}, authorityReads),
 	},
 	{
 		Name: RoleDeveloper, Title: "Developer", Scopes: anyScope,
 		Description: "Builds agents in scope.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart}),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart}, authorityReads),
 	},
 	{
 		Name: RoleViewer, Title: "Viewer", Scopes: anyScope,
@@ -135,7 +146,7 @@ var roles = []Role{
 	{
 		Name: RoleRunLauncher, Title: "Run Launcher", Scopes: anyScope,
 		Description: "Starts runs in scope for users who present a fresh token from the identity provider (for example a service acting for a signed-in user). The token proves who is represented and grants nothing.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart, PermRunRepresent}),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart, PermRunRepresent, PermGrantRead}),
 	},
 	{
 		Name: RoleAgentAdmitter, Title: "Agent Admitter", Scopes: anyScope,
@@ -146,6 +157,18 @@ var roles = []Role{
 		Name: RoleIdentityPublisher, Title: "Identity Publisher", Scopes: anyScope,
 		Description: "Activates proposed or widened trusted-issuer entries in scope after reviewing what they widen (human only). Cannot propose them.",
 		Permissions: with(basicReads, []Permission{PermAgentRead, PermIssuerRead, PermIssuerActivate}),
+	},
+	{
+		Name: RoleGrantIssuer, Title: "Grant Issuer", Scopes: anyScope,
+		Description: "Issues, revises and revokes grants to agents in scope (human only). Every grant must still fit inside the guardrails, which the issuer cannot change.",
+		Permissions: with(basicReads, []Permission{
+			PermAgentRead, PermRunRead, PermGrantIssue, PermGrantRevoke, PermFactRead,
+		}, authorityReads),
+	},
+	{
+		Name: RoleFactProvider, Title: "Fact Provider", Scopes: orgScope,
+		Description: "For the service account a fact provider is registered with: lets it report facts. Holding the role alone writes nothing: each fact is accepted only from the service account of the provider registered for it.",
+		Permissions: with(basicReads, []Permission{PermFactWrite}),
 	},
 }
 

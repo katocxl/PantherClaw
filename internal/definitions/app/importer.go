@@ -48,7 +48,9 @@ type Record struct {
 // lifecycle states. Every write is conditional on the state that was read
 // and returns ErrConflict when it changed.
 type Repository interface {
-	TrustedMetadata(ctx context.Context) (*trust.State, error)
+	// TrustedMetadata returns the highest targets metadata the org has
+	// accepted (anti-rollback is per org, so no table is global).
+	TrustedMetadata(ctx context.Context, org ids.OrgID) (*trust.State, error)
 	CurrentPin(ctx context.Context, org ids.OrgID, pkg string) (*domain.Pin, error)
 	Import(ctx context.Context, org ids.OrgID, rec Record) error
 	State(ctx context.Context, org ids.OrgID, pkg, version string) (domain.State, error)
@@ -83,7 +85,7 @@ func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, ta
 	if err != nil {
 		return Result{}, err
 	}
-	last, err := im.Repo.TrustedMetadata(ctx)
+	last, err := im.Repo.TrustedMetadata(ctx, org)
 	if err != nil {
 		return Result{}, err
 	}
