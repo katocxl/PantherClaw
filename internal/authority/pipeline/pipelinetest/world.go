@@ -45,7 +45,8 @@ type World struct {
 	counters map[bdomain.Ref]bdomain.Counter
 	claims   map[string]*pipeline.Claim
 	// Fail makes the named Reader method return ErrInjected.
-	Fail map[string]bool
+	Fail  map[string]bool
+	final *finalState
 }
 
 // New returns a world for org with p pinned and every definition ACTIVE.
