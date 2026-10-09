@@ -395,7 +395,7 @@ type PcSession struct {
 	RotatedAt          *time.Time
 	Generation         int32
 	Provider           string
-	AuthTime           time.Time
+	AuthTime           *time.Time
 	RolesDigest        []byte
 	StepUpAt           *time.Time
 	StepUpCredentialID *ids.UUID

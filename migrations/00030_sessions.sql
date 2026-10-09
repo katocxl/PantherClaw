@@ -81,7 +81,9 @@ CREATE TABLE pc.sessions (
     rotated_at            timestamptz,
     generation            integer     NOT NULL DEFAULT 1 CHECK (generation >= 1),
     provider              text        NOT NULL CHECK (provider ~ '^[a-z0-9-]{1,32}$'),
-    auth_time             timestamptz NOT NULL,
+    -- The provider's auth_time when it sent one (always when max_age was
+    -- requested); NULL means the provider did not say when the person signed in.
+    auth_time             timestamptz,
     roles_digest          bytea       NOT NULL CHECK (octet_length(roles_digest) = 32),
     step_up_at            timestamptz,
     step_up_credential_id uuid,
