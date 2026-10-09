@@ -230,6 +230,17 @@ func CheckAdvance(last *State, next Verified) error {
 	return nil
 }
 
+// TargetOf lists one package file for signing: its "name@version" key, read
+// from the decoded package, and the length and SHA-256 of its exact bytes.
+func TargetOf(raw []byte) (string, Target, error) {
+	p, err := manifest.Decode(raw)
+	if err != nil {
+		return "", Target{}, err
+	}
+	sum := sha256.Sum256(raw)
+	return Key(p.Name, p.Version), Target{Length: int64(len(raw)), Hashes: map[string]string{"sha256": hex.EncodeToString(sum[:])}}, nil
+}
+
 // Match checks that raw is exactly the listed file for name@version and
 // returns its file digest.
 func (v Verified) Match(name, version string, raw []byte) (string, error) {
