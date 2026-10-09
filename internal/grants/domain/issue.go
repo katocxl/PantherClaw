@@ -140,6 +140,9 @@ func CompareRevision(cur, next Grant) (Revision, error) {
 			return Revision{Widens: true, Detail: "requirement " + r.Reason + " is removed or changed"}, nil
 		}
 	}
+	if !limitsKept(cur.Limits, next.Limits) {
+		return Revision{Widens: true, Detail: "a budget or counter is removed or changed"}, nil
+	}
 	switch {
 	case next.ExpiresAt.After(cur.ExpiresAt) || next.NotBefore.Before(cur.NotBefore):
 		return Revision{Widens: true, Detail: "the validity window is extended"}, nil

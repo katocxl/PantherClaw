@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
 )
 
 // ErrInvalid reports a rule or bundle that breaks a format rule; such a
@@ -56,7 +57,23 @@ type Rule struct {
 	StepUp     *StepUpRequirement   `json:"step_up,omitzero"`
 	Constraint *Constraint          `json:"constraint,omitzero"`
 	Labels     map[string]string    `json:"labels,omitzero"`
+	// Facts are the trusted facts the condition reads (as
+	// facts.<name with dots as underscores>). They become required for every
+	// action in the rule's scope; a rule whose facts are missing or stale is
+	// not evaluated (HR-160, F120).
+	Facts []FactRef `json:"facts,omitzero"`
 }
+
+// FactRef names a fact a rule reads and how old it may be.
+type FactRef struct {
+	Name          string `json:"name"`
+	MaxAgeSeconds int    `json:"max_age_seconds"`
+}
+
+const (
+	maxRuleFacts  = 8
+	maxFactAgeSec = 86400
+)
 
 // ApprovalRequirement says who must approve (enforced in M5).
 type ApprovalRequirement struct {
@@ -158,6 +175,16 @@ func (r *Rule) Validate() error {
 		if err := actionir.CheckIdentifier(id+": environment", env); err != nil {
 			return invalid("%s: environment %q", id, env)
 		}
+	}
+	if len(r.Facts) > maxRuleFacts {
+		return invalid("%s: a rule reads at most %d facts", id, maxRuleFacts)
+	}
+	seenFacts := map[string]bool{}
+	for _, f := range r.Facts {
+		if !fdomain.ValidName(f.Name) || seenFacts[f.Name] || f.MaxAgeSeconds < 1 || f.MaxAgeSeconds > maxFactAgeSec {
+			return invalid("%s: fact %q needs a unique dotted name and a max_age_seconds of 1..%d", id, f.Name, maxFactAgeSec)
+		}
+		seenFacts[f.Name] = true
 	}
 	want := map[Kind][4]bool{ // approval, step-up, constraint, labels
 		Forbid: {}, RequireApproval: {true, false, false, false}, RequireStepUp: {false, true, false, false},
