@@ -141,3 +141,38 @@ RETURNING *;
 UPDATE pc.agent_instances SET attested_until = sqlc.arg(attested_until), updated_at = now()
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ADMITTED' AND att_level = 2
 RETURNING *;
+
+-- Discovery (HR-148): unknown keys a gateway reports. One advisory lock per
+-- org serializes the limit checks.
+-- name: LockDiscoveries :exec
+SELECT pg_advisory_xact_lock(hashtextextended('pc.discoveries:' || sqlc.arg(org_id)::text, 0));
+
+-- Later sightings of a known key are only counted.
+-- name: TouchDiscovery :execrows
+UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now()
+WHERE org_id = sqlc.arg(org_id) AND key_jkt = sqlc.arg(key_jkt);
+
+-- name: DiscoveryLoad :one
+SELECT
+    (SELECT count(*) FROM pc.discoveries d WHERE d.org_id = sqlc.arg(org_id) AND d.state = 'OPEN')::int AS open_discoveries,
+    (SELECT count(*) FROM pc.discoveries d
+      WHERE d.org_id = sqlc.arg(org_id) AND d.source = 'gateway' AND d.first_seen_at > now() - interval '1 minute'
+        AND d.observed->>'gateway' = sqlc.arg(gateway)::text)::int AS recent_from_gateway;
+
+-- name: InsertGatewayDiscovery :one
+INSERT INTO pc.discoveries (org_id, id, agent_id, source, key_jkt, public_jwk, observed)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(agent_id), 'gateway', sqlc.arg(key_jkt), sqlc.arg(public_jwk),
+    sqlc.arg(observed))
+RETURNING *;
+
+-- name: InsertAgentAdmissionEntry :one
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ADMISSION', 'agent', sqlc.arg(agent_id), sqlc.arg(agent_id), sqlc.arg(evidence),
+    now() + interval '7 days')
+RETURNING *;
+
+-- Janitor: pending instances whose admission deadline passed.
+-- name: ExpirePendingInstances :many
+UPDATE pc.agent_instances SET state = 'EXPIRED', updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND state = 'PENDING_ADMISSION' AND expires_at <= now()
+RETURNING id, agent_id;

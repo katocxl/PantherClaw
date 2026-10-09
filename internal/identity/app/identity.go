@@ -61,6 +61,7 @@ type Service struct {
 	issuer string
 	clk    clock.Clock
 	att    Attestors
+	floods floods
 }
 
 // New returns the identity use cases. issuer is the server's public URL,

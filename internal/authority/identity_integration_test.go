@@ -303,3 +303,41 @@ func TestHR022_FirstUseBindingIsRaceSafe(t *testing.T) {
 		t.Fatalf("instances that may use the run: %v, want exactly one", won)
 	}
 }
+
+// TestHR148_ReportUnknownWorkloadVerifiesTheReport: the Authority records a
+// gateway's report only when its key-only proof verifies; the reported
+// request gains nothing.
+func TestHR148_ReportUnknownWorkloadVerifiesTheReport(t *testing.T) {
+	f := setupIdentity(t)
+	h := authority.NewHandler(f.svc)
+	ctx := authority.WithGateway(context.Background(), f.gw)
+	_, key, _ := ed25519.GenerateKey(nil)
+	stranger := workload{key: key}
+	report := func(c *authority.Credentials) (*pantherclawv1.ReportUnknownWorkloadResponse, error) {
+		return h.ReportUnknownWorkload(ctx, &pantherclawv1.ReportUnknownWorkloadRequest{
+			Workload: &pantherclawv1.WorkloadCredentials{
+				WorkloadToken: c.Token, Proof: c.Proof, BodySha256: c.BodySHA256[:], Htm: c.Method, Htu: c.URL,
+			},
+			Route: "payments-refund", UserAgent: "curl/8",
+		})
+	}
+	got, err := report(f.creds(t, stranger, ""))
+	if err != nil || got.GetDiscoveryId() == "" || got.GetNonce() == "" {
+		t.Fatalf("report: %v, %v", got, err)
+	}
+	replayed := f.creds(t, stranger, "")
+	if _, err := report(replayed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := report(replayed); err == nil {
+		t.Error("a replayed report was accepted")
+	}
+	agent := f.agent(t)
+	wl := f.admitted(t, agent)
+	if _, err := report(f.creds(t, wl, wl.token)); err == nil {
+		t.Error("a report with a workload token was accepted")
+	}
+	if n := f.count(t, "SELECT count(*) FROM pc.discoveries WHERE org_id = $1"); n != 1 {
+		t.Errorf("discoveries %d, want 1", n)
+	}
+}

@@ -284,10 +284,14 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
 			return err
 		}
+		if err := iapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
-			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
-			Logger:       log,
+			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
+				iapp.JanitorPeriodicJobs()),
+			Logger: log,
 		})
 		if err != nil {
 			return err
