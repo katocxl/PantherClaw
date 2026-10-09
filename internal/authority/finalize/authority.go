@@ -13,6 +13,7 @@ import (
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pdomain "github.com/katocxl/pantherclaw/internal/policy/domain"
 )
@@ -285,13 +286,20 @@ func (a *Authority) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UU
 	return a.Store.BeginDispatch(ctx, gw.Org, gw.ID, permit, epoch)
 }
 
-// RecordExecution settles a dispatched permit (step 10).
-func (a *Authority) RecordExecution(ctx context.Context, gw Gateway, permit ids.UUID, o Outcome) error {
-	if o != Accepted && o != Failed && o != Unknown {
-		return fmt.Errorf("finalize: unknown outcome %q", o)
+// RecordExecution settles a dispatched permit (step 10) and returns the
+// signed execution receipt.
+func (a *Authority) RecordExecution(ctx context.Context, gw Gateway, e Execution) (string, error) {
+	if e.Outcome != Accepted && e.Outcome != Failed && e.Outcome != Unknown {
+		return "", ErrOutcomeInvalid
 	}
-	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, permit, o)
+	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, e, func(txn ids.UUID, now time.Time) (Receipt, error) {
+		return a.executionReceipt(gw, e, txn, now)
+	})
 }
+
+// ErrOutcomeInvalid refuses an outcome other than accepted, failed or
+// unknown.
+var ErrOutcomeInvalid = pcerr.New(pcerr.InvalidArgument, "OUTCOME_INVALID", "unknown outcome")
 
 func (a *Authority) log(context.Context) *slog.Logger {
 	if a.Log == nil {

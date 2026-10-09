@@ -188,13 +188,21 @@ Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-know
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
   --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
-  --workload-out deploy/dev/secrets/workload.json   # also an admitted PAP/1 workload with a run
+  --workload-out deploy/dev/secrets/workload.json \
+  --facts-key-out deploy/dev/secrets/facts.key   # a workload with a grant and a run, and a fact provider's API key
 # copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
 # copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
 go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+# since M4 a refund needs a fresh payments.charge.refundable fact about its charge (at most 5 minutes old);
+# "value" is base64 of {"bool":true}
+curl -s -H "Authorization: Bearer $(cat deploy/dev/secrets/facts.key)" -H 'Content-Type: application/json' \
+  -d '{"observations":[{"name":"payments.charge.refundable","subjectType":"payments.charge","subjectId":"ch_load1","value":"eyJib29sIjp0cnVlfQ==","observeTime":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}]}' \
+  http://127.0.0.1:8080/pantherclaw.v1.FactService/PutFacts
 go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1 --duration 2s --warmup 0s
 ```
+
+Since M4 (slice 214) `dev seed` imports and activates the reference package (signed with a throwaway key that nothing keeps, decision 3), registers a development fact provider, issues the workload a grant (refunds up to `authority.grant_max_per_action` each, a task budget of `--budget-limit`, at most `--max-count` refunds) and binds its run to it. Identical irreversible refunds are parked for the repeat window (HR-007), so `sim load`, which repeats one refund of `ch_load1`, gets one acceptance and then `RECONCILIATION_REQUIRED` until it varies its charges (M4 exit, slice 216).
 
 The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 

@@ -267,7 +267,7 @@ func TestIntAuthorizeThroughPostgres(t *testing.T) {
 	if err := w.auth.BeginDispatch(ctx, w.gw, ok.PermitID, ok.Epoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.auth.RecordExecution(ctx, w.gw, ok.PermitID, finalize.Accepted); err != nil {
+	if _, err := w.auth.RecordExecution(ctx, w.gw, finalize.Execution{Permit: ok.PermitID, Outcome: finalize.Accepted, DispatchMS: -1}); err != nil {
 		t.Fatal(err)
 	}
 	if r := w.authorize(w.request(run, ids.NewV7(), "ch_1", "30.00")); decisive(r) != pipeline.ReasonReconciliation {
@@ -393,7 +393,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 		if err := w.auth.BeginDispatch(ctx, w.gw, r.PermitID, r.Epoch); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.auth.RecordExecution(ctx, w.gw, r.PermitID, o); err != nil {
+		if _, err := w.auth.RecordExecution(ctx, w.gw, finalize.Execution{Permit: r.PermitID, Outcome: o, DispatchMS: -1}); err != nil {
 			t.Fatal(err)
 		}
 	}

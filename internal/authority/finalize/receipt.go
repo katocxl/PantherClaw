@@ -9,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"strconv"
+	"time"
 
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
@@ -161,4 +162,51 @@ func (a *Authority) issuer() string {
 		return "pantherclaw"
 	}
 	return a.Issuer
+}
+
+// TypeExecutionReceipt is the JOSE type of an execution receipt (PAP-1
+// §7.4).
+const TypeExecutionReceipt = "pap-execution+jwt"
+
+// Execution is a gateway's report of one dispatch attempt.
+type Execution struct {
+	Permit  ids.UUID
+	Outcome Outcome
+	// TargetStatus is the target's HTTP status (0: none was received).
+	TargetStatus int32
+	// ResponseDigest is the SHA-256 of the target's response body (empty
+	// when there was none).
+	ResponseDigest []byte
+	// DispatchMS is how long the dispatch took (-1: unknown).
+	DispatchMS int32
+}
+
+// executionReceipt signs what the gateway reported about a dispatch. It
+// records the attempt, never a verified effect (invariant 11): effect
+// receipts come with reconciliation (M7).
+func (a *Authority) executionReceipt(gw Gateway, e Execution, txn ids.UUID, now time.Time) (Receipt, error) {
+	payload, err := json.Marshal(map[string]any{
+		"iss": a.issuer(), "jti": e.Permit.String(), "iat": now.Unix(),
+		"pap": map[string]any{
+			"v": 1, "kind": "execution", "org": gw.Org.String(), "txn": txn.String(), "permit": e.Permit.String(),
+			"outcome": string(e.Outcome), "target_status": e.TargetStatus, "response_digest": hex.EncodeToString(e.ResponseDigest),
+			"gateway": gw.ID, "access_mode": "pantherclaw-held", "simulated": false,
+		},
+	}, json.Deterministic(true))
+	if err != nil {
+		return Receipt{}, err
+	}
+	jws, err := a.Receipts.Sign(TypeExecutionReceipt, payload)
+	if err != nil {
+		return Receipt{}, err
+	}
+	digest := sha256.Sum256([]byte(jws))
+	body, err := evdomain.CanonicalBody(map[string]string{
+		"txn": txn.String(), "permit": e.Permit.String(), "outcome": string(e.Outcome),
+		"receipt_sha256": hex.EncodeToString(digest[:]),
+	})
+	if err != nil {
+		return Receipt{}, err
+	}
+	return Receipt{JWS: jws, Body: body}, nil
 }

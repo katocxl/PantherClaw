@@ -107,7 +107,7 @@ func TestINV07_DecisionIsNotExecutionIsNotEffect(t *testing.T) {
 	if res.Decision != adomain.Allow || s.W.PermitState(res.PermitID) != "ISSUED" {
 		t.Fatalf("decision %s permit %s", res.Decision, s.W.PermitState(res.PermitID))
 	}
-	if err := s.Authority.RecordExecution(ctx, s.Gateway, res.PermitID, finalize.Accepted); !errors.Is(err, finalize.ErrNotDispatching) {
+	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: res.PermitID, Outcome: finalize.Accepted}); !errors.Is(err, finalize.ErrNotDispatching) {
 		t.Fatalf("an outcome was recorded for a permit never dispatched: %v", err)
 	}
 	ev, err := s.Authority.Pipeline.Evaluate(ctx, s.Request(run, ids.NewV7(), "create_refund", pipelinetest.Refund("ch_2", "1.00")))
@@ -124,7 +124,7 @@ func TestINV07_DecisionIsNotExecutionIsNotEffect(t *testing.T) {
 	if s.W.PermitState(res.PermitID) != "DISPATCHING" {
 		t.Fatal("BeginDispatch is the commit point")
 	}
-	if err := s.Authority.RecordExecution(ctx, s.Gateway, res.PermitID, finalize.Accepted); err != nil {
+	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: res.PermitID, Outcome: finalize.Accepted}); err != nil {
 		t.Fatal(err)
 	}
 	if a := s.W.AccountState(ref); a.Spent.Cmp(money.MustParse("30")) != 0 || !a.Reserved.IsZero() {

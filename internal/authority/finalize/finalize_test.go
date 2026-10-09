@@ -206,7 +206,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 	if err := s.Authority.BeginDispatch(ctx, s.Gateway, first.PermitID, first.Epoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Authority.RecordExecution(ctx, s.Gateway, first.PermitID, finalize.Failed); err != nil {
+	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: first.PermitID, Outcome: finalize.Failed}); err != nil {
 		t.Fatal(err)
 	}
 	second := refund()
@@ -217,7 +217,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 	if err := s.Authority.BeginDispatch(ctx, s.Gateway, second.PermitID, second.Epoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Authority.RecordExecution(ctx, s.Gateway, second.PermitID, finalize.Accepted); err != nil {
+	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: second.PermitID, Outcome: finalize.Accepted}); err != nil {
 		t.Fatal(err)
 	}
 	if r := refund(); decisive(r) != pipeline.ReasonReconciliation {
@@ -233,7 +233,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 	if err := s.Authority.BeginDispatch(ctx, s.Gateway, third.PermitID, third.Epoch); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Authority.RecordExecution(ctx, s.Gateway, third.PermitID, finalize.Unknown); err != nil {
+	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: third.PermitID, Outcome: finalize.Unknown}); err != nil {
 		t.Fatal(err)
 	}
 	s.W.Advance(48 * time.Hour)

@@ -292,14 +292,20 @@ func (w *World) BeginDispatch(_ context.Context, _ ids.OrgID, gatewayID string, 
 }
 
 // RecordExecution implements finalize.Store.
-func (w *World) RecordExecution(_ context.Context, _ ids.OrgID, gatewayID string, permit ids.UUID, o finalize.Outcome) error {
+func (w *World) RecordExecution(_ context.Context, _ ids.OrgID, gatewayID string, e finalize.Execution,
+	sign func(txn ids.UUID, now time.Time) (finalize.Receipt, error),
+) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	p, ok := w.fin().permits[permit]
+	p, ok := w.fin().permits[e.Permit]
 	if !ok || p.gateway != gatewayID || p.state != "DISPATCHING" {
-		return finalize.ErrNotDispatching
+		return "", finalize.ErrNotDispatching
 	}
-	switch o {
+	r, err := sign(p.txn, w.Cont.Now)
+	if err != nil {
+		return "", err
+	}
+	switch e.Outcome {
 	case finalize.Accepted:
 		p.state = "DISPATCHED"
 		w.settle(p, bdomain.Commit, pipeline.ClaimSucceeded)
@@ -309,7 +315,7 @@ func (w *World) RecordExecution(_ context.Context, _ ids.OrgID, gatewayID string
 	case finalize.Unknown:
 		p.state = "UNKNOWN" // reservation and claim stay held (HR-003)
 	}
-	return nil
+	return r.JWS, nil
 }
 
 func (w *World) settle(p *permitRow, o bdomain.Outcome, claim pipeline.ClaimState) {

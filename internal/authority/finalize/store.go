@@ -163,8 +163,10 @@ type Store interface {
 	BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error
 	// RecordExecution settles every line of the permit's reservation and
 	// its claim: accepted commits (claim SUCCEEDED), failed releases (claim
-	// RELEASED), unknown keeps both held (HR-003, F115).
-	RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, o Outcome) error
+	// RELEASED), unknown keeps both held (HR-003, F115). It records the
+	// attempt and, in the same transaction, the execution receipt sign
+	// returns for the permit's transaction at the database time.
+	RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e Execution, sign func(txn ids.UUID, now time.Time) (Receipt, error)) (string, error)
 	// Sweep releases expired ISSUED permits (and their claims) and marks
 	// stale DISPATCHING ones UNKNOWN, never releasing them (HR-003).
 	Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Duration) (released, unknown int, err error)

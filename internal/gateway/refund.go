@@ -30,10 +30,12 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
-// mockPayments pins the reviewed meaning of the single route.
+// mockPayments pins the reviewed meaning of the single route: the refund
+// definition of the reference package (packages/mock-payments; a test keeps
+// the digest equal to the package's).
 var mockPayments = actionir.Definition{
 	Package: "pc.mock-payments", Version: "1.0.0",
-	Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+	Digest: "sha256:c6ebec993cc06768ff0f09d1fc6f9b9f0aaba195270c0e93239ca196d1624335",
 }
 
 var chargePattern = regexp.MustCompile(`^ch_[A-Za-z0-9]{1,64}$`)

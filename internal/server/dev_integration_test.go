@@ -11,7 +11,6 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"net"
@@ -19,21 +18,26 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/katocxl/pantherclaw/internal/actionir"
+	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
+	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
+	"github.com/katocxl/pantherclaw/internal/platform/celenv"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
 )
 
 // serve starts cmdServe with cfgPath and returns the API base URL.
@@ -67,16 +71,16 @@ func serve(t *testing.T, cfgPath string) string {
 
 var seededOrg = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
 
-// seed runs `dev seed` and returns the org, the gateway token file and the
-// workload key file.
-func seed(t *testing.T, cfgPath, limit string) (ids.OrgID, string, string) {
+// seed runs `dev seed` and returns the org, the gateway token file, the
+// workload key file and the fact provider's API key file.
+func seed(t *testing.T, cfgPath, limit string) (ids.OrgID, string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	tokenFile, keyFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json")
+	tokenFile, keyFile, factsFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	var out, errb bytes.Buffer
 	args := []string{
 		"dev", "seed", "--config", cfgPath, "--org-name", "acme", "--budget-limit", limit, "--token-out", tokenFile,
-		"--workload-out", keyFile,
+		"--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if code := Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("dev seed: %d %s", code, errb.String())
@@ -88,7 +92,7 @@ func seed(t *testing.T, cfgPath, limit string) (ids.OrgID, string, string) {
 	if code := Run(context.Background(), args, &out, &errb, noEnv); code == 0 {
 		t.Fatal("dev seed overwrote an existing token file")
 	}
-	return ids.MustParse[ids.Org](m[1]), tokenFile, keyFile
+	return ids.MustParse[ids.Org](m[1]), tokenFile, keyFile, factsFile
 }
 
 // workload is the seeded PAP/1 workload, acting through a gateway.
@@ -130,22 +134,53 @@ func seededWorkload(t *testing.T, base, keyFile string) workload {
 	return workload{kf: kf, key: key, inst: inst, env: claims.PAP.Env, token: res.GetWorkloadToken()}
 }
 
+// refund is a refund of ch_1 by the seeded workload, mapped by the
+// reference package.
 func refund(t *testing.T, org ids.OrgID, wl workload, amount string) []byte {
 	t.Helper()
-	p, err := actionir.Encode(actionir.ActionIR{
-		V: 1, Org: org.String(), Env: wl.env, RunID: wl.kf.RunID, ActionID: ids.NewV7().String(),
-		AgentInstance: wl.inst.Instance.String(), Operation: actionir.OpRefundCreate,
-		Definition: actionir.Definition{
-			Package: "pc.mock-payments", Version: "1.0.0",
-			Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
-		},
-		Channel: "http", Route: "payments-refund", Target: actionir.Target{Type: "payments.charge", ID: "ch_1", Account: "acct_1"},
-		Params: jsontext.Value(`{"amount":{"value":"` + amount + `","currency":"USD"},"reason":"duplicate"}`),
-	})
+	pkg, err := manifest.Decode(mockpayments.Package)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := mapping.New(pkg, celenv.DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := m.MCP(context.Background(), mapping.Context{
+		Org: org.String(), Env: wl.env, RunID: wl.kf.RunID, ActionID: ids.NewV7().String(), AgentInstance: wl.inst.Instance.String(),
+	}, "create_refund", []byte(`{"charge":"ch_1","amount":"`+amount+`","currency":"USD","reason":"duplicate"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return p.Canonical
+}
+
+// refundable reports ch_1 as refundable with the seeded fact provider's
+// API key.
+func refundable(t *testing.T, base, factsFile string) {
+	t.Helper()
+	key, err := os.ReadFile(factsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := pantherclawv1connect.NewFactServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{
+		Timeout: 10 * time.Second, Transport: bearer{strings.TrimSpace(string(key))},
+	}, base)))
+	res, err := facts.PutFacts(context.Background(), &pantherclawv1.PutFactsRequest{Observations: []*pantherclawv1.FactObservation{{
+		Name: "payments.charge.refundable", SubjectType: "payments.charge", SubjectId: "ch_1", Value: []byte(`{"bool": true}`),
+		ObserveTime: timestamppb.Now(),
+	}}})
+	if err != nil || !res.GetResults()[0].GetAccepted() {
+		t.Fatalf("PutFacts = %v, %v", res, err)
+	}
+}
+
+type bearer struct{ tok string }
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.tok)
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // creds are the PAP/1 credentials of one workload request, as a gateway
@@ -197,7 +232,7 @@ func freeAddr(t *testing.T) string {
 func TestIntDevGatewayAuthorizeAndSweep(t *testing.T) {
 	d := dbtest.New(t)
 	at := publicAt(freeAddr(t))
-	org, tokenFile, keyFile := seed(t, testConfig(t, d, RoleAll, at), "100.00")
+	org, tokenFile, keyFile, factsFile := seed(t, testConfig(t, d, RoleAll, at), "100.00")
 	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +244,7 @@ func TestIntDevGatewayAuthorizeAndSweep(t *testing.T) {
 	base := serve(t, cfgPath)
 	client := pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Timeout: 10 * time.Second}, base)))
 	wl := seededWorkload(t, base, keyFile)
+	refundable(t, base, factsFile)
 	tok := strings.TrimSpace(string(token))
 	nonce, err := client.GetNonce(gatewayCtx(tok), &pantherclawv1.GetNonceRequest{})
 	if err != nil {
@@ -246,7 +282,7 @@ func TestIntDevGatewayAuthorizeAndSweep(t *testing.T) {
 			if err := tx.QueryRow(ctx, "SELECT state FROM pc.permits WHERE transaction_id = $1", res.GetTransactionId()).Scan(&state); err != nil {
 				return err
 			}
-			return tx.QueryRow(ctx, "SELECT reserved = 0 AND reserved_count = 0 FROM pc.budgets").Scan(&free)
+			return tx.QueryRow(ctx, "SELECT reserved = 0 AND reserved_count = 0 FROM pc.budget_accounts").Scan(&free)
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -277,7 +313,7 @@ func TestIntAuthorityRefusedWithoutDevGateway(t *testing.T) {
 
 func TestIntDevSeedAudits(t *testing.T) {
 	d := dbtest.New(t)
-	org, _, _ := seed(t, testConfig(t, d, RoleAPI), "50.00")
+	org, _, _, _ := seed(t, testConfig(t, d, RoleAPI), "50.00")
 	var kinds []string
 	err := d.AppPool(t).InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
 		rows, err := tx.Query(ctx, "SELECT kind, body FROM pc.ledger_entries ORDER BY id")
@@ -299,7 +335,11 @@ func TestIntDevSeedAudits(t *testing.T) {
 		}
 		return rows.Err()
 	})
-	if err != nil || len(kinds) != 2 || kinds[0] != "audit.dev.org_seeded" || kinds[1] != "audit.dev.workload_seeded" {
-		t.Fatalf("org ledger = %v, %v", kinds, err)
+	want := []string{
+		"audit.dev.org_seeded", "audit.dev.workload_seeded", "audit.package.imported", "audit.package.transitioned",
+		"audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
+	}
+	if err != nil || !slices.Equal(kinds, want) {
+		t.Fatalf("org ledger = %v, %v; want %v", kinds, err, want)
 	}
 }

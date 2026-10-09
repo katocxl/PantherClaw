@@ -94,8 +94,10 @@ Usage:
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
-  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE] [--workload-out FILE]
-                                                     DEVELOPMENT ONLY: demo org, budget and gateway token
+  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
+                             [--workload-out FILE [--facts-key-out FILE]]
+                                                     DEVELOPMENT ONLY: demo org with the reference package; gateway
+                                                     token; a workload with a grant, a run and a fact provider
   pantherclaw-server version
 
 Configuration: JSON file plus PC_* environment variables; secrets only as file paths.

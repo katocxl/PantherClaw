@@ -12,13 +12,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
-	"strconv"
 
-	"github.com/katocxl/pantherclaw/internal/actionir"
+	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/authority"
-	"github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
@@ -26,30 +23,13 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
-	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
+	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
 )
 
 // devSeedActor records `dev seed` in the audit log.
 var devSeedActor = evdomain.Actor{Type: "operator", ID: "dev-seed"}
-
-// newAuthority builds the Transaction Authority with the configured
-// development grant (M1.5: one hard-coded grant, no policy engine yet).
-func newAuthority(cfg *Config, pool *db.Pool, reg *keys.Registry, log *slog.Logger) (*authority.Service, error) {
-	maxPer, err := money.ParseMoney(cfg.Authority.GrantMaxPerAction, cfg.Authority.GrantCurrency)
-	if err != nil {
-		return nil, fmt.Errorf("server: authority grant: %w", err)
-	}
-	return authority.New(pool, reg, authority.Config{
-		Grant: domain.DevGrant{
-			Name: "dev-" + cfg.Authority.BudgetName, Operation: actionir.OpRefundCreate,
-			MaxPerAction: maxPer, BudgetName: cfg.Authority.BudgetName,
-		},
-		PermitTTL: cfg.Authority.PermitTTL.D(),
-		Logger:    log,
-	}), nil
-}
 
 // devGatewayAuth returns the development gateway authenticator, or nil when
 // the dev gateway is disabled (every non-public procedure is then refused).
@@ -71,8 +51,11 @@ func devGatewayAuth(cfg *Config) (rpc.Authenticator, error) {
 	return authority.DevGatewayAuthenticator(sha256.Sum256(token.Reveal()), authority.Gateway{ID: cfg.DevGateway.ID, Org: org}), nil
 }
 
-// cmdDev implements `dev seed`: a demo org with its containment row and
-// budget, and optionally a new development gateway token. DEVELOPMENT ONLY.
+// cmdDev implements `dev seed`: a demo org with its containment row and the
+// reference payments package imported and active, and optionally a new
+// development gateway token and a ready-to-use workload: an admitted
+// instance, a fact provider for refundable charges, a grant and a run bound
+// to both. DEVELOPMENT ONLY.
 func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {
 	if len(args) == 0 || args[0] != "seed" {
 		_, _ = fmt.Fprint(stderr, usage)
@@ -82,14 +65,15 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "JSON configuration file")
 	name := fs.String("org-name", "dev-org", "name of the new org")
-	limit := fs.String("budget-limit", "1000.00", "budget limit in the grant currency")
-	maxCount := fs.Int("max-count", 0, "optional limit on the number of committed actions (0 = none)")
+	limit := fs.String("budget-limit", "1000.00", "the seeded grant's task budget, in the grant currency")
+	maxCount := fs.Int("max-count", 0, "optional limit on the number of refunds the seeded grant allows (0 = none)")
 	tokenOut := fs.String("token-out", "", "write a new dev gateway token here (0600, never overwritten)")
-	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a run; write its key file here (0600, never overwritten)")
+	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a grant and a run; write its key file here (0600, never overwritten)")
+	factsOut := fs.String("facts-key-out", "", "with --workload-out: write the API key of the development fact provider here (0600, never overwritten)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || *maxCount < 0 {
+	if fs.NArg() != 0 || *maxCount < 0 || (*factsOut != "" && *workloadOut == "") {
 		fs.Usage()
 		return errUsage
 	}
@@ -101,14 +85,16 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if err != nil || lim.Amount.Sign() <= 0 {
 		return fmt.Errorf("dev seed: --budget-limit must be a positive %s amount", cfg.Authority.GrantCurrency)
 	}
-	var count *int32
-	if *maxCount > 0 {
-		c := int32(min(*maxCount, 1<<30))
-		count = &c
+	maxPer, err := money.ParseMoney(cfg.Authority.GrantMaxPerAction, cfg.Authority.GrantCurrency)
+	if err != nil {
+		return fmt.Errorf("dev seed: authority.grant_max_per_action: %w", err)
 	}
-	if *workloadOut != "" {
-		if _, err := os.Stat(*workloadOut); err == nil {
-			return fmt.Errorf("dev seed: %s already exists", *workloadOut)
+	for _, out := range []string{*workloadOut, *factsOut} {
+		if out == "" {
+			continue
+		}
+		if _, err := os.Stat(out); err == nil {
+			return fmt.Errorf("dev seed: %s already exists", out)
 		}
 	}
 	if *tokenOut != "" {
@@ -127,49 +113,64 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	defer pool.Close()
 
 	org := ids.New[ids.Org]()
-	budget := ids.NewV7()
-	var workload workloadclient.KeyFile
+	var w devWorkload
+	var kf workloadclient.KeyFile
 	err = pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		if _, err := tx.Exec(ctx, "INSERT INTO pc.orgs (id, name) VALUES ($1, $2)", org, *name); err != nil {
 			return fmt.Errorf("dev seed: org: %w", err)
 		}
-		q := dbq.New(tx)
-		if err := q.InsertContainment(ctx, org); err != nil {
+		if err := dbq.New(tx).InsertContainment(ctx, org); err != nil {
 			return fmt.Errorf("dev seed: containment: %w", err)
-		}
-		if err := q.InsertBudget(ctx, dbq.InsertBudgetParams{
-			OrgID: org, ID: budget, Name: cfg.Authority.BudgetName, Currency: string(lim.Currency),
-			LimitAmount: lim.Amount, MaxCount: count,
-		}); err != nil {
-			return fmt.Errorf("dev seed: budget: %w", err)
-		}
-		details := map[string]string{"budget": cfg.Authority.BudgetName, "limit": lim.Amount.String(), "currency": string(lim.Currency)}
-		if count != nil {
-			details["max_count"] = strconv.Itoa(int(*count))
 		}
 		if _, err := audit.Record(ctx, tx, audit.Event{
 			Name: "dev.org_seeded", Actor: devSeedActor, Outcome: audit.Success,
-			Object: &audit.Object{Type: "org", ID: org.String()}, Details: details,
+			Object: &audit.Object{Type: "org", ID: org.String()},
 		}); err != nil {
 			return err
 		}
 		if *workloadOut != "" {
-			workload, err = seedWorkload(ctx, tx, org, cfg.Auth.PublicURL)
+			w, kf, err = seedWorkload(ctx, tx, org, cfg.Auth.PublicURL)
 		}
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "seeded org %s (%q) with budget %s = %s %s\n", org, *name, cfg.Authority.BudgetName, lim.Amount, lim.Currency)
+	if err := seedPackage(ctx, pool, org); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "seeded org %s (%q) with package %s@%s active\n", org, *name, mockpayments.Name, mockpayments.Version)
 	_, _ = fmt.Fprintf(stdout, "enable the development gateway in the server config:\n"+
 		"  \"dev_gateway\": {\"enabled\": true, \"org\": %q, \"gateway_id\": %q, \"token_file\": %q}\n",
 		org.String(), cfg.DevGateway.ID, *tokenOut)
-	if *workloadOut != "" {
-		if err := workloadclient.WriteKeyFile(*workloadOut, workload, false); err != nil {
-			return err
+	if *workloadOut == "" {
+		return nil
+	}
+	key, err := seedFacts(ctx, pool, org, credential.Env(cfg.Auth.APIKeyEnv))
+	if err != nil {
+		return err
+	}
+	g, err := seedGrant(ctx, pool, org, w, devGrantTerms{MaxPerAction: maxPer, Limit: lim, MaxCount: *maxCount})
+	if err != nil {
+		return err
+	}
+	run, err := seedRun(ctx, pool, org, w, g.ID.UUID(), g.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	kf.RunID = run.String()
+	if err := workloadclient.WriteKeyFile(*workloadOut, kf, false); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "seeded workload %s with grant %s (refunds up to %s, task budget %s) and run %s; key file %s\n",
+		kf.Identifier, g.ID, maxPer, lim, kf.RunID, *workloadOut)
+	if *factsOut != "" {
+		if err := writeSecretFile(*factsOut, key.Reveal()); err != nil {
+			return fmt.Errorf("dev seed: facts key file: %w", err)
 		}
-		_, _ = fmt.Fprintf(stdout, "seeded workload %s with run %s; key file %s\n", workload.Identifier, workload.RunID, *workloadOut)
+		_, _ = fmt.Fprintf(stdout, "refunds need a fresh %s fact about the charge: report it with the API key in %s\n", devFact, *factsOut)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "refunds need a fresh %s fact about the charge; seed again with --facts-key-out to report it\n", devFact)
 	}
 	return nil
 }
@@ -180,13 +181,8 @@ func writeDevToken(path string) error {
 	if _, err := rand.Read(b[:]); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: operator-chosen path
-	if err != nil {
+	if err := writeSecretFile(path, base64.RawURLEncoding.EncodeToString(b[:])); err != nil {
 		return fmt.Errorf("dev seed: token file: %w", err)
 	}
-	if _, err := io.WriteString(f, base64.RawURLEncoding.EncodeToString(b[:])+"\n"); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("dev seed: token file: %w", err)
-	}
-	return f.Close()
+	return nil
 }

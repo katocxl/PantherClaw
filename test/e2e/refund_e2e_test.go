@@ -122,10 +122,10 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
-	token, keyFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json")
+	token, keyFile, factsFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{
 		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token,
-		"--workload-out", keyFile,
+		"--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if o.maxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
@@ -161,6 +161,7 @@ func start(t *testing.T, o options) *stack {
 	})
 	waitReady(t, "http://"+apiAddr, &logs)
 	s.workload(t, keyFile)
+	refundable(t, "http://"+apiAddr, factsFile, "ch_1")
 
 	s.sim = payments.New(o.faults, pclog.Discard())
 	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,11 +271,12 @@ func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	return resp.StatusCode, r, nil
 }
 
-// budget returns reserved and spent amounts and the state of txn's permit.
+// budget returns the reserved and spent amounts of the seeded grant's task
+// budget and the state of txn's permit.
 func (s *stack) budget(t *testing.T, txn string) (reserved, spent, permit string) {
 	t.Helper()
 	err := s.db.AppPool(t).InTenantTx(context.Background(), s.org, func(ctx context.Context, tx db.TenantTx) error {
-		if err := tx.QueryRow(ctx, "SELECT reserved::float8::text, spent::float8::text FROM pc.budgets").Scan(&reserved, &spent); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT reserved::float8::text, spent::float8::text FROM pc.budget_accounts").Scan(&reserved, &spent); err != nil {
 			return err
 		}
 		if txn == "" {
@@ -309,7 +311,7 @@ func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
 	}
 
 	code, r = s.refund(t, ids.NewV7(), "125.00")
-	if code != http.StatusForbidden || r.Decision != "DENY" || len(r.Reasons) == 0 || r.Reasons[0] != "GRANT_AMOUNT_EXCEEDED" {
+	if code != http.StatusForbidden || r.Decision != "DENY" || len(r.Reasons) == 0 || r.Reasons[0] != "GRANT_LIMIT_EXCEEDED" {
 		t.Fatalf("S03: %d %+v", code, r)
 	}
 	if reserved, spent, _ := s.budget(t, ""); reserved != "0" || spent != "30" || s.simCalls.Load() != 1 {

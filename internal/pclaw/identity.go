@@ -135,13 +135,16 @@ func identityCommands() map[string]command {
 				return c.identity.GetIssuerEntry(ctx, &pantherclawv1.GetIssuerEntryRequest{EntryId: a[0]})
 			}
 		}),
-		"run start": rpc("run start AGENT [--instance ID] [--task REF] [--ttl MINUTES] [--subject-token-file FILE --subject-token-type id_token|access_token]", 1, func(fs *flag.FlagSet) call {
+		"run start": rpc("run start AGENT [--instance ID] [--grant ID] [--task REF] [--ttl MINUTES] [--subject-token-file FILE --subject-token-type id_token|access_token]", 1, func(fs *flag.FlagSet) call {
 			inst, task, ttl := fs.String("instance", "", "bind to this admitted instance"), fs.String("task", "", "untrusted task label"),
 				fs.Int("ttl", 0, "lifetime in minutes (default 480, at most 1440)")
+			grant := fs.String("grant", "", "the grant whose authority the run uses (without one its actions are denied)")
 			subjectFile, subjectType := fs.String("subject-token-file", "", "act for the user this provider token proves (needs run.represent)"),
 				fs.String("subject-token-type", "id_token", "id_token or access_token")
 			return func(ctx context.Context, c clients, a []string) (proto.Message, error) {
-				req := &pantherclawv1.StartRunRequest{AgentId: a[0], InstanceId: optStr(*inst), TaskRef: *task, TtlMinutes: int32(min(max(*ttl, 0), 1440))}
+				req := &pantherclawv1.StartRunRequest{
+					AgentId: a[0], InstanceId: optStr(*inst), GrantId: optStr(*grant), TaskRef: *task, TtlMinutes: int32(min(max(*ttl, 0), 1440)),
+				}
 				if *subjectFile != "" {
 					tok, err := readSecret(*subjectFile)
 					if err != nil {

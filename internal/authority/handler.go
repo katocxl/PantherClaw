@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/authority/domain"
+	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
@@ -72,6 +73,17 @@ func gateway(ctx context.Context) (Gateway, error) {
 	return gw, nil
 }
 
+var checklistStatus = map[pipeline.Status]pantherclawv1.ChecklistStatus{
+	pipeline.StatusPassed:        pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_PASSED,
+	pipeline.StatusFailed:        pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_FAILED,
+	pipeline.StatusMissing:       pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_MISSING,
+	pipeline.StatusRequired:      pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_REQUIRED,
+	pipeline.StatusConstrained:   pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_CONSTRAINED,
+	pipeline.StatusAnnotated:     pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_ANNOTATED,
+	pipeline.StatusNotEvaluated:  pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_EVALUATED,
+	pipeline.StatusNotApplicable: pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_APPLICABLE,
+}
+
 var decisionToProto = map[domain.Decision]pantherclawv1.Decision{
 	domain.Allow:                pantherclawv1.Decision_DECISION_ALLOW,
 	domain.AllowWithObligations: pantherclawv1.Decision_DECISION_ALLOW_WITH_OBLIGATIONS,
@@ -104,6 +116,21 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 	}
 	for _, r := range res.Reasons {
 		out.Reasons = append(out.Reasons, &pantherclawv1.Reason{Code: r.Code, Check: r.Check, Detail: r.Detail, Decisive: r.Decisive})
+	}
+	out.DecisionBasisDigest, out.Evaluation, out.Repeat = res.BasisDigest, int32(res.Evaluation), res.Repeat //nolint:gosec // at most 32
+	if res.EffectiveHash != "" && res.EffectiveHash != res.ActionHash {
+		out.EffectiveActionHash = res.EffectiveHash
+	}
+	for _, it := range res.Checklist {
+		out.Checklist = append(out.Checklist, &pantherclawv1.ChecklistItem{
+			Step: int32(it.Step), Check: it.Check, Status: checklistStatus[it.Status], Code: it.Code, Detail: it.Detail, //nolint:gosec // 1..10
+			Level: it.Level, Decisive: it.Decisive,
+		})
+	}
+	for _, o := range res.Obligations {
+		out.Obligations = append(out.Obligations, &pantherclawv1.Obligation{
+			Rule: o.Rule, Kind: string(o.Kind), Param: o.Param, Max: o.Max, Values: o.Values, Clamp: o.Clamp, Timing: o.Timing,
+		})
 	}
 	return out, nil
 }

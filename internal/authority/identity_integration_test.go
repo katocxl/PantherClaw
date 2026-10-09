@@ -21,6 +21,7 @@ import (
 	billing "github.com/katocxl/pantherclaw/internal/billing/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
+	grantspg "github.com/katocxl/pantherclaw/internal/grants/adapters/pgstore"
 	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
@@ -55,11 +56,11 @@ type workload struct {
 
 type idFixture = fixture
 
-func setupIdentity(t *testing.T) fixture { return setup(t, "1000.00", nil, time.Minute) }
+func setupIdentity(t *testing.T) fixture { return setup(t, "1000.00", 0, time.Minute) }
 
 // setup is setupBase with workload identity: a verified agent with an
-// admitted instance (wl) and a run bound to it.
-func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixture {
+// admitted instance (wl) and a run bound to it and to the agent's grant.
+func setup(t *testing.T, limit string, maxCount int, ttl time.Duration) fixture {
 	t.Helper()
 	f := setupBase(t, limit, maxCount, ttl)
 	f.team, f.env, f.owner = ids.NewV7(), ids.NewV7(), ids.NewV7()
@@ -68,7 +69,7 @@ func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixtu
 		t.Fatal(err)
 	}
 	f.ident = iapp.New(f.pool, f.reg, pcIssuer, clock.System{})
-	f.runs = runsapp.New(f.pool)
+	f.runs = runsapp.New(f.pool).WithGrants(&grantspg.Store{Pool: f.pool})
 	f.inv = aapp.NewInventory(f.pool, unlimited{})
 	f.svc.WithWorkloads(f.ident, f.runs)
 	f.exec(t, "INSERT INTO pc.teams (org_id, id, slug, name) VALUES ($1, $2, 'eng', 'Eng')", f.gw.Org, f.team)
@@ -77,6 +78,7 @@ func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixtu
 	agent := f.agent(t)
 	f.wl = f.admitted(t, agent)
 	f.run = f.startRun(t, agent, &f.wl.inst.Instance)
+	f.grant = f.grantFor(t, agent)
 	return f
 }
 
@@ -177,9 +179,11 @@ func (f idFixture) authorizeAs(t *testing.T, wl workload, run ids.UUID, c *autho
 	return res
 }
 
+// startRun starts a run of agent bound to the agent's grant.
 func (f idFixture) startRun(t *testing.T, agent ids.UUID, instance *ids.UUID) ids.UUID {
 	t.Helper()
-	r, err := f.runs.StartRun(f.ownerCtx(), runsapp.StartInput{AgentID: agent, InstanceID: instance})
+	g := f.grantFor(t, agent).UUID()
+	r, err := f.runs.StartRun(f.ownerCtx(), runsapp.StartInput{AgentID: agent, InstanceID: instance, GrantID: &g})
 	if err != nil {
 		t.Fatal(err)
 	}

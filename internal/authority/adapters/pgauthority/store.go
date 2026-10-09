@@ -9,6 +9,7 @@ package pgauthority
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -29,7 +30,10 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
-const receiptKindDecision = "receipt.decision"
+const (
+	receiptKindDecision  = "receipt.decision"
+	receiptKindExecution = "receipt.execution"
+)
 
 // Store implements finalize.Store.
 type Store struct {
@@ -364,10 +368,15 @@ func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID stri
 	})
 }
 
-// RecordExecution implements finalize.Store.
-func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, o finalize.Outcome) error {
-	return s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+// RecordExecution implements finalize.Store: the attempt, the execution
+// receipt and its ledger entry, then the settlement, in one transaction.
+func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e finalize.Execution,
+	sign func(txn ids.UUID, now time.Time) (finalize.Receipt, error),
+) (string, error) {
+	var receipt string
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
+		o, permit := e.Outcome, e.Permit
 		to := "DISPATCHED"
 		if o == finalize.Unknown {
 			to = "UNKNOWN"
@@ -379,11 +388,33 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		if err != nil {
 			return err
 		}
-		if err := q.InsertExecutionAttempt(ctx, dbq.InsertExecutionAttemptParams{
+		attempt := dbq.InsertExecutionAttemptParams{
 			OrgID: org, ID: ids.NewV7(), PermitID: permit, TransactionID: txn, Outcome: string(o),
-		}); err != nil {
+		}
+		if e.TargetStatus > 0 {
+			attempt.TargetStatus = &e.TargetStatus
+		}
+		if len(e.ResponseDigest) == sha256.Size {
+			attempt.ResponseDigest = e.ResponseDigest
+		}
+		if e.DispatchMS >= 0 {
+			attempt.DispatchMs = &e.DispatchMS
+		}
+		if err := q.InsertExecutionAttempt(ctx, attempt); err != nil {
 			return err
 		}
+		now, err := q.DBNow(ctx)
+		if err != nil {
+			return err
+		}
+		r, err := sign(txn, now)
+		if err != nil {
+			return err
+		}
+		if _, err := ledger.Append(ctx, tx, receiptKindExecution, evdomain.Actor{Type: "gateway", ID: gatewayID}, r.Body); err != nil {
+			return err
+		}
+		receipt = r.JWS
 		switch o {
 		case finalize.Accepted:
 			if err := pgbudgets.Settle(ctx, q, org, permit, bdomain.Commit); err != nil {
@@ -399,6 +430,7 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		}
 		return nil
 	})
+	return receipt, err
 }
 
 // Sweep implements finalize.Store (HR-003).

@@ -176,8 +176,11 @@ func (c *Config) dbConfig(user, passwordFile string, maxConns int) (db.Config, e
 // shutdownGrace bounds graceful shutdown.
 const shutdownGrace = 20 * time.Second
 
-// AuthorityConfig configures the walking-skeleton Transaction Authority:
-// the hard-coded development grant (M1.5) and permit timing.
+// AuthorityConfig configures permit timing, and the terms of the grant
+// `dev seed` issues to its workload: at most grant_max_per_action per refund,
+// in grant_currency. budget_name named the M1.5 development budget; since
+// M4 decisions use grants and it is ignored, but still accepted so existing
+// configurations load.
 type AuthorityConfig struct {
 	GrantMaxPerAction string          `json:"grant_max_per_action" env:"PC_AUTHORITY_GRANT_MAX"`
 	GrantCurrency     string          `json:"grant_currency" env:"PC_AUTHORITY_GRANT_CURRENCY"`

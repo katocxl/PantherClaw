@@ -22,15 +22,12 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/authn/oidctest"
 	"github.com/katocxl/pantherclaw/internal/gateway"
-	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/pclaw"
-	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
-	"github.com/katocxl/pantherclaw/internal/platform/money"
 	"github.com/katocxl/pantherclaw/internal/server"
 	"github.com/katocxl/pantherclaw/internal/sim/payments"
 )
@@ -42,6 +39,7 @@ const subjectAudience = "pantherclaw-e2e"
 // target, for one org created with the bootstrap token.
 type m3Stack struct {
 	*m2Stack
+	db        *dbtest.DB
 	idp       *oidctest.Provider
 	org       string
 	bootstrap string
@@ -89,15 +87,7 @@ func startM3(t *testing.T) *m3Stack {
 	if code := server.Run(context.Background(), []string{"org", "create", "--config", write("bootstrap.json"), "--name", "Acme"}, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("org create: %d %s", code, errb.String())
 	}
-	s := &m3Stack{idp: p, org: orgCreated.FindStringSubmatch(out.String())[1], bootstrap: pciToken.FindString(out.String())}
-	org := ids.MustParse[ids.Org](s.org)
-	if err := d.AppPool(t).InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
-		return dbq.New(tx).InsertBudget(ctx, dbq.InsertBudgetParams{
-			OrgID: org, ID: ids.NewV7(), Name: "dev-refunds", Currency: "USD", LimitAmount: money.MustParse("1000"),
-		})
-	}); err != nil {
-		t.Fatal(err)
-	}
+	s := &m3Stack{db: d, idp: p, org: orgCreated.FindStringSubmatch(out.String())[1], bootstrap: pciToken.FindString(out.String())}
 	gwToken := writeFile(t, dir, "gateway-token", []byte(strings.Repeat("g", 43)+"\n"))
 	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org, "gateway_id": "gw-dev-1", "token_file": gwToken}
 	serverCfg := write("server.json")
@@ -252,7 +242,13 @@ func TestE2E_M3_EnrollAdmitRunRefund(t *testing.T) {
 		t.Fatalf("wrong fingerprint: %d %s", code, e)
 	}
 	must("instance", "admit", inst[1], "--fingerprint", fp[1])
-	run := field(t, must("run", "start", agent, "--instance", inst[1], "--task", "refund ch_1"), "id")
+	// Since M4 a run uses only the grant it is bound to: the package, a
+	// refundable fact and a grant for alice are seeded, and the run names the
+	// grant.
+	agentID, _ := ids.ParseUUID(agent)
+	aliceUUID, _ := ids.ParseUUID(aliceID)
+	grant := seedAuthority(t, s.db.AppPool(t), ids.MustParse[ids.Org](s.org), agentID, aliceUUID, "ch_1")
+	run := field(t, must("run", "start", agent, "--instance", inst[1], "--grant", grant, "--task", "refund ch_1"), "id")
 	token := strings.TrimSpace(must("workload", "token", "--key-file", keyFile))
 	kf, err := workloadclient.ReadKeyFile(keyFile)
 	if err != nil {

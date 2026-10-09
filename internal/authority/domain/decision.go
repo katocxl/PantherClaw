@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-// Package domain holds the Transaction Authority's pure decision rules. In
-// the M1.5 walking skeleton the only authority is a hard-coded development
-// grant; the full ten-step pipeline arrives in M4 (ARCHITECTURE §6.1).
+// Package domain holds the Transaction Authority's decisions and reason
+// codes. Since M4 decisions come from the ten-step pipeline
+// (internal/authority/pipeline, ARCHITECTURE §6.1); the M1.5 development
+// grant is gone.
 package domain
-
-import (
-	"errors"
-
-	"github.com/katocxl/pantherclaw/internal/actionir"
-	"github.com/katocxl/pantherclaw/internal/platform/money"
-)
 
 // Decision is an authorization decision (PAP-1 §7.1).
 type Decision string
@@ -38,20 +32,16 @@ type Reason struct {
 	Decisive bool   `json:"decisive"`
 }
 
-// Stable reason codes used by the walking skeleton.
+// Stable reason codes of the service layer (identity, binding) shared with
+// the pipeline.
 const (
-	ReasonAllowedByGrant      = "ALLOWED_BY_GRANT"
-	ReasonAmbiguousInput      = "AMBIGUOUS_INPUT"
-	ReasonNoGrant             = "NO_GRANT"
-	ReasonGrantAmountExceeded = "GRANT_AMOUNT_EXCEEDED"
-	ReasonGrantCurrency       = "GRANT_CURRENCY_MISMATCH"
-	ReasonOrgMismatch         = "ORG_MISMATCH"
-	ReasonKillSwitch          = "KILL_SWITCH_ENGAGED"
-	ReasonContainmentUnknown  = "CONTAINMENT_UNKNOWN"
-	ReasonBudgetExhausted     = "BUDGET_EXHAUSTED"
-	ReasonBudgetUnavailable   = "BUDGET_UNAVAILABLE"
-	ReasonActionTampered      = "ACTION_TAMPERED"
-	ReasonDuplicateRequest    = "DUPLICATE_REQUEST"
+	ReasonAmbiguousInput   = "AMBIGUOUS_INPUT"
+	ReasonNoGrant          = "NO_GRANT"
+	ReasonOrgMismatch      = "ORG_MISMATCH"
+	ReasonKillSwitch       = "KILL_SWITCH_ENGAGED"
+	ReasonBudgetExhausted  = "BUDGET_EXHAUSTED"
+	ReasonActionTampered   = "ACTION_TAMPERED"
+	ReasonDuplicateRequest = "DUPLICATE_REQUEST"
 	// Workload identity and run binding (M3; HR-021, HR-022). The detail of an
 	// identity reason is the PAP-Error code (PAP-1 §12).
 	ReasonIdentityUnverified = "IDENTITY_UNVERIFIED"
@@ -64,7 +54,6 @@ const (
 type Outcome struct {
 	Decision Decision
 	Reasons  []Reason
-	Amount   money.Money
 }
 
 // Decisive returns the decisive reason code.
@@ -78,42 +67,4 @@ func (o Outcome) Decisive() string {
 		return o.Reasons[0].Code
 	}
 	return ""
-}
-
-func single(d Decision, code, check, detail string) Outcome {
-	return Outcome{Decision: d, Reasons: []Reason{{Code: code, Check: check, Detail: detail, Decisive: true}}}
-}
-
-// DevGrant is the M1.5 hard-coded grant: one operation, a per-action cap
-// and the budget that reservations draw from. Development only.
-type DevGrant struct {
-	Name         string
-	Operation    string
-	MaxPerAction money.Money
-	BudgetName   string
-}
-
-// Evaluate checks the action against the grant. Ambiguity is
-// CANNOT_AUTHORIZE, exceeding the grant is DENY (prohibitions win).
-func (g DevGrant) Evaluate(p actionir.Parsed) Outcome {
-	if p.Action.Operation != g.Operation {
-		return single(Deny, ReasonNoGrant, "authority", "no grant covers this operation")
-	}
-	_, amount, err := actionir.Refund(p.Action)
-	if err != nil {
-		if errors.Is(err, actionir.ErrAmbiguous) {
-			return single(CannotAuthorize, ReasonAmbiguousInput, "exact_meaning", "parameters are ambiguous or unsupported")
-		}
-		return single(CannotAuthorize, ReasonAmbiguousInput, "exact_meaning", "parameters could not be evaluated")
-	}
-	cmp, err := amount.Cmp(g.MaxPerAction)
-	if err != nil {
-		return single(Deny, ReasonGrantCurrency, "authority", "currency not covered by the grant")
-	}
-	if cmp > 0 {
-		return single(Deny, ReasonGrantAmountExceeded, "authority", "amount exceeds the grant's per-action maximum")
-	}
-	o := single(Allow, ReasonAllowedByGrant, "authority", "")
-	o.Amount = amount
-	return o
 }
