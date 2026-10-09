@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+#
+# Reviewed tool package for shell commands a cooperative coding agent asks
+# to run (G0 M6: the Claude Code hook, HR-186, HR-187). The gateway maps the
+# hook's call through it and asks the Authority; the developer's machine
+# runs an allowed command itself, so nothing is dispatched and receipts say
+# delegated. Policies see the command exactly as sent and the working
+# directory in its one normalized spelling (normpath). Any change here needs
+# the golden tests in internal/definitions to be updated deliberately.
+format: 1
+name: pc.shell
+version: 1.0.0
+publisher: pantherclaw
+summary: Shell commands a cooperative coding agent asks to run
+
+definitions:
+  - operation: shell.command.run
+    summary: Run one shell command on the developer's machine
+    access: write
+    target:
+      type: shell.workspace
+      id_pattern: '^local$'
+      account: none
+    params:
+      shell:
+        type: enum
+        material: true
+        required: true
+        values: [bash, powershell]
+      command:
+        type: command
+        material: true
+        required: true
+        max_length: 8192
+      cwd:
+        type: path
+        material: true
+        required: true
+      # The client's id of this tool call (Claude Code's tool_use_id). It is
+      # the dedupe key: the same call asked twice is one action (HR-007),
+      # while running the same command again is a new call.
+      call:
+        type: identifier
+        material: true
+        required: true
+        pattern: '^[A-Za-z0-9_-]{1,128}$'
+    effects:
+      - kind: code.execute
+        description: Runs a command with the developer's privileges
+    reversibility: irreversible
+    dedupe_key: [params.call]
+    retry:
+      safe: false
+      on_unknown: reconcile
+    approval:
+      title: Run a {params.shell} command in {params.cwd}
+      fields: [params.shell, params.command, params.cwd]
+    assurance:
+      basis: declared
+      reviewed_by: [pantherclaw-maintainers]
+      valid_until: 2027-10-08
+    mappings:
+      - channel: hook
+        tool: shell
+        route: shell-command
+        extract:
+          target_id: "'local'"
+          params:
+            shell: input.shell
+            command: input.command
+            cwd: normpath(input.cwd)
+            call: input.call

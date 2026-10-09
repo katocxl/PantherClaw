@@ -94,10 +94,12 @@ Usage:
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
-  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
+  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--gateway-out FILE]
                              [--workload-out FILE [--facts-key-out FILE]]
-                                                     DEVELOPMENT ONLY: demo org with the reference package; gateway
-                                                     token; a workload with a grant, a run and a fact provider
+                                                     DEVELOPMENT ONLY: demo org with the reference package; a gateway
+                                                     enrollment file; a workload with a grant, a run and a fact provider
+  pantherclaw-server dev gateway --org ID --out FILE [--config FILE] [--name NAME]
+                                                     DEVELOPMENT ONLY: a gateway enrollment file for an existing org
   pantherclaw-server version
 
 Configuration: JSON file plus PC_* environment variables; secrets only as file paths.
@@ -208,21 +210,13 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
-	m6, err := newM6(cfg, pool, reg)
+	m6, err := newM6(cfg, pool, reg, m5.notifications, log)
 	if err != nil {
 		return err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
-		gw, err := devGatewayAuth(cfg)
-		if err != nil {
-			return err
-		}
-		if gw != nil {
-			log.WarnContext(ctx, "server.dev_gateway_enabled", slog.String("gateway_id", cfg.DevGateway.ID),
-				slog.String("org", cfg.DevGateway.Org), slog.String("note", "development only; not for production"))
-		}
 		tokens, err := token.New(reg, cfg.Auth.PublicURL, token.Audience)
 		if err != nil {
 			return err
@@ -267,10 +261,11 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		m6.mountPages(web)
 		device.WithBrowserCallback(web.Callback)
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
-			auth:      rpcauth.New(authn, procedurePermissions, gw),
+			auth:      rpcauth.New(authn, procedurePermissions, nil),
 			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
 			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
 				cfg.Auth.PublicURL, limiter),
@@ -386,8 +381,8 @@ func publicProcedures() []string {
 }
 
 // apiDeps are the API role's dependencies. auth authenticates users,
-// service accounts and API keys, and delegates AuthorityService to the
-// development gateway (refused when it is off).
+// service accounts and API keys. Gateway procedures are refused here: gateways
+// call the Authority only on the mTLS gateway listener (HR-181).
 type apiDeps struct {
 	pool      *db.Pool
 	reg       *keys.Registry

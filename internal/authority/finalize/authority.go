@@ -13,6 +13,7 @@ import (
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
+	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pdomain "github.com/katocxl/pantherclaw/internal/policy/domain"
@@ -42,13 +43,16 @@ type Gateway struct {
 
 // Authority decides and binds actions.
 type Authority struct {
-	Pipeline  *pipeline.Pipeline
-	Store     Store
-	Receipts  Signer
-	Permits   Signer
-	Issuer    string
-	PermitTTL time.Duration
-	Log       *slog.Logger
+	Pipeline *pipeline.Pipeline
+	Store    Store
+	Receipts Signer
+	Permits  Signer
+	// ActionTokens signs the action tokens of target-enforced dispatches
+	// (HR-188); nil when none are configured.
+	ActionTokens Signer
+	Issuer       string
+	PermitTTL    time.Duration
+	Log          *slog.Logger
 }
 
 // Result is the answer to Authorize.
@@ -66,6 +70,12 @@ type Result struct {
 	PermitID      ids.UUID
 	Epoch         int64
 	Receipt       string
+	// Mode is the route's mode (pipeline.ModeEnforce or ModeMonitor); in
+	// monitor mode the decision is hypothetical and a permit, when present,
+	// is what tells the gateway to dispatch (HR-184). AccessMode is how the
+	// connection's credential reaches the target, when the action names one.
+	Mode       string
+	AccessMode string
 	// Repeat is set when the answer is a stored decision (HR-005).
 	Repeat bool
 }
@@ -107,6 +117,7 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 				return repeat(*prev, req.Action.HashHex()), nil
 			}
 		}
+		req.Gateway = gw.ID // the certificate's gateway, never the request's
 		ev, err := a.Pipeline.Evaluate(ctx, req)
 		if err != nil {
 			return Result{}, err
@@ -161,10 +172,26 @@ func undecided(items []pipeline.Item) []pipeline.Item {
 	return out
 }
 
-// bind writes one evaluation.
+// monitorView is what a monitor-mode evaluation binds (HR-184): the
+// hypothetical decision and its explanation, but no reservation, so
+// nothing is reserved, counted or claimed.
+func monitorView(ev *pipeline.Evaluation) *pipeline.Evaluation {
+	out := *ev
+	out.Plan = gdomain.Plan{}
+	return &out
+}
+
+// bind writes one evaluation. A monitor-mode evaluation whose identity and
+// containment passed gets a permit whatever its (hypothetical) decision,
+// with nothing reserved, and closes its transaction so no second permit
+// can follow (HR-184).
 func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluation, prev *Stored) (Result, error) {
+	monitor := ev.MonitorPermit()
+	if monitor {
+		ev = monitorView(ev)
+	}
 	w := Write{
-		Eval: ev, Prev: prev, Final: Final(ev.Decision), Reason: ev.Decisive().Code, GatewayID: gw.ID,
+		Eval: ev, Prev: prev, Final: Final(ev.Decision) || monitor, Reason: ev.Decisive().Code, GatewayID: gw.ID,
 		TransactionID: ids.NewV7(), Evaluation: 1,
 	}
 	if prev != nil {
@@ -173,9 +200,19 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 	res := Result{
 		Decision: ev.Decision, TransactionID: w.TransactionID, Evaluation: w.Evaluation, ActionHash: ev.ActionHash,
 		EffectiveHash: ev.EffectiveHash, BasisDigest: ev.Basis.Digest(), Checklist: ev.Checklist,
-		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist),
+		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode,
 	}
-	if ev.Permits() {
+	if ev.Connection != nil {
+		res.AccessMode = ev.Connection.AccessMode
+	}
+	if monitor {
+		p, err := a.permit(gw, ev, w.TransactionID)
+		if err != nil {
+			return Result{}, err
+		}
+		w.Permit = p
+		res.Permit, res.PermitID, res.Epoch = p.JWS, p.ID, p.Epoch
+	} else if ev.Permits() {
 		rows, err := a.Store.Prepare(ctx, gw.Org, ev.Plan)
 		if err != nil {
 			return Result{}, err
@@ -281,25 +318,46 @@ func (a *Authority) tampered(ctx context.Context, gw Gateway, req pipeline.Reque
 }
 
 // BeginDispatch is the commit point before the gateway sends anything
-// (HR-001). Any error means: do not dispatch.
-func (a *Authority) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64) error {
-	return a.Store.BeginDispatch(ctx, gw.Org, gw.ID, permit, epoch)
+// (HR-001, PAP-1 §7.3). Any error means: do not dispatch. It records the
+// outbound request the gateway built and, for a target-enforced
+// connection, returns the action token minted over its exact body
+// (HR-188); a token that cannot be minted leaves the permit unused.
+func (a *Authority) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64, out Outbound) (string, error) {
+	if err := out.check(); err != nil {
+		return "", err
+	}
+	var token string
+	err := a.Store.BeginDispatch(ctx, gw.Org, gw.ID, permit, epoch, out, func(d Dispatching) (*ids.UUID, error) {
+		tok, jti, err := a.actionToken(d, out)
+		token = tok
+		return jti, err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // RecordExecution settles a dispatched permit (step 10) and returns the
-// signed execution receipt.
+// signed execution receipt. Delegated is for cooperative channels only
+// (HR-186): the agent performs the allowed action itself.
 func (a *Authority) RecordExecution(ctx context.Context, gw Gateway, e Execution) (string, error) {
-	if e.Outcome != Accepted && e.Outcome != Failed && e.Outcome != Unknown {
+	if e.Outcome != Accepted && e.Outcome != Failed && e.Outcome != Unknown && e.Outcome != Delegated {
 		return "", ErrOutcomeInvalid
 	}
-	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, e, func(txn ids.UUID, now time.Time) (Receipt, error) {
-		return a.executionReceipt(gw, e, txn, now)
+	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, e, func(x Executed, now time.Time) (Receipt, error) {
+		return a.executionReceipt(gw, e, x, now)
 	})
 }
 
-// ErrOutcomeInvalid refuses an outcome other than accepted, failed or
-// unknown.
-var ErrOutcomeInvalid = pcerr.New(pcerr.InvalidArgument, "OUTCOME_INVALID", "unknown outcome")
+// Errors of RecordExecution.
+var (
+	ErrOutcomeInvalid = pcerr.New(pcerr.InvalidArgument, "OUTCOME_INVALID", "unknown outcome")
+	// ErrNotCooperative refuses delegated on a channel where the gateway
+	// dispatches (HR-186).
+	ErrNotCooperative = pcerr.New(pcerr.FailedPrecondition, "OUTCOME_NOT_DELEGABLE",
+		"only a cooperative channel (hook, sdk) reports delegated")
+)
 
 func (a *Authority) log(context.Context) *slog.Logger {
 	if a.Log == nil {
