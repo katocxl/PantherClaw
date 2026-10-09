@@ -9,6 +9,7 @@ require (
 	buf.build/go/protovalidate v1.4.0
 	cel.dev/cel-go v0.32.0
 	connectrpc.com/connect/v2 v2.0.0-rc.1
+	github.com/BurntSushi/toml v1.6.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-webauthn/webauthn v0.18.2

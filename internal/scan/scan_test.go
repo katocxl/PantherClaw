@@ -198,6 +198,151 @@ func TestHR056_EditorConfigCredentialsAreRedacted(t *testing.T) {
 	}
 }
 
+// cliFixture lays out the configurations of OpenAI Codex CLI (TOML) and
+// Google Gemini CLI, user, $CODEX_HOME or $GEMINI_CLI_HOME, and project
+// scope, with credentials in environment values, HTTP headers and OAuth
+// client secrets, fields that name an environment variable (one holding a
+// pasted credential instead), and Gemini's $VAR and %VAR% references.
+func cliFixture(t *testing.T) scan.Options {
+	t.Helper()
+	root := t.TempDir()
+	home, proj := filepath.Join(root, "home"), filepath.Join(root, "proj")
+	codexHome, geminiHome := filepath.Join(root, "codex-home"), filepath.Join(root, "gemini-home")
+	// Not credentials: built here so secret scanners skip them; the tests
+	// look for "SECRET" in the findings.
+	fake := func(tag string) string { return tag + "SECRET" + strings.Repeat("0", 8) }
+	write(t, filepath.Join(home, ".codex", "config.toml"), `# Codex configuration
+model = "gpt-5-codex"
+
+[mcp_servers.codex-docs]
+command = "/usr/local/bin/npx"
+args = ["-y", "server-github", "--token", "`+"ghp_"+fake("ARG")+`"]
+env = { GITHUB_TOKEN = "`+"ghp_"+fake("ENV")+`", LOG_LEVEL = "debug" }
+env_vars = ["PATH_EXTRA", { name = "OPENAI_API_KEY", source = "remote" }]
+
+[mcp_servers.codex-remote]
+url = "https://codex.example.com/mcp?token=QUERYSECRET"
+bearer_token_env_var = "CODEX_REMOTE_TOKEN"
+http_headers = { "X-Region" = "eu", "X-API-Key" = "`+fake("OPAQUE")+`" }
+env_http_headers = { "X-Tenant" = "CODEX_TENANT" }
+
+[mcp_servers.codex-remote.oauth]
+client_id = "pantherclaw-test"
+client_secret = '`+fake("OAUTH")+`'
+
+[mcp_servers."quoted name"]
+command = '/opt/mcp/server'
+
+[mcp_servers."quoted name".env]
+ANTHROPIC_API_KEY = "`+"sk-ant-"+fake("TABLE")+`"
+
+[mcp_servers.codex-pasted]
+url = "https://pasted.example.com/mcp"
+bearer_token_env_var = "`+"ghp_"+fake("PASTED")+`"
+env_http_headers = { "X-Key" = "`+fake("lower")+`" }
+`)
+	write(t, filepath.Join(codexHome, "config.toml"), "[mcp_servers.codex-home]\ncommand = \"uvx\"\nargs = [\"mcp-server-git\"]\n")
+	write(t, filepath.Join(proj, ".codex", "config.toml"), `[mcp_servers.codex-proj]
+url = "https://legacy.example.com/mcp"
+bearer_token = "`+"sk-proj-"+fake("LITERAL")+`"
+`)
+	write(t, filepath.Join(home, ".gemini", "settings.json"), `{
+  "theme": "Default",
+  "mcpServers": {
+    "gem-local": {"command": "node", "args": ["srv.js"], "cwd": "./srv", "trust": false, "timeout": 30000,
+      "env": {"GITHUB_TOKEN": "$GITHUB_TOKEN", "ANTHROPIC_API_KEY": "%ANTHROPIC_API_KEY%",
+        "PANTHERCLAW_API_KEY": "${PANTHERCLAW_API_KEY:-none}", "OPENAI_API_KEY": "`+"sk-proj-"+fake("GEMENV")+`"}},
+    "gem-sse": {"url": "https://sse.example.com/sse", "headers": {"Authorization": "Bearer $GEMINI_SSE_TOKEN"}},
+    "gem-http": {"httpUrl": "https://gem.example.com/mcp?key=QUERYSECRET", "headers": {"X-Trace": "on"},
+      "oauth": {"enabled": true, "clientId": "pantherclaw-test", "clientSecret": "`+fake("GEMOAUTH")+`", "scopes": ["read"]}}
+  },
+  "mcp": {"allowed": ["gem-local", "gem-sse", "gem-http"]}
+}`)
+	write(t, filepath.Join(geminiHome, ".gemini", "settings.json"), `{"mcpServers": {"gem-home": {"command": "docker"}}}`)
+	write(t, filepath.Join(proj, ".gemini", "settings.json"), `{"mcpServers": {"gem-proj": {"command": "python"}}}`)
+	return scan.Options{Host: "laptop-3", Home: home, CodexHome: codexHome, GeminiCLIHome: geminiHome, Paths: []string{proj}}
+}
+
+// TestF015_ScanReadsCodexAndGeminiCLI (PN-001.1): the scan finds the MCP
+// servers of Codex and Gemini CLI in every scope, lists the variables that
+// Codex fields name, and reports the credentials in environment values,
+// headers, bearer tokens and OAuth client secrets, but not references.
+func TestF015_ScanReadsCodexAndGeminiCLI(t *testing.T) {
+	servers := map[string]map[string]string{}
+	creds := map[string]map[string]string{}
+	for _, f := range scan.Run(cliFixture(t)) {
+		switch f.Kind {
+		case scan.KindMCPServer:
+			servers[f.Attributes["name"]] = f.Attributes
+		case scan.KindEnvSecret:
+			creds[f.Attributes["where"]+" "+f.Attributes["name"]] = f.Attributes
+		}
+	}
+	want := map[string]map[string]string{
+		"codex-docs": {
+			"client": "codex", "transport": "stdio", "command": "npx",
+			"env_names": "GITHUB_TOKEN,LOG_LEVEL,OPENAI_API_KEY,PATH_EXTRA",
+		},
+		"codex-remote": {
+			"client": "codex", "transport": "http", "url_host": "codex.example.com",
+			"env_names": "CODEX_REMOTE_TOKEN,CODEX_TENANT", "header_names": "Authorization,X-API-Key,X-Region,X-Tenant",
+		},
+		"quoted name":  {"client": "codex", "transport": "stdio", "command": "server", "env_names": "ANTHROPIC_API_KEY"},
+		"codex-pasted": {"client": "codex", "transport": "http", "url_host": "pasted.example.com", "env_names": "", "header_names": "Authorization,X-Key"},
+		"codex-home":   {"client": "codex", "transport": "stdio", "command": "uvx"},
+		"codex-proj":   {"client": "codex", "transport": "http", "url_host": "legacy.example.com"},
+		"gem-local": {
+			"client": "gemini_cli", "transport": "stdio", "command": "node",
+			"env_names": "ANTHROPIC_API_KEY,GITHUB_TOKEN,OPENAI_API_KEY,PANTHERCLAW_API_KEY",
+		},
+		"gem-sse":  {"client": "gemini_cli", "transport": "http", "url_host": "sse.example.com", "header_names": "Authorization"},
+		"gem-http": {"client": "gemini_cli", "transport": "http", "url_host": "gem.example.com", "header_names": "X-Trace"},
+		"gem-home": {"client": "gemini_cli", "transport": "stdio", "command": "docker"},
+		"gem-proj": {"client": "gemini_cli", "transport": "stdio", "command": "python"},
+	}
+	if len(servers) != len(want) {
+		t.Errorf("MCP servers %d, want %d: %v", len(servers), len(want), servers)
+	}
+	for name, attrs := range want {
+		for k, v := range attrs {
+			if servers[name][k] != v {
+				t.Errorf("server %q: %s = %q, want %q", name, k, servers[name][k], v)
+			}
+		}
+	}
+	wantCreds := map[string][2]string{ // where name → kind, redacted
+		"codex codex-docs GITHUB_TOKEN":           {"github_token", "ghp_…"},
+		"codex codex-remote headers X-API-Key":    {"http_credential", "…"},
+		"codex codex-remote oauth client_secret":  {"oauth_client_secret", "…"},
+		"codex quoted name ANTHROPIC_API_KEY":     {"anthropic_api_key", "sk-ant-…"},
+		"codex codex-pasted bearer_token_env_var": {"github_token", "ghp_…"},
+		"codex codex-proj bearer_token":           {"openai_api_key", "sk-proj-…"},
+		"gemini_cli gem-local OPENAI_API_KEY":     {"openai_api_key", "sk-proj-…"},
+		"gemini_cli gem-http oauth clientSecret":  {"oauth_client_secret", "…"},
+	}
+	if len(creds) != len(wantCreds) {
+		t.Errorf("credentials %v, want %d (references and variable names are not credentials)", creds, len(wantCreds))
+	}
+	for at, w := range wantCreds {
+		if c := creds[at]; c["secret_kind"] != w[0] || c["redacted"] != w[1] {
+			t.Errorf("credential %q: %v, want %v", at, c, w)
+		}
+	}
+}
+
+// TestHR056_CLIConfigCredentialsAreRedacted: environment and header values,
+// OAuth client secrets, arguments, URL queries and credentials pasted where
+// Codex expects a variable name never appear in a finding.
+func TestHR056_CLIConfigCredentialsAreRedacted(t *testing.T) {
+	b, err := json.Marshal(scan.Run(cliFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "SECRET") {
+		t.Fatalf("a secret leaked into the findings: %s", b)
+	}
+}
+
 // TestF015_AConfigNamedTwiceIsReadOnce: when two locations name one file,
 // as on a case-insensitive file system, its servers are reported once.
 func TestF015_AConfigNamedTwiceIsReadOnce(t *testing.T) {
