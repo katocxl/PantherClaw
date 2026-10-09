@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/identity.proto";
+import "pantherclaw/v1/runs.proto";
+
+// WorkloadService is called by agent workloads (PAP-1 §3–§5, G0 M3). It is
+// authenticated by PAP/1, never by user or service-account credentials:
+// every call carries a PAP-Proof header signed with the workload's key over
+// the method, URL, raw-body hash and a server nonce (PAP-Error use_nonce
+// returns one in PAP-Nonce). Enroll and IssueToken use key-only proofs;
+// StartChildRun also carries "Authorization: PAP <workload token>". A
+// key-only proof shows possession of a key, never an identity (PAP-1 §4).
+service WorkloadService {
+  // Enroll registers the workload's key as an instance of an agent, with an
+  // owner's enrollment token or an attestation token that matches an
+  // auto-admitting issuer entry (PAP-1 §3.2). The org comes from the
+  // enrollment token or the attestation audience.
+  // permission: workload.enroll
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  // IssueToken issues a workload token to an admitted instance whose key
+  // signed the proof; an attestation token renews L2 (HR-143).
+  // permission: workload.token
+  rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
+  // StartChildRun starts a child run of the caller's active run. The child
+  // inherits the represented principal and cannot outlive its parent.
+  // permission: workload.run
+  rpc StartChildRun(StartChildRunRequest) returns (StartChildRunResponse);
+}
+
+// AttestationKind names the preset an attestation token is for.
+enum AttestationKind {
+  ATTESTATION_KIND_UNSPECIFIED = 0;
+  // A GitHub Actions OIDC token.
+  ATTESTATION_KIND_GITHUB_ACTIONS = 1;
+  // A Kubernetes projected service-account token.
+  ATTESTATION_KIND_KUBERNETES = 2;
+}
+
+// Attestation is a platform token offered as L2 evidence. It is verified,
+// consumed (single use) and never stored or logged.
+message Attestation {
+  // Which preset verifies it.
+  AttestationKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // The token (JWS compact form).
+  string token = 2 [(buf.validate.field).string = {
+    min_len: 16
+    max_len: 16384
+  }];
+}
+
+// EnrollRequest enrolls the key that signed the request proof.
+message EnrollRequest {
+  // pce_ enrollment token from the agent's owner; empty when an attestation
+  // matches an auto-admitting issuer entry.
+  string enrollment_token = 1 [(buf.validate.field).string.max_len = 128];
+  // The workload's public JWK; must be the key in the proof header.
+  string public_jwk = 2 [(buf.validate.field).string = {
+    min_len: 2
+    max_len: 4096
+  }];
+  // Optional platform attestation.
+  Attestation attestation = 3;
+  // Release digest the workload reports about itself; always "declared".
+  string declared_release_digest = 4 [(buf.validate.field).string.pattern = "^(sha256:[0-9a-f]{64})?$"];
+
+  option (buf.validate.message).cel = {
+    id: "enroll_evidence"
+    message: "an enrollment token or an attestation is required"
+    expression: "this.enrollment_token != '' || has(this.attestation)"
+  };
+}
+
+// EnrollResponse describes the new instance.
+message EnrollResponse {
+  // Instance id.
+  string instance_id = 1;
+  // PAP/1 identifier: pc:org/<org>/agent/<agent>/inst/<instance>.
+  string identifier = 2;
+  // PENDING_ADMISSION (waiting for the owner) or ADMITTED (auto-admitted).
+  InstanceState state = 3;
+  // Fingerprint (RFC 7638 thumbprint) to show the owner.
+  string fingerprint = 4;
+  // Attestation level, once admitted.
+  int32 attestation_level = 5;
+}
+
+// IssueTokenRequest asks for a workload token.
+message IssueTokenRequest {
+  // The instance's PAP/1 identifier.
+  string identifier = 1 [(buf.validate.field).string = {
+    max_len: 200
+    pattern: "^pc:org/[0-9a-f-]{36}/agent/[0-9a-f-]{36}/inst/[0-9a-f-]{36}$"
+  }];
+  // Optional fresh attestation to keep or reach L2; it must match the
+  // binding the instance enrolled with (HR-147).
+  Attestation attestation = 2;
+  // Release digest the workload reports about itself; always "declared".
+  string declared_release_digest = 3 [(buf.validate.field).string.pattern = "^(sha256:[0-9a-f]{64})?$"];
+}
+
+// IssueTokenResponse returns a workload token.
+message IssueTokenResponse {
+  // Workload token (pap-wt+jwt), valid at most 10 minutes and never past the
+  // attestation behind its level.
+  string workload_token = 1;
+  // Expiry time.
+  google.protobuf.Timestamp expire_time = 2;
+  // Attestation level in the token.
+  int32 attestation_level = 3;
+}
+
+// StartChildRunRequest starts a child run.
+message StartChildRunRequest {
+  // The caller's active run; it must be bound to the caller's instance.
+  string parent_run_id = 1 [(buf.validate.field).string.uuid = true];
+  // Agent of the child run.
+  string agent_id = 2 [(buf.validate.field).string.uuid = true];
+  // Optional instance to bind.
+  optional string instance_id = 3 [(buf.validate.field).string.uuid = true];
+  // UNTRUSTED task label.
+  string task_ref = 4 [(buf.validate.field).string.max_len = 256];
+  // Lifetime in minutes (default and maximum: the parent's remaining time).
+  int32 ttl_minutes = 5 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1440
+  }];
+}
+
+// StartChildRunResponse returns the child run.
+message StartChildRunResponse {
+  // The run.
+  Run run = 1;
+}

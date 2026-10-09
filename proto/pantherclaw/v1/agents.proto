@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// AgentService keeps the agent inventory (Badge; F003, F016, F017, F020,
+// F022–F024, F035, F574, F624; G0 M3). An agent is an accountable record:
+// owner and backup owner, team, environment, purpose and execution context.
+// Agents are addressed by id; a name binds nothing (F034, HR-147). Creating,
+// claiming or owning an agent grants it no authority.
+service AgentService {
+  // CreateAgent creates a claimed agent, subject to the edition's agent
+  // limit.
+  // permission: agent.manage
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  // GetAgent returns an agent's summary (F017, F031, F624).
+  // permission: agent.read
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListAgents lists agents, discovered ones included.
+  // permission: agent.read
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // UpdateAgent changes an agent's name or purpose. The execution context
+  // never changes; a different context needs a new agent.
+  // permission: agent.manage
+  rpc UpdateAgent(UpdateAgentRequest) returns (UpdateAgentResponse);
+  // TransferOwnership changes the owner or backup owner. It is recorded and
+  // moves no runs, instances or grants (F574).
+  // permission: agent.manage
+  rpc TransferOwnership(TransferOwnershipRequest) returns (TransferOwnershipResponse);
+  // ClaimAgent turns a discovered agent into a claimed one, or merges its
+  // discovery into an existing agent (F035). Claiming grants nothing.
+  // permission: agent.manage
+  rpc ClaimAgent(ClaimAgentRequest) returns (ClaimAgentResponse);
+  // SuspendAgent suspends an agent: its instances get no workload tokens and
+  // its runs are denied. Outstanding permits fail BeginDispatch. Resuming
+  // needs a RESTORATION entry (M5).
+  // permission: agent.manage
+  rpc SuspendAgent(SuspendAgentRequest) returns (SuspendAgentResponse);
+  // RetireAgent retires an agent for good: it revokes its instances and
+  // enrollment tokens and ends its runs (F023). Retiring a discovered agent
+  // dismisses its discovery.
+  // permission: agent.manage
+  rpc RetireAgent(RetireAgentRequest) returns (RetireAgentResponse);
+  // ListAgentChanges returns an agent's append-only change history (F024).
+  // permission: agent.read
+  rpc ListAgentChanges(ListAgentChangesRequest) returns (ListAgentChangesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// AgentState is the lifecycle state (F020).
+enum AgentState {
+  AGENT_STATE_UNSPECIFIED = 0;
+  // Seen by a gateway or a scan; no owner yet.
+  AGENT_STATE_DISCOVERED = 1;
+  // Has an owner; no admitted instance yet.
+  AGENT_STATE_CLAIMED = 2;
+  // At least one instance has been admitted.
+  AGENT_STATE_VERIFIED = 3;
+  // A verified instance has made a request.
+  AGENT_STATE_OBSERVED = 4;
+  // Some named paths have current coverage evidence (M9).
+  AGENT_STATE_PARTIALLY_PROTECTED = 5;
+  // All named paths have current coverage evidence (M9).
+  AGENT_STATE_PROTECTED = 6;
+  // Suspended; resuming needs a RESTORATION entry (M5).
+  AGENT_STATE_SUSPENDED = 7;
+  // Retired for good.
+  AGENT_STATE_RETIRED = 8;
+}
+
+// ExecutionContext is where an agent's instances run. Desktop instances are
+// capped at L1 (HR-092).
+enum ExecutionContext {
+  EXECUTION_CONTEXT_UNSPECIFIED = 0;
+  // A developer machine.
+  EXECUTION_CONTEXT_DESKTOP = 1;
+  // A CI job.
+  EXECUTION_CONTEXT_CI = 2;
+  // A Kubernetes pod.
+  EXECUTION_CONTEXT_KUBERNETES = 3;
+  // A long-running service.
+  EXECUTION_CONTEXT_SERVICE = 4;
+}
+
+// ActivityStatus distinguishes empty states explicitly (F624).
+enum ActivityStatus {
+  ACTIVITY_STATUS_UNSPECIFIED = 0;
+  // No instance has been admitted.
+  ACTIVITY_STATUS_NO_INSTANCES = 1;
+  // Identity verified, no request observed yet.
+  ACTIVITY_STATUS_VERIFIED_NO_ACTIONS = 2;
+  // Requests have been observed.
+  ACTIVITY_STATUS_ACTIVE = 3;
+}
+
+// Agent is one accountable agent record.
+message Agent {
+  // Agent id.
+  string id = 1;
+  // Display name; not unique and never used to bind identity.
+  string name = 2;
+  // Permitted purpose, written by people.
+  string purpose = 3;
+  // Owning team; empty while discovered.
+  string team_id = 4;
+  // Environment; empty while discovered.
+  string environment_id = 5;
+  // Accountable owner (a user); empty while discovered.
+  string owner_user_id = 6;
+  // Backup owner (a user); optional.
+  string backup_owner_user_id = 7;
+  // Execution context; unspecified while discovered.
+  ExecutionContext execution_context = 8;
+  // Lifecycle state.
+  AgentState state = 9;
+  // For a suspended agent, the state it was suspended from.
+  AgentState suspended_from = 10;
+  // Who created the record.
+  string created_by = 11;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 12;
+  // Last change.
+  google.protobuf.Timestamp update_time = 13;
+  // Claim time.
+  google.protobuf.Timestamp claim_time = 14;
+  // Retirement time.
+  google.protobuf.Timestamp retire_time = 15;
+}
+
+// Discovery is what a gateway or scan observed about a discovered agent.
+message Discovery {
+  // Discovery id.
+  string id = 1;
+  // "gateway" or "scan".
+  string source = 2;
+  // RFC 7638 thumbprint of the observed key (gateway discoveries).
+  string key_thumbprint = 3;
+  // "OPEN", "CLAIMED" or "DISMISSED".
+  string state = 4;
+  // Times seen.
+  int64 seen_count = 5;
+  // First sighting.
+  google.protobuf.Timestamp first_seen_time = 6;
+  // Last sighting.
+  google.protobuf.Timestamp last_seen_time = 7;
+  // UNTRUSTED attributes as observed (gateway, route, client address, user
+  // agent). Never use them to identify the agent.
+  map<string, string> untrusted_observed = 8;
+}
+
+// AgentSummary answers who owns the agent, what it is for, where it runs and
+// how its identity is verified (F017, F031). Authority (M4) and protected
+// paths (M9) are added by later milestones.
+message AgentSummary {
+  // The agent.
+  Agent agent = 1;
+  // Activity status (F624).
+  ActivityStatus activity = 2;
+  // The next action this state requires (F020), for example "admit an
+  // instance".
+  string next_action = 3;
+  // Instances waiting for admission.
+  int32 pending_instances = 4;
+  // Admitted instances.
+  int32 admitted_instances = 5;
+  // Highest attestation level among admitted instances (0 when none).
+  int32 highest_attestation_level = 6;
+  // Last successful verification of any instance.
+  google.protobuf.Timestamp last_verify_time = 7;
+  // Active runs.
+  int32 active_runs = 8;
+  // Open waitlist entries.
+  int32 open_waitlist_entries = 9;
+  // Instances flagged for review after drift (F033).
+  int32 instances_needing_review = 10;
+  // The discovery, for discovered (or merged) agents.
+  Discovery discovery = 11;
+}
+
+// AgentChange is one entry of an agent's history (F024).
+message AgentChange {
+  // Change id.
+  string id = 1;
+  // Agent id.
+  string agent_id = 2;
+  // Kind, for example "agent.claimed" or "instance.admitted".
+  string kind = 3;
+  // Who made the change ("user:<id>", "sa:<id>", "instance:<id>" or "system").
+  string actor = 4;
+  // Reason given.
+  string reason = 5;
+  // Details of the change.
+  map<string, string> details = 6;
+  // Time of the change.
+  google.protobuf.Timestamp create_time = 7;
+}
+
+// CreateAgentRequest creates a claimed agent.
+message CreateAgentRequest {
+  // Display name.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200
+  }];
+  // Permitted purpose.
+  string purpose = 2 [(buf.validate.field).string.max_len = 2000];
+  // Owning team.
+  string team_id = 3 [(buf.validate.field).string.uuid = true];
+  // Environment.
+  string environment_id = 4 [(buf.validate.field).string.uuid = true];
+  // Accountable owner (a user).
+  string owner_user_id = 5 [(buf.validate.field).string.uuid = true];
+  // Optional backup owner (another user).
+  optional string backup_owner_user_id = 6 [(buf.validate.field).string.uuid = true];
+  // Execution context; fixed for the agent's life.
+  ExecutionContext execution_context = 7 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// CreateAgentResponse returns the agent.
+message CreateAgentResponse {
+  // The agent.
+  Agent agent = 1;
+}
+
+// GetAgentRequest names an agent.
+message GetAgentRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetAgentResponse returns its summary.
+message GetAgentResponse {
+  // The summary.
+  AgentSummary summary = 1;
+}
+
+// ListAgentsRequest pages through agents.
+message ListAgentsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only agents in these states (all when empty).
+  repeated AgentState states = 3 [(buf.validate.field).repeated = {
+    max_items: 8
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only agents of this team.
+  optional string team_id = 4 [(buf.validate.field).string.uuid = true];
+}
+
+// ListAgentsResponse is one page.
+message ListAgentsResponse {
+  // Agents, oldest first.
+  repeated Agent agents = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+  // True when the org has no agents at all, as opposed to none matching the
+  // filters (F624).
+  bool org_has_no_agents = 3;
+}
+
+// UpdateAgentRequest changes the fields that are set.
+message UpdateAgentRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // New display name.
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200
+  }];
+  // New purpose.
+  optional string purpose = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+// UpdateAgentResponse returns the agent.
+message UpdateAgentResponse {
+  // The agent.
+  Agent agent = 1;
+}
+
+// TransferOwnershipRequest sets the owner and backup owner.
+message TransferOwnershipRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // New owner (a user).
+  string owner_user_id = 2 [(buf.validate.field).string.uuid = true];
+  // New backup owner; empty to remove it.
+  string backup_owner_user_id = 3 [(buf.validate.field).string = {
+    max_len: 36
+    pattern: "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$"
+  }];
+  // Reason, recorded in the history.
+  string reason = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// TransferOwnershipResponse returns the agent.
+message TransferOwnershipResponse {
+  // The agent.
+  Agent agent = 1;
+}
+
+// ClaimAgentRequest claims a discovered agent.
+message ClaimAgentRequest {
+  // The discovered agent's id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // How to claim it.
+  oneof target {
+    option (buf.validate.oneof).required = true;
+    // Keep it as its own agent with these details.
+    ClaimDetails as_new_agent = 2;
+    // Merge its discovery into this existing agent (F035); the discovered
+    // record is retired.
+    string merge_into_agent_id = 3 [(buf.validate.field).string.uuid = true];
+  }
+  // Reason, recorded in the history.
+  string reason = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// ClaimDetails are the accountable details a claimed agent needs.
+message ClaimDetails {
+  // Display name.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200
+  }];
+  // Permitted purpose.
+  string purpose = 2 [(buf.validate.field).string.max_len = 2000];
+  // Owning team.
+  string team_id = 3 [(buf.validate.field).string.uuid = true];
+  // Environment.
+  string environment_id = 4 [(buf.validate.field).string.uuid = true];
+  // Accountable owner (a user).
+  string owner_user_id = 5 [(buf.validate.field).string.uuid = true];
+  // Optional backup owner.
+  optional string backup_owner_user_id = 6 [(buf.validate.field).string.uuid = true];
+  // Execution context; fixed for the agent's life.
+  ExecutionContext execution_context = 7 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// ClaimAgentResponse returns the claimed (or merged-into) agent.
+message ClaimAgentResponse {
+  // The agent that now owns the discovery.
+  Agent agent = 1;
+}
+
+// SuspendAgentRequest suspends an agent.
+message SuspendAgentRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason, recorded in the history.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// SuspendAgentResponse returns the agent.
+message SuspendAgentResponse {
+  // The agent.
+  Agent agent = 1;
+}
+
+// RetireAgentRequest retires an agent.
+message RetireAgentRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason, recorded in the history.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// RetireAgentResponse returns the agent.
+message RetireAgentResponse {
+  // The agent.
+  Agent agent = 1;
+}
+
+// ListAgentChangesRequest pages through an agent's history.
+message ListAgentChangesRequest {
+  // Agent id.
+  string agent_id = 1 [(buf.validate.field).string.uuid = true];
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 3 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+}
+
+// ListAgentChangesResponse is one page.
+message ListAgentChangesResponse {
+  // Changes, oldest first.
+  repeated AgentChange changes = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
