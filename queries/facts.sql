@@ -62,3 +62,28 @@ JOIN pc.fact_providers p ON p.org_id = f.org_id AND p.id = f.provider_id AND p.s
 JOIN pc.fact_declarations d ON d.org_id = f.org_id AND d.provider_id = f.provider_id AND d.name = f.name AND d.active
 WHERE f.org_id = sqlc.arg(org_id) AND f.subject_type = sqlc.arg(subject_type) AND f.subject_id = sqlc.arg(subject_id)
   AND f.name = ANY(sqlc.arg(names)::text[]);
+
+-- name: ListFactProviders :many
+SELECT id, name, service_account_id, state FROM pc.fact_providers
+WHERE org_id = sqlc.arg(org_id) AND (sqlc.arg(include_disabled)::boolean OR state = 'ACTIVE')
+ORDER BY name, id
+LIMIT 500;
+
+-- ListProviderDeclarations returns every declaration of the providers,
+-- active or not (a disabled provider's declarations are inactive).
+-- name: ListProviderDeclarations :many
+SELECT provider_id, name, value_type, subject_type, max_lag_s FROM pc.fact_declarations
+WHERE org_id = sqlc.arg(org_id) AND provider_id = ANY(sqlc.arg(provider_ids)::uuid[])
+ORDER BY name;
+
+-- ListFactsAbout returns the facts of active providers about one subject;
+-- every name when names is empty.
+-- name: ListFactsAbout :many
+SELECT f.name, f.value, f.observed_at, f.recorded_at, f.provider_id
+FROM pc.facts f
+JOIN pc.fact_providers p ON p.org_id = f.org_id AND p.id = f.provider_id AND p.state = 'ACTIVE'
+JOIN pc.fact_declarations d ON d.org_id = f.org_id AND d.provider_id = f.provider_id AND d.name = f.name AND d.active
+WHERE f.org_id = sqlc.arg(org_id) AND f.subject_type = sqlc.arg(subject_type) AND f.subject_id = sqlc.arg(subject_id)
+  AND (cardinality(sqlc.arg(names)::text[]) = 0 OR f.name = ANY(sqlc.arg(names)::text[]))
+ORDER BY f.name
+LIMIT 500;

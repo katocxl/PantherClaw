@@ -97,3 +97,32 @@ ORDER BY id;
 UPDATE pc.org_containment
 SET epoch = epoch + 1, updated_at = now()
 WHERE org_id = sqlc.arg(org_id);
+
+-- ListPackageVersions lists an org's imported package versions (all
+-- packages when name is empty), with whether each is the pinned one.
+-- name: ListPackageVersions :many
+SELECT v.id, t.name, v.version, v.state, v.file_digest, v.imported_at,
+       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned
+FROM pc.package_versions v
+JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
+LEFT JOIN pc.package_pins p ON p.org_id = t.org_id AND p.package_id = t.id
+WHERE v.org_id = sqlc.arg(org_id) AND (sqlc.arg(name)::text = '' OR t.name = sqlc.arg(name)::text)
+ORDER BY t.name, v.imported_at DESC
+LIMIT 500;
+
+-- name: ListVersionDefinitions :many
+SELECT version_id, operation, digest
+FROM pc.action_definitions
+WHERE org_id = sqlc.arg(org_id) AND version_id = ANY(sqlc.arg(version_ids)::uuid[])
+ORDER BY operation;
+
+-- GetDefinitionByDigest returns a definition and the newest imported
+-- version that holds it.
+-- name: GetDefinitionByDigest :one
+SELECT d.operation, d.digest, d.canonical, t.name, v.version, v.state
+FROM pc.action_definitions d
+JOIN pc.package_versions v ON v.org_id = d.org_id AND v.id = d.version_id
+JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
+WHERE d.org_id = sqlc.arg(org_id) AND d.digest = sqlc.arg(digest)
+ORDER BY v.imported_at DESC
+LIMIT 1;

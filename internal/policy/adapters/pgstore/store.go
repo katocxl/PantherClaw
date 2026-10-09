@@ -11,8 +11,10 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -25,7 +27,7 @@ var (
 	ErrNotFound = errors.New("policy: version not found")
 	// ErrNotDraft reports a publication of a version that is not a draft
 	// (a lost race or a repeat, HR-004).
-	ErrNotDraft = errors.New("policy: only a draft can be published")
+	ErrNotDraft = app.ErrNotDraft
 )
 
 // MaxBundleBytes is the largest stored bundle.
@@ -36,7 +38,10 @@ type Store struct {
 	Pool *db.Pool
 }
 
-var _ app.BundleStore = (*Store)(nil)
+var (
+	_ app.BundleStore  = (*Store)(nil)
+	_ app.VersionStore = (*Store)(nil)
+)
 
 // Version is one stored bundle version.
 type Version struct {
@@ -69,7 +74,7 @@ func (s *Store) Published(ctx context.Context, org ids.OrgID) (*domain.Bundle, e
 // CreateVersion stores a bundle as the next draft version of its policy
 // and returns the version id and number. The stored bundle carries that
 // number, whatever the caller set.
-func (s *Store) CreateVersion(ctx context.Context, org ids.OrgID, b *domain.Bundle, createdBy string) (ids.UUID, int, error) {
+func (s *Store) CreateVersion(ctx context.Context, org ids.OrgID, b *domain.Bundle, createdBy string, ev *audit.Event) (ids.UUID, int, error) {
 	id := ids.NewV7()
 	var version int
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
@@ -98,9 +103,12 @@ func (s *Store) CreateVersion(ctx context.Context, org ids.OrgID, b *domain.Bund
 		if len(raw) > MaxBundleBytes {
 			return fmt.Errorf("%w: the bundle is larger than %d bytes", domain.ErrInvalid, MaxBundleBytes)
 		}
-		return q.InsertPolicyVersion(ctx, dbq.InsertPolicyVersionParams{
+		if err := q.InsertPolicyVersion(ctx, dbq.InsertPolicyVersionParams{
 			OrgID: org, ID: id, PolicyID: policyID, Version: next, Bundle: raw, CreatedBy: createdBy,
-		})
+		}); err != nil {
+			return err
+		}
+		return record(ctx, tx, ev, map[string]string{"version_id": id.String(), "version": strconv.Itoa(version)})
 	})
 	return id, version, err
 }
@@ -126,13 +134,16 @@ func (s *Store) Get(ctx context.Context, org ids.OrgID, id ids.UUID) (*domain.Bu
 
 // Publish makes a draft the org's published version, superseding the
 // previous one in the same transaction.
-func (s *Store) Publish(ctx context.Context, org ids.OrgID, id ids.UUID, publishedBy string) error {
+func (s *Store) Publish(ctx context.Context, org ids.OrgID, id ids.UUID, publishedBy string, ev *audit.Event) error {
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		if _, err := q.SupersedePublishedPolicy(ctx, org, id); err != nil {
 			return err
 		}
-		return db.ExpectOneRow(q.PublishPolicyVersion(ctx, &publishedBy, org, id))
+		if err := db.ExpectOneRow(q.PublishPolicyVersion(ctx, &publishedBy, org, id)); err != nil {
+			return err
+		}
+		return record(ctx, tx, ev, map[string]string{"version_id": id.String()})
 	})
 	if errors.Is(err, db.ErrLostRace) {
 		return ErrNotDraft
@@ -168,4 +179,67 @@ func decode(raw []byte) (*domain.Bundle, error) {
 		return nil, fmt.Errorf("policy: stored bundle: %w", err)
 	}
 	return &b, nil
+}
+
+func record(ctx context.Context, tx db.TenantTx, ev *audit.Event, details map[string]string) error {
+	if ev == nil {
+		return nil
+	}
+	e := *ev
+	e.Details = details
+	_, err := audit.Record(ctx, tx, e)
+	return err
+}
+
+// Version returns one stored version with its bundle.
+func (s *Store) Version(ctx context.Context, org ids.OrgID, id ids.UUID) (app.VersionInfo, error) {
+	var out app.VersionInfo
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		r, err := dbq.New(tx).GetPolicyVersion(ctx, org, id)
+		if db.IsNoRows(err) {
+			return app.ErrVersionNotFound
+		}
+		if err != nil {
+			return err
+		}
+		out = app.VersionInfo{
+			ID: r.ID, BundleID: r.BundleID, Version: int(r.Version), State: r.State, Bundle: r.Bundle,
+			CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt, PublishedAt: r.PublishedAt,
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// PublishedVersion returns the org's published version, or nil.
+func (s *Store) PublishedVersion(ctx context.Context, org ids.OrgID) (*app.VersionInfo, error) {
+	var out *app.VersionInfo
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		r, err := dbq.New(tx).GetPublishedPolicy(ctx, org)
+		if db.IsNoRows(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		out = &app.VersionInfo{
+			ID: r.ID, BundleID: r.BundleID, Version: int(r.Version), State: "PUBLISHED", Bundle: r.Bundle,
+			CreatedBy: r.CreatedBy, CreatedAt: r.CreatedAt, PublishedAt: r.PublishedAt,
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// ListVersions returns the org's versions, newest first, without bundles.
+func (s *Store) ListVersions(ctx context.Context, org ids.OrgID, limit int) ([]app.VersionInfo, error) {
+	vs, err := s.List(ctx, org, limit)
+	out := make([]app.VersionInfo, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, app.VersionInfo{
+			ID: v.ID, BundleID: v.BundleID, Version: v.Version, State: v.State,
+			CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt, PublishedAt: v.PublishedAt,
+		})
+	}
+	return out, err
 }

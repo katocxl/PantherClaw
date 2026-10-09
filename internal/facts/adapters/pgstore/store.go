@@ -25,7 +25,10 @@ type Store struct {
 	Pool *db.Pool
 }
 
-var _ app.Store = (*Store)(nil)
+var (
+	_ app.Store = (*Store)(nil)
+	_ app.Reads = (*Store)(nil)
+)
 
 // Taken implements app.Store.
 func (s *Store) Taken(ctx context.Context, org ids.OrgID) (func(string) bool, error) {
@@ -42,7 +45,7 @@ func (s *Store) Taken(ctx context.Context, org ids.OrgID) (func(string) bool, er
 
 // CreateProvider implements app.Store.
 func (s *Store) CreateProvider(ctx context.Context, org ids.OrgID, p domain.Provider, createdBy string, ev audit.Event) error {
-	return s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		if err := q.InsertFactProvider(ctx, dbq.InsertFactProviderParams{OrgID: org, ID: p.ID, Name: p.Name, ServiceAccountID: p.ServiceAccountID, CreatedBy: createdBy}); err != nil {
 			return err
@@ -58,6 +61,13 @@ func (s *Store) CreateProvider(ctx context.Context, org ids.OrgID, p domain.Prov
 		_, err := audit.Record(ctx, tx, ev)
 		return err
 	})
+	switch {
+	case db.IsForeignKeyViolation(err):
+		return app.ErrServiceAccountUnknown
+	case db.IsUniqueViolation(err):
+		return app.ErrProviderExists
+	}
+	return err
 }
 
 // DisableProvider implements app.Store.
@@ -183,4 +193,60 @@ func (s *Store) Subject(ctx context.Context, q *dbq.Queries, org ids.OrgID, subj
 		}
 	}
 	return out, nil
+}
+
+// ListProviders implements app.Store: providers by name, with every
+// declaration (a disabled provider's are inactive).
+func (s *Store) ListProviders(ctx context.Context, org ids.OrgID, includeDisabled bool) ([]domain.Provider, error) {
+	var out []domain.Provider
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		rows, err := q.ListFactProviders(ctx, org, includeDisabled)
+		if err != nil || len(rows) == 0 {
+			return err
+		}
+		provIDs := make([]ids.UUID, 0, len(rows))
+		at := map[ids.UUID]int{}
+		for i, r := range rows {
+			provIDs = append(provIDs, r.ID)
+			at[r.ID] = i
+			out = append(out, domain.Provider{
+				ID: r.ID, Org: org, Name: r.Name, ServiceAccountID: r.ServiceAccountID, State: domain.ProviderState(r.State),
+			})
+		}
+		decls, err := q.ListProviderDeclarations(ctx, org, provIDs)
+		if err != nil {
+			return err
+		}
+		for _, d := range decls {
+			p := &out[at[d.ProviderID]]
+			p.Facts = append(p.Facts, domain.Declaration{
+				Name: d.Name, Type: domain.Type(d.ValueType), SubjectType: d.SubjectType, MaxLag: time.Duration(d.MaxLagS) * time.Second,
+			})
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// About implements app.Store: the recorded facts of active providers
+// about one subject, with their stored values.
+func (s *Store) About(ctx context.Context, org ids.OrgID, subjectType, subjectID string, names []string) ([]app.Recorded, error) {
+	if names == nil {
+		names = []string{}
+	}
+	var out []app.Recorded
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		rows, err := dbq.New(tx).ListFactsAbout(ctx, dbq.ListFactsAboutParams{
+			OrgID: org, SubjectType: subjectType, SubjectID: subjectID, Names: names,
+		})
+		for _, r := range rows {
+			out = append(out, app.Recorded{
+				Name: r.Name, SubjectType: subjectType, SubjectID: subjectID, Value: r.Value,
+				ObservedAt: r.ObservedAt, RecordedAt: r.RecordedAt, ProviderID: r.ProviderID,
+			})
+		}
+		return err
+	}, db.ReadOnly())
+	return out, err
 }

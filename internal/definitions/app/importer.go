@@ -10,14 +10,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
 	"github.com/katocxl/pantherclaw/internal/definitions/trust"
+	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
+
+// ErrMissing is the repository's "no such record" error.
+var ErrMissing = errors.New("definitions: not found")
 
 // ErrConflict reports that stored metadata, a pin or a lifecycle state
 // changed between read and write (a lost race on a conditional update,
@@ -42,6 +47,8 @@ type Record struct {
 	Pin         domain.Pin
 	// State is the lifecycle state the new version starts in for the org.
 	State domain.State
+	// Event, when set, is audited in the same transaction.
+	Event *audit.Event
 }
 
 // Repository persists trusted metadata, package versions, pins and
@@ -54,7 +61,9 @@ type Repository interface {
 	CurrentPin(ctx context.Context, org ids.OrgID, pkg string) (*domain.Pin, error)
 	Import(ctx context.Context, org ids.OrgID, rec Record) error
 	State(ctx context.Context, org ids.OrgID, pkg, version string) (domain.State, error)
-	Transition(ctx context.Context, org ids.OrgID, pkg, version string, from, to domain.State) error
+	// Transition moves a version from one state to another and, when ev is
+	// set, audits it in the same transaction.
+	Transition(ctx context.Context, org ids.OrgID, pkg, version string, from, to domain.State, ev *audit.Event) error
 }
 
 // Importer imports signed tool packages (HR-123).
@@ -77,7 +86,7 @@ type Result struct {
 // only signed bytes ever reach the YAML decoder. A new version starts
 // REVIEWED: the publisher's signature is the review, and activation for the
 // org is a separate, explicit step (F395).
-func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, targets string, raw []byte) (Result, error) {
+func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, targets string, raw []byte, ev *audit.Event) (Result, error) {
 	if org.IsZero() {
 		return Result{}, fmt.Errorf("%w: org is required", domain.ErrInvalid)
 	}
@@ -114,10 +123,14 @@ func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, ta
 	if cur != nil && *cur == pin {
 		return Result{Package: p, Pin: pin, Unchanged: true}, nil
 	}
+	if ev != nil {
+		ev.Details = map[string]string{"digest": digest, "definitions": strconv.Itoa(len(p.Definitions))}
+	}
 	err = im.Repo.Import(ctx, org, Record{
 		PreviousMetadata: last, Metadata: trust.State{Version: v.Version, PayloadDigest: v.PayloadDigest},
 		MetadataExpiry: v.Expiry, Package: p, Raw: raw, FileDigest: digest,
 		PreviousPin: cur, Pin: pin, State: domain.StateReviewed,
+		Event: ev,
 	})
 	if err != nil {
 		return Result{}, err
@@ -128,7 +141,7 @@ func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, ta
 // Transition moves an org's package version through the lifecycle (for
 // example REVIEWED → ACTIVE to activate it, ACTIVE → QUARANTINED on a
 // behavior mismatch). Illegal transitions are refused before any write.
-func (im *Importer) Transition(ctx context.Context, org ids.OrgID, pkg, version string, to domain.State) error {
+func (im *Importer) Transition(ctx context.Context, org ids.OrgID, pkg, version string, to domain.State, ev *audit.Event) error {
 	from, err := im.Repo.State(ctx, org, pkg, version)
 	if err != nil {
 		return err
@@ -136,5 +149,5 @@ func (im *Importer) Transition(ctx context.Context, org ids.OrgID, pkg, version 
 	if err := domain.Lifecycle.Check(from, to); err != nil {
 		return err
 	}
-	return im.Repo.Transition(ctx, org, pkg, version, from, to)
+	return im.Repo.Transition(ctx, org, pkg, version, from, to, ev)
 }

@@ -104,7 +104,7 @@ func TestIntImportStoresPackagesDefinitionsAndPins(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	org := newOrg(t, f.pool)
-	res, err := f.im.Import(ctx, org, "pc.mock-payments", "1.0.0", f.targets(1, "1.0.0"), f.files["1.0.0"])
+	res, err := f.im.Import(ctx, org, "pc.mock-payments", "1.0.0", f.targets(1, "1.0.0"), f.files["1.0.0"], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestIntImportStoresPackagesDefinitionsAndPins(t *testing.T) {
 	if a, err := f.store.Active(ctx, org, "payments.refund.create"); err != nil || a != nil {
 		t.Fatalf("a REVIEWED version is not active: %v %v", a, err)
 	}
-	if err := f.im.Transition(ctx, org, "pc.mock-payments", "1.0.0", domain.StateActive); err != nil {
+	if err := f.im.Transition(ctx, org, "pc.mock-payments", "1.0.0", domain.StateActive, nil); err != nil {
 		t.Fatal(err)
 	}
 	if a, err := f.store.Active(ctx, org, "payments.refund.create"); err != nil || a == nil || a.Digest != refund.Digest {
@@ -129,7 +129,7 @@ func TestIntImportStoresPackagesDefinitionsAndPins(t *testing.T) {
 
 	// A newer version moves the pin; the older one stays usable until it
 	// is retired, and retiring it raises the containment epoch.
-	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.1.0"]); err != nil {
+	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.1.0"], nil); err != nil {
 		t.Fatal(err)
 	}
 	if p, err := f.store.CurrentPin(ctx, org, "pc.mock-payments"); err != nil || p.Version != "1.1.0" {
@@ -139,7 +139,7 @@ func TestIntImportStoresPackagesDefinitionsAndPins(t *testing.T) {
 		t.Fatalf("the older version: %s %v", state, err)
 	}
 	before := f.epoch(org)
-	if err := f.im.Transition(ctx, org, "pc.mock-payments", "1.0.0", domain.StateQuarantined); err != nil {
+	if err := f.im.Transition(ctx, org, "pc.mock-payments", "1.0.0", domain.StateQuarantined, nil); err != nil {
 		t.Fatal(err)
 	}
 	if f.epoch(org) != before+1 {
@@ -157,13 +157,13 @@ func TestHR123_StoredPinsAndMetadataOnlyMoveForward(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	org := newOrg(t, f.pool)
-	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.1.0"]); err != nil {
+	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.1.0"], nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.0.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.0.0"]); err == nil {
+	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.0.0", f.targets(2, "1.0.0", "1.1.0"), f.files["1.0.0"], nil); err == nil {
 		t.Fatal("the pin moved backwards")
 	}
-	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(1, "1.1.0"), f.files["1.1.0"]); err == nil {
+	if _, err := f.im.Import(ctx, org, "pc.mock-payments", "1.1.0", f.targets(1, "1.1.0"), f.files["1.1.0"], nil); err == nil {
 		t.Fatal("older targets metadata was accepted")
 	}
 
@@ -174,7 +174,7 @@ func TestHR123_StoredPinsAndMetadataOnlyMoveForward(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make([]error, 2)
 	for i := range results {
-		wg.Go(func() { _, results[i] = f.im.Import(ctx, org, "pc.mock-payments", "1.2.0", doc, f.files["1.2.0"]) })
+		wg.Go(func() { _, results[i] = f.im.Import(ctx, org, "pc.mock-payments", "1.2.0", doc, f.files["1.2.0"], nil) })
 	}
 	wg.Wait()
 	ok := 0

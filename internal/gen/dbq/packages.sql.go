@@ -68,6 +68,41 @@ func (q *Queries) AdvancePackageTrust(ctx context.Context, arg AdvancePackageTru
 	)
 }
 
+const getDefinitionByDigest = `-- name: GetDefinitionByDigest :one
+SELECT d.operation, d.digest, d.canonical, t.name, v.version, v.state
+FROM pc.action_definitions d
+JOIN pc.package_versions v ON v.org_id = d.org_id AND v.id = d.version_id
+JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
+WHERE d.org_id = $1 AND d.digest = $2
+ORDER BY v.imported_at DESC
+LIMIT 1
+`
+
+type GetDefinitionByDigestRow struct {
+	Operation string
+	Digest    string
+	Canonical []byte
+	Name      string
+	Version   string
+	State     string
+}
+
+// GetDefinitionByDigest returns a definition and the newest imported
+// version that holds it.
+func (q *Queries) GetDefinitionByDigest(ctx context.Context, orgID ids.OrgID, digest string) (GetDefinitionByDigestRow, error) {
+	row := q.db.QueryRow(ctx, getDefinitionByDigest, orgID, digest)
+	var i GetDefinitionByDigestRow
+	err := row.Scan(
+		&i.Operation,
+		&i.Digest,
+		&i.Canonical,
+		&i.Name,
+		&i.Version,
+		&i.State,
+	)
+	return i, err
+}
+
 const getDefinitionVersion = `-- name: GetDefinitionVersion :one
 SELECT v.id, v.state
 FROM pc.action_definitions d
@@ -373,6 +408,90 @@ func (q *Queries) ListActiveVersionsWith(ctx context.Context, orgID ids.OrgID, o
 	for rows.Next() {
 		var i ListActiveVersionsWithRow
 		if err := rows.Scan(&i.ID, &i.Version); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPackageVersions = `-- name: ListPackageVersions :many
+SELECT v.id, t.name, v.version, v.state, v.file_digest, v.imported_at,
+       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned
+FROM pc.package_versions v
+JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
+LEFT JOIN pc.package_pins p ON p.org_id = t.org_id AND p.package_id = t.id
+WHERE v.org_id = $1 AND ($2::text = '' OR t.name = $2::text)
+ORDER BY t.name, v.imported_at DESC
+LIMIT 500
+`
+
+type ListPackageVersionsRow struct {
+	ID         ids.UUID
+	Name       string
+	Version    string
+	State      string
+	FileDigest string
+	ImportedAt time.Time
+	Pinned     bool
+}
+
+// ListPackageVersions lists an org's imported package versions (all
+// packages when name is empty), with whether each is the pinned one.
+func (q *Queries) ListPackageVersions(ctx context.Context, orgID ids.OrgID, name string) ([]ListPackageVersionsRow, error) {
+	rows, err := q.db.Query(ctx, listPackageVersions, orgID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPackageVersionsRow{}
+	for rows.Next() {
+		var i ListPackageVersionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Version,
+			&i.State,
+			&i.FileDigest,
+			&i.ImportedAt,
+			&i.Pinned,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVersionDefinitions = `-- name: ListVersionDefinitions :many
+SELECT version_id, operation, digest
+FROM pc.action_definitions
+WHERE org_id = $1 AND version_id = ANY($2::uuid[])
+ORDER BY operation
+`
+
+type ListVersionDefinitionsRow struct {
+	VersionID ids.UUID
+	Operation string
+	Digest    string
+}
+
+func (q *Queries) ListVersionDefinitions(ctx context.Context, orgID ids.OrgID, versionIds []ids.UUID) ([]ListVersionDefinitionsRow, error) {
+	rows, err := q.db.Query(ctx, listVersionDefinitions, orgID, versionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListVersionDefinitionsRow{}
+	for rows.Next() {
+		var i ListVersionDefinitionsRow
+		if err := rows.Scan(&i.VersionID, &i.Operation, &i.Digest); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

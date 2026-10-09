@@ -21,13 +21,13 @@ INSERT INTO pc.policy_versions (org_id, id, policy_id, version, bundle, created_
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(policy_id), sqlc.arg(version), sqlc.arg(bundle), sqlc.arg(created_by));
 
 -- name: GetPolicyVersion :one
-SELECT v.id, v.version, v.bundle, v.state, p.bundle_id
+SELECT v.id, v.version, v.bundle, v.state, p.bundle_id, v.created_by, v.created_at, v.published_at
 FROM pc.policy_versions v
 JOIN pc.policies p ON p.org_id = v.org_id AND p.id = v.policy_id
 WHERE v.org_id = sqlc.arg(org_id) AND v.id = sqlc.arg(id);
 
 -- name: GetPublishedPolicy :one
-SELECT v.id, v.version, v.bundle, p.bundle_id
+SELECT v.id, v.version, v.bundle, p.bundle_id, v.created_by, v.created_at, v.published_at
 FROM pc.policy_versions v
 JOIN pc.policies p ON p.org_id = v.org_id AND p.id = v.policy_id
 WHERE v.org_id = sqlc.arg(org_id) AND v.state = 'PUBLISHED';

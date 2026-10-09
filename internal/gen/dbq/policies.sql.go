@@ -35,18 +35,21 @@ func (q *Queries) GetPolicyID(ctx context.Context, orgID ids.OrgID, bundleID str
 }
 
 const getPolicyVersion = `-- name: GetPolicyVersion :one
-SELECT v.id, v.version, v.bundle, v.state, p.bundle_id
+SELECT v.id, v.version, v.bundle, v.state, p.bundle_id, v.created_by, v.created_at, v.published_at
 FROM pc.policy_versions v
 JOIN pc.policies p ON p.org_id = v.org_id AND p.id = v.policy_id
 WHERE v.org_id = $1 AND v.id = $2
 `
 
 type GetPolicyVersionRow struct {
-	ID       ids.UUID
-	Version  int32
-	Bundle   []byte
-	State    string
-	BundleID string
+	ID          ids.UUID
+	Version     int32
+	Bundle      []byte
+	State       string
+	BundleID    string
+	CreatedBy   string
+	CreatedAt   time.Time
+	PublishedAt *time.Time
 }
 
 func (q *Queries) GetPolicyVersion(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (GetPolicyVersionRow, error) {
@@ -58,22 +61,28 @@ func (q *Queries) GetPolicyVersion(ctx context.Context, orgID ids.OrgID, iD ids.
 		&i.Bundle,
 		&i.State,
 		&i.BundleID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
 	)
 	return i, err
 }
 
 const getPublishedPolicy = `-- name: GetPublishedPolicy :one
-SELECT v.id, v.version, v.bundle, p.bundle_id
+SELECT v.id, v.version, v.bundle, p.bundle_id, v.created_by, v.created_at, v.published_at
 FROM pc.policy_versions v
 JOIN pc.policies p ON p.org_id = v.org_id AND p.id = v.policy_id
 WHERE v.org_id = $1 AND v.state = 'PUBLISHED'
 `
 
 type GetPublishedPolicyRow struct {
-	ID       ids.UUID
-	Version  int32
-	Bundle   []byte
-	BundleID string
+	ID          ids.UUID
+	Version     int32
+	Bundle      []byte
+	BundleID    string
+	CreatedBy   string
+	CreatedAt   time.Time
+	PublishedAt *time.Time
 }
 
 func (q *Queries) GetPublishedPolicy(ctx context.Context, orgID ids.OrgID) (GetPublishedPolicyRow, error) {
@@ -84,6 +93,9 @@ func (q *Queries) GetPublishedPolicy(ctx context.Context, orgID ids.OrgID) (GetP
 		&i.Version,
 		&i.Bundle,
 		&i.BundleID,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.PublishedAt,
 	)
 	return i, err
 }

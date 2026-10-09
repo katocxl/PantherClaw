@@ -120,10 +120,10 @@ func newWorld(t *testing.T) *world {
 	}
 	defs := &defpg.Store{Pool: p}
 	im := &defapp.Importer{Roots: trust.Roots{kid: signer.Public()}, Repo: defs, Clock: clock.NewFake(time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC))}
-	if _, err := im.Import(ctx, w.org, "pc.mock-payments", "1.0.0", doc, raw); err != nil {
+	if _, err := im.Import(ctx, w.org, "pc.mock-payments", "1.0.0", doc, raw, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := im.Transition(ctx, w.org, "pc.mock-payments", "1.0.0", defdomain.StateActive); err != nil {
+	if err := im.Transition(ctx, w.org, "pc.mock-payments", "1.0.0", defdomain.StateActive, nil); err != nil {
 		t.Fatal(err)
 	}
 	pkg, err := manifest.Decode(raw)

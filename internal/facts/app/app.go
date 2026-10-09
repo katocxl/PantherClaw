@@ -34,9 +34,11 @@ const MaxObservations = 100
 
 // Errors.
 var (
-	ErrNotFound    = errors.New("facts: not found")
-	ErrHumanOnly   = pcerr.New(pcerr.PermissionDenied, "HUMAN_ONLY", "only a person can do this")
-	ErrNotProvider = pcerr.New(pcerr.PermissionDenied, "NOT_A_FACT_PROVIDER", "the caller is not the service account of an active fact provider")
+	ErrNotFound              = errors.New("facts: not found")
+	ErrHumanOnly             = pcerr.New(pcerr.PermissionDenied, "HUMAN_ONLY", "only a person can do this")
+	ErrNotProvider           = pcerr.New(pcerr.PermissionDenied, "NOT_A_FACT_PROVIDER", "the caller is not the service account of an active fact provider")
+	ErrServiceAccountUnknown = pcerr.New(pcerr.FailedPrecondition, "SERVICE_ACCOUNT_UNKNOWN", "the service account does not exist in the org")
+	ErrProviderExists        = pcerr.New(pcerr.AlreadyExists, "FACT_PROVIDER_EXISTS", "a fact provider with that name, or one already providing these facts, exists")
 )
 
 // Store persists providers and facts.
@@ -66,6 +68,8 @@ type Authorizer interface {
 type Service struct {
 	Store Store
 	Authz Authorizer
+	// Reads serves the API's listings (optional elsewhere).
+	Reads Reads
 }
 
 // RegisterProvider registers a provider bound to a service account. Only a

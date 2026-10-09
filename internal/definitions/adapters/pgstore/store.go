@@ -21,6 +21,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
 	"github.com/katocxl/pantherclaw/internal/definitions/trust"
+	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -28,7 +29,7 @@ import (
 
 // ErrNotFound reports a package, version or definition the org does not
 // have.
-var ErrNotFound = errors.New("definitions: not found")
+var ErrNotFound = app.ErrMissing
 
 // maxCached bounds the decoded package cache.
 const maxCached = 256
@@ -122,7 +123,10 @@ func (s *Store) Import(ctx context.Context, org ids.OrgID, rec app.Record) error
 				return err
 			}
 		}
-		return advancePin(ctx, q, org, pkgID, versionID, rec)
+		if err := advancePin(ctx, q, org, pkgID, versionID, rec); err != nil {
+			return err
+		}
+		return record(ctx, tx, rec.Event)
 	})
 	if db.IsUniqueViolation(err) || errors.Is(err, db.ErrLostRace) {
 		return app.ErrConflict
@@ -181,7 +185,7 @@ func (s *Store) State(ctx context.Context, org ids.OrgID, pkg, version string) (
 // removes authority, so the same transaction first increments the org's
 // containment epoch: permits already issued for it fail BeginDispatch
 // (HR-002; G0 M4 part 2, design decision 8).
-func (s *Store) Transition(ctx context.Context, org ids.OrgID, pkg, version string, from, to domain.State) error {
+func (s *Store) Transition(ctx context.Context, org ids.OrgID, pkg, version string, from, to domain.State, ev *audit.Event) error {
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		if to == domain.StateQuarantined || to == domain.StateRetired {
@@ -196,9 +200,12 @@ func (s *Store) Transition(ctx context.Context, org ids.OrgID, pkg, version stri
 		if err != nil {
 			return err
 		}
-		return db.ExpectOneRow(q.TransitionPackageVersion(ctx, dbq.TransitionPackageVersionParams{
+		if err := db.ExpectOneRow(q.TransitionPackageVersion(ctx, dbq.TransitionPackageVersionParams{
 			ToState: string(to), OrgID: org, ID: row.ID, FromState: string(from),
-		}))
+		})); err != nil {
+			return err
+		}
+		return record(ctx, tx, ev)
 	})
 	if errors.Is(err, db.ErrLostRace) {
 		return app.ErrConflict
@@ -312,4 +319,64 @@ func (s *Store) decoded(ctx context.Context, q *dbq.Queries, org ids.OrgID, vers
 	}
 	s.cache[version] = p
 	return p, nil
+}
+
+func record(ctx context.Context, tx db.TenantTx, ev *audit.Event) error {
+	if ev == nil {
+		return nil
+	}
+	_, err := audit.Record(ctx, tx, *ev)
+	return err
+}
+
+// ListVersions implements app.Reads.
+func (s *Store) ListVersions(ctx context.Context, org ids.OrgID, name string) ([]app.VersionInfo, error) {
+	var out []app.VersionInfo
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		rows, err := q.ListPackageVersions(ctx, org, name)
+		if err != nil || len(rows) == 0 {
+			return err
+		}
+		versions := make([]ids.UUID, 0, len(rows))
+		at := map[ids.UUID]int{}
+		for i, r := range rows {
+			versions = append(versions, r.ID)
+			at[r.ID] = i
+			out = append(out, app.VersionInfo{
+				Name: r.Name, Version: r.Version, State: domain.State(r.State), FileDigest: r.FileDigest,
+				Pinned: r.Pinned, ImportedAt: r.ImportedAt,
+			})
+		}
+		defs, err := q.ListVersionDefinitions(ctx, org, versions)
+		if err != nil {
+			return err
+		}
+		for _, d := range defs {
+			v := &out[at[d.VersionID]]
+			v.Definitions = append(v.Definitions, app.DefinitionRef{Operation: d.Operation, Digest: d.Digest})
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// DefinitionByDigest implements app.Reads.
+func (s *Store) DefinitionByDigest(ctx context.Context, org ids.OrgID, digest string) (app.DefinitionInfo, error) {
+	var out app.DefinitionInfo
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		r, err := dbq.New(tx).GetDefinitionByDigest(ctx, org, digest)
+		if db.IsNoRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		out = app.DefinitionInfo{
+			Operation: r.Operation, Digest: r.Digest, Canonical: r.Canonical, Package: r.Name, Version: r.Version,
+			State: domain.State(r.State),
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
 }

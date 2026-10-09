@@ -39,15 +39,15 @@ func TestIntPolicyVersionsAndPublication(t *testing.T) {
 	if b, err := s.Published(ctx, org); err != nil || b != nil {
 		t.Fatalf("no published policy yet: %v %v", b, err)
 	}
-	v1, n1, err := s.CreateVersion(ctx, org, bundle("TOO_LARGE"), "user:alice")
+	v1, n1, err := s.CreateVersion(ctx, org, bundle("TOO_LARGE"), "user:alice", nil)
 	if err != nil || n1 != 1 {
 		t.Fatalf("v1: %d %v", n1, err)
 	}
-	v2, n2, err := s.CreateVersion(ctx, org, bundle("TOO_LARGE_V2"), "user:alice")
+	v2, n2, err := s.CreateVersion(ctx, org, bundle("TOO_LARGE_V2"), "user:alice", nil)
 	if err != nil || n2 != 2 {
 		t.Fatalf("v2: %d %v", n2, err)
 	}
-	if err := s.Publish(ctx, org, v1, "user:bob"); err != nil {
+	if err := s.Publish(ctx, org, v1, "user:bob", nil); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := s.Published(ctx, org); b == nil || b.Version != 1 || b.Rules[0].Reason != "TOO_LARGE" {
@@ -57,7 +57,7 @@ func TestIntPolicyVersionsAndPublication(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, 4)
 	for i := range errs {
-		wg.Go(func() { errs[i] = s.Publish(ctx, org, v2, "user:bob") })
+		wg.Go(func() { errs[i] = s.Publish(ctx, org, v2, "user:bob", nil) })
 	}
 	wg.Wait()
 	wins := 0
@@ -77,7 +77,7 @@ func TestIntPolicyVersionsAndPublication(t *testing.T) {
 	if _, state, _ := s.Get(ctx, org, v1); state != "SUPERSEDED" {
 		t.Fatalf("the previous version is %s", state)
 	}
-	if err := s.Publish(ctx, org, v1, "user:bob"); !errors.Is(err, pgstore.ErrNotDraft) {
+	if err := s.Publish(ctx, org, v1, "user:bob", nil); !errors.Is(err, pgstore.ErrNotDraft) {
 		t.Fatalf("a superseded version was published again: %v", err)
 	}
 	if vs, err := s.List(ctx, org, 10); err != nil || len(vs) != 2 {

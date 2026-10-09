@@ -15,6 +15,7 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/trust"
+	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/crypto/jws"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -67,7 +68,7 @@ func (r *memRepo) State(_ context.Context, org ids.OrgID, pkg, version string) (
 	return s, nil
 }
 
-func (r *memRepo) Transition(_ context.Context, org ids.OrgID, pkg, version string, from, to domain.State) error {
+func (r *memRepo) Transition(_ context.Context, org ids.OrgID, pkg, version string, from, to domain.State, _ *audit.Event) error {
 	key := org.String() + pkg + version
 	if r.states[key] != from {
 		return ErrConflict
@@ -121,7 +122,7 @@ func (f *fixture) targets(v int64, versions ...string) string {
 }
 
 func (f *fixture) importVersion(version, targets string) (Result, error) {
-	return f.im.Import(context.Background(), f.org, "pc.mock-payments", version, targets, f.files[version])
+	return f.im.Import(context.Background(), f.org, "pc.mock-payments", version, targets, f.files[version], nil)
 }
 
 func TestHR123_ImportVerifiesPinsAndStartsReviewed(t *testing.T) {
@@ -157,7 +158,7 @@ func TestT036_ImportRefusesUnsignedOrSwappedBytes(t *testing.T) {
 	f := newFixture(t)
 	doc := f.targets(1, "1.0.0")
 	tampered := bytes.Replace(f.files["1.0.0"], []byte("max: \"1000000\""), []byte("max: \"9999999\""), 1)
-	if _, err := f.im.Import(context.Background(), f.org, "pc.mock-payments", "1.0.0", doc, tampered); !errors.Is(err, trust.ErrUntrusted) {
+	if _, err := f.im.Import(context.Background(), f.org, "pc.mock-payments", "1.0.0", doc, tampered, nil); !errors.Is(err, trust.ErrUntrusted) {
 		t.Fatalf("tampered bytes: %v", err)
 	}
 	// Bytes signed as 1.0.0 but declaring 1.1.0 inside.
@@ -180,13 +181,13 @@ func TestTransitionFollowsTheLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateActive); err != nil {
+	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateActive, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateDraft); !errors.Is(err, statemachine.ErrIllegalTransition) {
+	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateDraft, nil); !errors.Is(err, statemachine.ErrIllegalTransition) {
 		t.Fatalf("ACTIVE → DRAFT: %v", err)
 	}
-	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateQuarantined); err != nil {
+	if err := f.im.Transition(ctx, f.org, "pc.mock-payments", "1.0.0", domain.StateQuarantined, nil); err != nil {
 		t.Fatal(err)
 	}
 }

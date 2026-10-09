@@ -235,6 +235,146 @@ func (q *Queries) ListFactDeclarations(ctx context.Context, orgID ids.OrgID, pro
 	return items, nil
 }
 
+const listFactProviders = `-- name: ListFactProviders :many
+SELECT id, name, service_account_id, state FROM pc.fact_providers
+WHERE org_id = $1 AND ($2::boolean OR state = 'ACTIVE')
+ORDER BY name, id
+LIMIT 500
+`
+
+type ListFactProvidersRow struct {
+	ID               ids.UUID
+	Name             string
+	ServiceAccountID ids.UUID
+	State            string
+}
+
+func (q *Queries) ListFactProviders(ctx context.Context, orgID ids.OrgID, includeDisabled bool) ([]ListFactProvidersRow, error) {
+	rows, err := q.db.Query(ctx, listFactProviders, orgID, includeDisabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFactProvidersRow{}
+	for rows.Next() {
+		var i ListFactProvidersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.ServiceAccountID,
+			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFactsAbout = `-- name: ListFactsAbout :many
+SELECT f.name, f.value, f.observed_at, f.recorded_at, f.provider_id
+FROM pc.facts f
+JOIN pc.fact_providers p ON p.org_id = f.org_id AND p.id = f.provider_id AND p.state = 'ACTIVE'
+JOIN pc.fact_declarations d ON d.org_id = f.org_id AND d.provider_id = f.provider_id AND d.name = f.name AND d.active
+WHERE f.org_id = $1 AND f.subject_type = $2 AND f.subject_id = $3
+  AND (cardinality($4::text[]) = 0 OR f.name = ANY($4::text[]))
+ORDER BY f.name
+LIMIT 500
+`
+
+type ListFactsAboutParams struct {
+	OrgID       ids.OrgID
+	SubjectType string
+	SubjectID   string
+	Names       []string
+}
+
+type ListFactsAboutRow struct {
+	Name       string
+	Value      []byte
+	ObservedAt time.Time
+	RecordedAt time.Time
+	ProviderID ids.UUID
+}
+
+// ListFactsAbout returns the facts of active providers about one subject;
+// every name when names is empty.
+func (q *Queries) ListFactsAbout(ctx context.Context, arg ListFactsAboutParams) ([]ListFactsAboutRow, error) {
+	rows, err := q.db.Query(ctx, listFactsAbout,
+		arg.OrgID,
+		arg.SubjectType,
+		arg.SubjectID,
+		arg.Names,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFactsAboutRow{}
+	for rows.Next() {
+		var i ListFactsAboutRow
+		if err := rows.Scan(
+			&i.Name,
+			&i.Value,
+			&i.ObservedAt,
+			&i.RecordedAt,
+			&i.ProviderID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProviderDeclarations = `-- name: ListProviderDeclarations :many
+SELECT provider_id, name, value_type, subject_type, max_lag_s FROM pc.fact_declarations
+WHERE org_id = $1 AND provider_id = ANY($2::uuid[])
+ORDER BY name
+`
+
+type ListProviderDeclarationsRow struct {
+	ProviderID  ids.UUID
+	Name        string
+	ValueType   string
+	SubjectType string
+	MaxLagS     int32
+}
+
+// ListProviderDeclarations returns every declaration of the providers,
+// active or not (a disabled provider's declarations are inactive).
+func (q *Queries) ListProviderDeclarations(ctx context.Context, orgID ids.OrgID, providerIds []ids.UUID) ([]ListProviderDeclarationsRow, error) {
+	rows, err := q.db.Query(ctx, listProviderDeclarations, orgID, providerIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProviderDeclarationsRow{}
+	for rows.Next() {
+		var i ListProviderDeclarationsRow
+		if err := rows.Scan(
+			&i.ProviderID,
+			&i.Name,
+			&i.ValueType,
+			&i.SubjectType,
+			&i.MaxLagS,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSubjectFacts = `-- name: ListSubjectFacts :many
 SELECT f.name, f.value, f.observed_at, f.recorded_at, f.provider_id, d.value_type
 FROM pc.facts f

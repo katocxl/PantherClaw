@@ -20,6 +20,7 @@ import (
 	"slices"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
@@ -38,9 +39,15 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/billing"
 	"github.com/katocxl/pantherclaw/internal/billing/licence"
+	"github.com/katocxl/pantherclaw/internal/definitions/adapters/packagesrpc"
 	defspg "github.com/katocxl/pantherclaw/internal/definitions/adapters/pgstore"
+	defsapp "github.com/katocxl/pantherclaw/internal/definitions/app"
+	"github.com/katocxl/pantherclaw/internal/definitions/trust"
 	"github.com/katocxl/pantherclaw/internal/evidence/chainer"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
+	"github.com/katocxl/pantherclaw/internal/facts/adapters/factsrpc"
+	factspg "github.com/katocxl/pantherclaw/internal/facts/adapters/pgstore"
+	factsapp "github.com/katocxl/pantherclaw/internal/facts/app"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/grants/adapters/grantsrpc"
 	grantspg "github.com/katocxl/pantherclaw/internal/grants/adapters/pgstore"
@@ -54,6 +61,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/keystore"
 	"github.com/katocxl/pantherclaw/internal/notifications/adapters/notificationsrpc"
 	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
+	"github.com/katocxl/pantherclaw/internal/platform/celenv"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -63,6 +71,9 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
+	polpg "github.com/katocxl/pantherclaw/internal/policy/adapters/pgstore"
+	"github.com/katocxl/pantherclaw/internal/policy/adapters/policiesrpc"
+	policyapp "github.com/katocxl/pantherclaw/internal/policy/app"
 	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
@@ -385,6 +396,8 @@ type apiDeps struct {
 	clusters *kube.Directory
 	// subjects are the providers configured for subject tokens (HR-145).
 	subjects oidcrp.Subjects
+	// packageRoots are the trusted package roots (nil: the embedded ones).
+	packageRoots trust.Roots
 	// M5 part 1: browser pages, accounts, notifications.
 	web *webhttp.Handler
 	m5  *m5Services
@@ -421,13 +434,9 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
 	d.authority.WithWorkloads(identity, runs)
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
-	gstore := &grantspg.Store{Pool: pool}
-	grants := &grantsapp.Service{
-		Repo: gstore, Subjects: gstore, Defs: &defspg.Store{Pool: pool}, Authz: grantsapp.SubjectAuthorizer{},
-		Clock: clock.System{}, Listing: gstore,
+	if err := registerAuthorityAdmin(rs, d); err != nil {
+		return nil, err
 	}
-	pantherclawv1connect.RegisterGrantServiceHandler(rs, grantsrpc.NewGrants(grants))
-	pantherclawv1connect.RegisterGuardrailServiceHandler(rs, grantsrpc.NewGuardrails(grants))
 	if d.m5 != nil {
 		pantherclawv1connect.RegisterAccountServiceHandler(rs, accountrpc.New(authnapp.NewAccount(pool, d.m5.webauthn, d.m5.notifications)))
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
@@ -630,5 +639,36 @@ func cmdKeys(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "wrote key-encryption key to %s; keep it outside the repository and back it up securely\n", *out)
+	return nil
+}
+
+// registerAuthorityAdmin mounts the M4 administration services: grants,
+// guardrails, facts, packages and policies. Every one checks its caller's
+// permissions in its use cases; human-only steps refuse service accounts
+// and API keys (HR-161).
+func registerAuthorityAdmin(rs *connect.Server, d apiDeps) error {
+	authz := grantsapp.SubjectAuthorizer{}
+	defs := &defspg.Store{Pool: d.pool}
+	facts := &factspg.Store{Pool: d.pool}
+	gstore := &grantspg.Store{Pool: d.pool}
+	grants := &grantsapp.Service{
+		Repo: gstore, Subjects: gstore, Defs: defs, Authz: authz, Clock: clock.System{}, Listing: gstore,
+	}
+	pantherclawv1connect.RegisterGrantServiceHandler(rs, grantsrpc.NewGrants(grants))
+	pantherclawv1connect.RegisterGuardrailServiceHandler(rs, grantsrpc.NewGuardrails(grants))
+	pantherclawv1connect.RegisterFactServiceHandler(rs, factsrpc.New(&factsapp.Service{Store: facts, Authz: authz, Reads: facts}))
+	roots := d.packageRoots
+	if roots == nil {
+		var err error
+		if roots, err = trust.EmbeddedRoots(); err != nil {
+			return err
+		}
+	}
+	pantherclawv1connect.RegisterPackageServiceHandler(rs, packagesrpc.New(&defsapp.Admin{
+		Importer: &defsapp.Importer{Roots: roots, Repo: defs, Clock: clock.System{}}, Reads: defs, Authz: authz,
+	}))
+	pantherclawv1connect.RegisterPolicyServiceHandler(rs, policiesrpc.New(&policyapp.Versions{
+		Store: &polpg.Store{Pool: d.pool}, Facts: facts, Definitions: defs, Authz: authz, Limits: celenv.DefaultLimits,
+	}))
 	return nil
 }
