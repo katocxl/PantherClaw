@@ -31,5 +31,7 @@
     "public_url": "http://127.0.0.1:8080",
     "api_key_env": "dev",
     "oidc_providers": []
-  }
+  },
+  "webauthn": { "rp_name": "PantherClaw" },
+  "notifications": { "concurrency": 5 }
 }

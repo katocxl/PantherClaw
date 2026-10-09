@@ -31,7 +31,7 @@ func as(org ids.OrgID, kind td.PrincipalKind, id ids.UUID, role td.RoleName) con
 
 func TestT043_AdminsSignPeopleOutAndRemoveKeysButCannotActAsThem(t *testing.T) {
 	e := newWAEnv(t)
-	acct := authnapp.NewAccount(e.pool, e.wa)
+	acct := authnapp.NewAccount(e.pool, e.wa, e.notices)
 	s, _ := e.session(t, true)
 	key, err := e.register(t, s, e.authenticator(t, webauthntest.ES256), "Desk key")
 	if err != nil {
@@ -97,7 +97,7 @@ func TestT043_AdminsSignPeopleOutAndRemoveKeysButCannotActAsThem(t *testing.T) {
 
 func TestHR156_SelfServiceIsForPeopleAndTheirOwnSessions(t *testing.T) {
 	e := newWAEnv(t)
-	acct := authnapp.NewAccount(e.pool, e.wa)
+	acct := authnapp.NewAccount(e.pool, e.wa, e.notices)
 	mine := e.mustSignIn(t)
 	cli := ids.NewV7()
 	e.exec(t, e.org, `INSERT INTO pc.cli_sessions (org_id, id, user_id, device_jkt, device_jwk, refresh_hash, expires_at)

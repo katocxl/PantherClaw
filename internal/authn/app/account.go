@@ -55,12 +55,15 @@ type SessionView struct {
 // their administration (HR-150, HR-155, T-043: an administrator can sign a
 // person out or remove a key, never act as them or add a key for them).
 type Account struct {
-	pool *db.Pool
-	wa   *WebAuthn
+	pool   *db.Pool
+	wa     *WebAuthn // nil when security keys are off
+	notify SecurityNotifier
 }
 
-// NewAccount returns the account use cases.
-func NewAccount(pool *db.Pool, wa *WebAuthn) *Account { return &Account{pool: pool, wa: wa} }
+// NewAccount returns the account use cases; wa and notify may be nil.
+func NewAccount(pool *db.Pool, wa *WebAuthn, notify SecurityNotifier) *Account {
+	return &Account{pool: pool, wa: wa, notify: notify}
+}
 
 // self returns the caller when it is a person.
 func self(ctx context.Context) (tapp.Caller, error) {
@@ -209,10 +212,10 @@ func (a *Account) RevokeUserSessions(ctx context.Context, user ids.UUID) (int, e
 		}); err != nil {
 			return err
 		}
-		if total == 0 || a.wa == nil || a.wa.notify == nil {
+		if total == 0 || a.notify == nil {
 			return nil
 		}
-		return a.wa.notify.SecurityNotice(ctx, tx, SecurityNotice{
+		return a.notify.SecurityNotice(ctx, tx, SecurityNotice{
 			Org: c.Org, User: user, Type: "security.sessions_revoked", Count: int(total), Actor: c.Actor(),
 		})
 	})
@@ -225,6 +228,9 @@ func (a *Account) ListMyKeys(ctx context.Context) ([]CredentialInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.wa == nil {
+		return nil, nil // security keys are off in this deployment
+	}
 	return a.wa.ListUserCredentials(ctx, c.Org, c.Principal.ID)
 }
 
@@ -233,6 +239,9 @@ func (a *Account) ListUserKeys(ctx context.Context, user ids.UUID) ([]Credential
 	c, err := a.admin(ctx, td.PermUserRead, user)
 	if err != nil {
 		return nil, err
+	}
+	if a.wa == nil {
+		return nil, nil
 	}
 	return a.wa.ListUserCredentials(ctx, c.Org, user)
 }
@@ -243,6 +252,9 @@ func (a *Account) RemoveUserKey(ctx context.Context, user, key ids.UUID) error {
 	c, err := a.admin(ctx, td.PermUserManage, user)
 	if err != nil {
 		return err
+	}
+	if a.wa == nil {
+		return ErrNoSuchKey
 	}
 	err = a.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
 		return a.wa.remove(ctx, tx, dbq.New(tx), c.Org, user, key, "ADMIN_REMOVED", c.Actor())
