@@ -10,6 +10,7 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
+	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/celenv"
 )
 
@@ -121,4 +122,73 @@ func value(v defs.Value) ref.Val {
 	case defs.TypeText:
 	}
 	return nil
+}
+
+const factsType = "pc.Facts"
+
+// factCELType is the CEL type of a fact value. Timestamps are integers
+// (Unix seconds), compared with `now`.
+func factCELType(t fdomain.Type) *types.Type {
+	switch t {
+	case fdomain.TypeBoolean:
+		return cel.BoolType
+	case fdomain.TypeInteger, fdomain.TypeTimestamp:
+		return cel.IntType
+	case fdomain.TypeDecimal:
+		return celenv.DecimalType
+	case fdomain.TypeMoney:
+		return celenv.MoneyType
+	case fdomain.TypeIdentifier:
+		return cel.StringType
+	}
+	return nil
+}
+
+// FactsSchema is the typed shape of `facts` for one rule: one field per
+// fact it may read, named with dots as underscores. The fields are not
+// optional, because a rule runs only when all of them are present.
+func FactsSchema(names []string, catalog map[string]fdomain.Type) celenv.Schema {
+	fields := map[string]celenv.Field{}
+	for _, n := range names {
+		if t := factCELType(catalog[n]); t != nil {
+			fields[fdomain.CELName(n)] = celenv.Field{Type: t}
+		}
+	}
+	return celenv.Schema{factsType: {Name: factsType, Fields: fields}}
+}
+
+// FactsVariable and NowVariable declare `facts` and `now` (decision time,
+// Unix seconds, database clock).
+var (
+	FactsVariable = celenv.Variable{Name: "facts", Type: types.NewObjectType(factsType)}
+	NowVariable   = celenv.Variable{Name: "now", Type: cel.IntType}
+)
+
+// FactsRecord builds the runtime value of `facts` from the values a rule may
+// read.
+func FactsRecord(names []string, have map[string]fdomain.Value) *celenv.Record {
+	fields := map[string]ref.Val{}
+	for _, n := range names {
+		v, ok := have[n]
+		if !ok {
+			continue
+		}
+		var val ref.Val
+		switch v.Type {
+		case fdomain.TypeBoolean:
+			val = types.Bool(v.Bool)
+		case fdomain.TypeInteger, fdomain.TypeTimestamp:
+			val = types.Int(v.Int)
+		case fdomain.TypeDecimal:
+			val = celenv.Decimal{D: v.Decimal}
+		case fdomain.TypeMoney:
+			val = celenv.Money{M: v.Money}
+		case fdomain.TypeIdentifier:
+			val = types.String(v.Str)
+		}
+		if val != nil {
+			fields[fdomain.CELName(n)] = val
+		}
+	}
+	return &celenv.Record{TypeName: factsType, Fields: fields}
 }

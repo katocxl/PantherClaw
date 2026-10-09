@@ -34,7 +34,9 @@ func newRepo() *memRepo {
 	return &memRepo{pins: map[string]domain.Pin{}, states: map[string]domain.State{}, files: map[string][]byte{}}
 }
 
-func (r *memRepo) TrustedMetadata(context.Context) (*trust.State, error) { return r.meta, nil }
+func (r *memRepo) TrustedMetadata(context.Context, ids.OrgID) (*trust.State, error) {
+	return r.meta, nil
+}
 
 func (r *memRepo) CurrentPin(_ context.Context, org ids.OrgID, pkg string) (*domain.Pin, error) {
 	p, ok := r.pins[org.String()+pkg]
