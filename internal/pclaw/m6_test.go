@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -64,7 +65,8 @@ func TestM6Commands(t *testing.T) {
 		t.Fatalf("gateway revoke = %d %q, request %v", code, errs, gw.revoke)
 	}
 	code, out, errs := run(t, env, "killswitch", "status")
-	if code != 0 || !strings.Contains(out, `"engaged": true`) ||
+	// protojson varies its whitespace on purpose: match the field loosely.
+	if code != 0 || !regexp.MustCompile(`"engaged":\s*true`).MatchString(out) ||
 		!strings.Contains(errs, "emergency-stop page: https://pc.example/containment?org=0192aaaa-bbbb-7ccc-8ddd-000000000002") {
 		t.Fatalf("killswitch status = %d %q %q", code, out, errs)
 	}
