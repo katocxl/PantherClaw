@@ -34,6 +34,8 @@ task check    # format, headers, lint, tests, workflow lint, secret scan
 
 You need Go and Docker. Task is optional: every tool, Task included, is pinned under `tools/pins/`, so without a global Task run `go tool -modfile=tools/pins/task/go.mod task <name>`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+> **No CI.** Continuous integration is switched off during development ([EX-004](docs/security/GATES_AND_REVIEW.md#4-exceptions)). Every change is checked locally (`task check`, `task test:integration`, `task trace`) before it is committed and pushed to `main`; see [CLAUDE.md](CLAUDE.md).
+
 ## Security
 
 Report vulnerabilities privately: [Security advisories](https://github.com/katocxl/pantherclaw/security/advisories/new). See [SECURITY.md](SECURITY.md).
