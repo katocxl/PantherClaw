@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// PolicyService stores and publishes policy bundles (G0 M4; HR-040..044).
+// Policies only restrict: no rule can allow an action that no grant covers.
+// Bundles are immutable versions; an org has at most one published
+// version. Authoring and publishing are separate roles (F582), and
+// publishing is human only.
+service PolicyService {
+  // CreatePolicyVersion stores a new bundle version. It is compiled and
+  // type-checked against the org's active definitions and fact catalog
+  // first; a bundle that does not compile is refused.
+  // permission: policy.author
+  rpc CreatePolicyVersion(CreatePolicyVersionRequest) returns (CreatePolicyVersionResponse);
+  // PublishPolicyVersion makes a version the published one.
+  // permission: policy.publish
+  rpc PublishPolicyVersion(PublishPolicyVersionRequest) returns (PublishPolicyVersionResponse);
+  // GetPublishedPolicy returns the published version.
+  // permission: policy.read
+  rpc GetPublishedPolicy(GetPublishedPolicyRequest) returns (GetPublishedPolicyResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetPolicyVersion returns one version, for review before publishing.
+  // permission: policy.read
+  rpc GetPolicyVersion(GetPolicyVersionRequest) returns (GetPolicyVersionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListPolicyVersions lists versions, newest first.
+  // permission: policy.read
+  rpc ListPolicyVersions(ListPolicyVersionsRequest) returns (ListPolicyVersionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// PolicyVersion is one stored bundle version.
+message PolicyVersion {
+  // Version id.
+  string id = 1;
+  // Bundle id.
+  string bundle_id = 2;
+  // Version number, from 1.
+  int32 version = 3;
+  // "DRAFT", "PUBLISHED" or "SUPERSEDED".
+  string state = 4;
+  // The bundle (policy bundle v1, JSON).
+  bytes bundle = 5;
+  // Who created it.
+  string created_by = 6;
+  // When.
+  google.protobuf.Timestamp create_time = 7;
+  // When it was published; unset if never.
+  google.protobuf.Timestamp publish_time = 8;
+}
+
+// CreatePolicyVersionRequest carries a bundle.
+message CreatePolicyVersionRequest {
+  // Policy bundle v1 (JSON: id and rules). The server assigns the version.
+  bytes bundle = 1 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 1048576
+  }];
+}
+
+// CreatePolicyVersionResponse returns the version.
+message CreatePolicyVersionResponse {
+  // The version (without the bundle).
+  PolicyVersion version = 1;
+}
+
+// PublishPolicyVersionRequest names a version.
+message PublishPolicyVersionRequest {
+  // Version id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// PublishPolicyVersionResponse returns it.
+message PublishPolicyVersionResponse {
+  // The version (without the bundle).
+  PolicyVersion version = 1;
+}
+
+// GetPublishedPolicyRequest asks for the published version.
+message GetPublishedPolicyRequest {}
+
+// GetPublishedPolicyResponse returns it.
+message GetPublishedPolicyResponse {
+  // The published version; unset when nothing is published.
+  PolicyVersion version = 1;
+}
+
+// GetPolicyVersionRequest names a version.
+message GetPolicyVersionRequest {
+  // Version id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetPolicyVersionResponse returns it.
+message GetPolicyVersionResponse {
+  // The version.
+  PolicyVersion version = 1;
+}
+
+// ListPolicyVersionsRequest lists versions.
+message ListPolicyVersionsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+}
+
+// ListPolicyVersionsResponse returns them.
+message ListPolicyVersionsResponse {
+  // Versions, newest first, without their bundles.
+  repeated PolicyVersion versions = 1;
+}

@@ -22,11 +22,11 @@ import (
 	tdomain "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
-// Permissions (they join the catalog with the M4 API, slice 213).
+// Permissions of the fact use cases (the tenancy catalog's).
 const (
-	PermFactRead           tdomain.Permission = "fact.read"
-	PermFactProviderManage tdomain.Permission = "fact.provider.manage" // human only
-	PermFactWrite          tdomain.Permission = "fact.write"
+	PermFactRead           = tdomain.PermFactRead
+	PermFactProviderManage = tdomain.PermFactProviderManage // human only
+	PermFactWrite          = tdomain.PermFactWrite
 )
 
 // MaxObservations caps one PutFacts call.

@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/runs.proto";
+
+// GuardrailService manages the organisation's guardrails (envelopes, F047,
+// F054; G0 M4 part 2). A guardrail limits every grant at its scope: grants
+// are checked against it when issued and again at every decision, so a
+// narrowing applies at once without rewriting any grant (HR-046). Changes
+// need a person holding guardrails.manage at the scope (HR-161); every
+// change is a new immutable revision, and a widening is audited with what
+// it widens.
+service GuardrailService {
+  // CreateEnvelope creates the guardrail at a scope that has none.
+  // permission: guardrails.manage
+  rpc CreateEnvelope(CreateEnvelopeRequest) returns (CreateEnvelopeResponse);
+  // ReviseEnvelope stores a new revision of a guardrail.
+  // permission: guardrails.manage
+  rpc ReviseEnvelope(ReviseEnvelopeRequest) returns (ReviseEnvelopeResponse);
+  // GetEnvelope returns a guardrail.
+  // permission: guardrails.read
+  rpc GetEnvelope(GetEnvelopeRequest) returns (GetEnvelopeResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListEnvelopes lists guardrails.
+  // permission: guardrails.read
+  rpc ListEnvelopes(ListEnvelopesRequest) returns (ListEnvelopesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// GuardrailScopeKind is what a guardrail applies to.
+enum GuardrailScopeKind {
+  GUARDRAIL_SCOPE_KIND_UNSPECIFIED = 0;
+  // The whole organisation.
+  GUARDRAIL_SCOPE_KIND_ORG = 1;
+  // One business unit.
+  GUARDRAIL_SCOPE_KIND_BUSINESS_UNIT = 2;
+  // One team (the agent's).
+  GUARDRAIL_SCOPE_KIND_TEAM = 3;
+  // One environment (the run's).
+  GUARDRAIL_SCOPE_KIND_ENVIRONMENT = 4;
+  // One represented principal ("principal bounds").
+  GUARDRAIL_SCOPE_KIND_PRINCIPAL = 5;
+}
+
+// GuardrailScope is a guardrail's scope.
+message GuardrailScope {
+  // Kind.
+  GuardrailScopeKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Business unit, team or environment id.
+  string id = 2 [(buf.validate.field).string = {
+    max_len: 36
+    pattern: "^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$"
+  }];
+  // The principal ("user" or "service_account"), for a principal scope.
+  Actor principal = 3;
+
+  option (buf.validate.message).cel = {
+    id: "guardrail_scope"
+    message: "an org scope names nothing, a principal scope names a principal, other scopes name an id"
+    expression: "this.kind == 1 ? (this.id == '' && !has(this.principal)) : this.kind == 5 ? (this.id == '' && has(this.principal)) : (this.id != '' && !has(this.principal))"
+  };
+}
+
+// GuardrailSettings are the delegation, lifetime and repeat-protection
+// settings of a guardrail (decisions 5 and 6). Unset fields keep the
+// defaults, or the stricter setting of another guardrail that applies.
+message GuardrailSettings {
+  // Delegation depth (default 2, at most 4).
+  optional int32 max_depth = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 4
+  }];
+  // Active children per grant (default 10, at most 50).
+  optional int32 max_children = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 50
+  }];
+  // Lifetime of a grant issued by a person (default 7 days, at most 90).
+  google.protobuf.Duration max_root_lifetime = 3 [(buf.validate.field).duration = {
+    gte: {seconds: 60}
+    lte: {seconds: 7776000}
+  }];
+  // How long an accepted irreversible action blocks an identical one
+  // (default 24 hours, from 1 hour to 30 days). Only the org guardrail sets
+  // it.
+  google.protobuf.Duration repeat_window = 4 [(buf.validate.field).duration = {
+    gte: {seconds: 3600}
+    lte: {seconds: 2592000}
+  }];
+}
+
+// Envelope is one revision of a guardrail.
+message Envelope {
+  // Guardrail id.
+  string id = 1;
+  // Revision, from 1.
+  int32 revision = 2;
+  // Scope.
+  GuardrailScope scope = 3;
+  // Display name.
+  string name = 4;
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 5;
+  // Requirements (JSON array).
+  bytes requirements = 6;
+  // Budget and count rules (JSON).
+  bytes limits = 7;
+  // Settings.
+  GuardrailSettings settings = 8;
+  // Lowest workload attestation level (0-2) for actions in scope.
+  int32 min_attestation_level = 9;
+  // Who made this revision.
+  Actor changed_by = 10;
+  // When.
+  google.protobuf.Timestamp create_time = 11;
+}
+
+// CreateEnvelopeRequest creates a guardrail.
+message CreateEnvelopeRequest {
+  // Scope; it must not have a guardrail yet.
+  GuardrailScope scope = 1 [(buf.validate.field).required = true];
+  // Display name.
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 3 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 65536
+  }];
+  // Requirements (JSON array; empty for none).
+  bytes requirements = 4 [(buf.validate.field).bytes.max_len = 65536];
+  // Limits (JSON; empty for none).
+  bytes limits = 5 [(buf.validate.field).bytes.max_len = 65536];
+  // Settings.
+  GuardrailSettings settings = 6;
+  // Lowest attestation level (0-2).
+  int32 min_attestation_level = 7 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2
+  }];
+}
+
+// CreateEnvelopeResponse returns the guardrail.
+message CreateEnvelopeResponse {
+  // The guardrail, revision 1.
+  Envelope envelope = 1;
+}
+
+// ReviseEnvelopeRequest replaces a guardrail's terms with a new revision.
+message ReviseEnvelopeRequest {
+  // Guardrail id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The revision the change is based on; a stale revision is refused.
+  int32 revision = 2 [(buf.validate.field).int32.gte = 1];
+  // Display name.
+  string name = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Bounds (grant bounds v1, JSON).
+  bytes bounds = 4 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 65536
+  }];
+  // Requirements (JSON array; empty for none).
+  bytes requirements = 5 [(buf.validate.field).bytes.max_len = 65536];
+  // Limits (JSON; empty for none).
+  bytes limits = 6 [(buf.validate.field).bytes.max_len = 65536];
+  // Settings.
+  GuardrailSettings settings = 7;
+  // Lowest attestation level (0-2).
+  int32 min_attestation_level = 8 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2
+  }];
+}
+
+// ReviseEnvelopeResponse returns the new revision.
+message ReviseEnvelopeResponse {
+  // The guardrail.
+  Envelope envelope = 1;
+  // Whether the revision widened anything (audited with what it widens).
+  bool widens = 2;
+}
+
+// GetEnvelopeRequest names a guardrail.
+message GetEnvelopeRequest {
+  // Guardrail id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // A past revision (default: the current one).
+  optional int32 revision = 2 [(buf.validate.field).int32.gte = 1];
+}
+
+// GetEnvelopeResponse returns it.
+message GetEnvelopeResponse {
+  // The guardrail.
+  Envelope envelope = 1;
+}
+
+// ListEnvelopesRequest pages through guardrails.
+message ListEnvelopesRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only guardrails of this kind (all when unspecified).
+  GuardrailScopeKind kind = 3 [(buf.validate.field).enum.defined_only = true];
+}
+
+// ListEnvelopesResponse is one page.
+message ListEnvelopesResponse {
+  // Current revisions.
+  repeated Envelope envelopes = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}

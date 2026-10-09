@@ -34,6 +34,9 @@ const (
 	// WorkloadServiceStartChildRunProcedure is the procedure name of the WorkloadService's
 	// StartChildRun RPC.
 	WorkloadServiceStartChildRunProcedure = "/pantherclaw.v1.WorkloadService/StartChildRun"
+	// WorkloadServiceDelegateGrantProcedure is the procedure name of the WorkloadService's
+	// DelegateGrant RPC.
+	WorkloadServiceDelegateGrantProcedure = "/pantherclaw.v1.WorkloadService/DelegateGrant"
 )
 
 var (
@@ -58,6 +61,13 @@ var (
 			Procedure:  WorkloadServiceStartChildRunProcedure,
 		}
 	})
+	workloadServiceDelegateGrantSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_workload_proto.Services().ByName("WorkloadService").Methods().ByName("DelegateGrant"),
+			Procedure:  WorkloadServiceDelegateGrantProcedure,
+		}
+	})
 )
 
 // WorkloadServiceClient is a client for the pantherclaw.v1.WorkloadService service.
@@ -76,6 +86,13 @@ type WorkloadServiceClient interface {
 	// inherits the represented principal and cannot outlive its parent.
 	// permission: workload.run
 	StartChildRun(context.Context, *v1.StartChildRunRequest) (*v1.StartChildRunResponse, error)
+	// DelegateGrant gives a child run of the caller's run part of the
+	// caller's run's grant (HR-045, HR-047, HR-161). The delegated grant must
+	// fit inside its parent and every guardrail, expire no later than its
+	// parent and stay within the depth, fan-out and lifetime caps. The child
+	// shares its ancestors' budgets and may set smaller limits of its own.
+	// permission: workload.delegate
+	DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error)
 }
 
 // NewWorkloadServiceClient constructs a client for the pantherclaw.v1.WorkloadService service.
@@ -100,6 +117,13 @@ type WorkloadServiceHandler interface {
 	// inherits the represented principal and cannot outlive its parent.
 	// permission: workload.run
 	StartChildRun(context.Context, *v1.StartChildRunRequest) (*v1.StartChildRunResponse, error)
+	// DelegateGrant gives a child run of the caller's run part of the
+	// caller's run's grant (HR-045, HR-047, HR-161). The delegated grant must
+	// fit inside its parent and every guardrail, expire no later than its
+	// parent and stay within the depth, fan-out and lifetime caps. The child
+	// shares its ancestors' budgets and may set smaller limits of its own.
+	// permission: workload.delegate
+	DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error)
 }
 
 // RegisterWorkloadServiceHandler registers svc as the pantherclaw.v1.WorkloadService implementation
@@ -110,6 +134,7 @@ func RegisterWorkloadServiceHandler(server *connect.Server, svc WorkloadServiceH
 		connect.Method{Spec: workloadServiceEnrollSpec(), Handler: adapter.enroll},
 		connect.Method{Spec: workloadServiceIssueTokenSpec(), Handler: adapter.issueToken},
 		connect.Method{Spec: workloadServiceStartChildRunSpec(), Handler: adapter.startChildRun},
+		connect.Method{Spec: workloadServiceDelegateGrantSpec(), Handler: adapter.delegateGrant},
 	)
 }
 
@@ -126,6 +151,10 @@ func (UnimplementedWorkloadServiceHandler) IssueToken(context.Context, *v1.Issue
 
 func (UnimplementedWorkloadServiceHandler) StartChildRun(context.Context, *v1.StartChildRunRequest) (*v1.StartChildRunResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.StartChildRun is not implemented")
+}
+
+func (UnimplementedWorkloadServiceHandler) DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.DelegateGrant is not implemented")
 }
 
 type workloadServiceClient struct {
@@ -151,6 +180,14 @@ func (c *workloadServiceClient) IssueToken(ctx context.Context, req *v1.IssueTok
 func (c *workloadServiceClient) StartChildRun(ctx context.Context, req *v1.StartChildRunRequest) (*v1.StartChildRunResponse, error) {
 	var res v1.StartChildRunResponse
 	if err := c.client.CallUnary(ctx, workloadServiceStartChildRunSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workloadServiceClient) DelegateGrant(ctx context.Context, req *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error) {
+	var res v1.DelegateGrantResponse
+	if err := c.client.CallUnary(ctx, workloadServiceDelegateGrantSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -188,6 +225,18 @@ func (h workloadServiceHandler) startChildRun(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.StartChildRun(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workloadServiceHandler) delegateGrant(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DelegateGrantRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DelegateGrant(ctx, &req)
 	if err != nil {
 		return err
 	}

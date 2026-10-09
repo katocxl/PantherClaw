@@ -67,6 +67,28 @@ const (
 	PermWaitlistRead Permission = "waitlist.read"
 )
 
+// Grant, guardrail, budget, fact, package and policy permissions (G0 M4
+// part 2). grant.issue (decision 7), guardrails.manage (HR-161),
+// fact.provider.manage (HR-160) and package.activate are human only.
+// fact.write is held by the service account a fact provider is bound to:
+// holding it alone writes nothing, because each fact is accepted only from
+// its provider's own service account.
+const (
+	PermGrantRead          Permission = "grant.read"
+	PermGrantIssue         Permission = "grant.issue"
+	PermGrantRevoke        Permission = "grant.revoke"
+	PermGuardrailsRead     Permission = "guardrails.read"
+	PermGuardrailsManage   Permission = "guardrails.manage"
+	PermBudgetRead         Permission = "budget.read"
+	PermFactRead           Permission = "fact.read"
+	PermFactProviderManage Permission = "fact.provider.manage"
+	PermFactWrite          Permission = "fact.write"
+	PermPackageRead        Permission = "package.read"
+	PermPackageImport      Permission = "package.import"
+	PermPackageActivate    Permission = "package.activate"
+	PermPolicyRead         Permission = "policy.read"
+)
+
 // Workload identity permissions (M3). agent.admit (confirming an instance's
 // fingerprint, HR-094) and identity.issuer.activate (switching on a
 // trusted-issuer revision, HR-141) are human only.
@@ -92,6 +114,9 @@ const (
 	PermWorkloadEnroll Permission = "workload.enroll"
 	PermWorkloadToken  Permission = "workload.token"
 	PermWorkloadRun    Permission = "workload.run"
+	// PermWorkloadDelegate lets a workload delegate part of its run's grant
+	// to a child run (M4, HR-047).
+	PermWorkloadDelegate Permission = "workload.delegate"
 )
 
 // catalog lists every grantable permission.
@@ -110,7 +135,11 @@ var catalog = []Permission{
 	PermWaitlistRead,
 	PermAgentEnroll, PermAgentAdmit,
 	PermIssuerRead, PermIssuerManage, PermIssuerActivate,
-	PermPolicyAuthor, PermPolicyPublish,
+	PermPolicyAuthor, PermPolicyPublish, PermPolicyRead,
+	PermGrantRead, PermGrantIssue, PermGrantRevoke,
+	PermGuardrailsRead, PermGuardrailsManage, PermBudgetRead,
+	PermFactRead, PermFactProviderManage, PermFactWrite,
+	PermPackageRead, PermPackageImport, PermPackageActivate,
 	PermApprovalRespond, PermIncidentRespond, PermEvidenceReadRestricted,
 }
 
@@ -119,6 +148,7 @@ var catalog = []Permission{
 // able to approve"; F583).
 var humanOnly = []Permission{
 	PermApprovalRespond, PermPolicyPublish, PermEvidenceReadRestricted, PermAgentAdmit, PermIssuerActivate,
+	PermGrantIssue, PermGuardrailsManage, PermFactProviderManage, PermPackageActivate,
 }
 
 // Catalog returns every grantable permission in a stable order.
@@ -139,7 +169,7 @@ func (p Permission) Workload() bool { return strings.HasPrefix(string(p), "workl
 // declarableOnly are requirements an RPC may declare that no role grants.
 var declarableOnly = []Permission{
 	PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve,
-	PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun,
+	PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun, PermWorkloadDelegate,
 }
 
 // Declarable reports whether an RPC may declare p as its requirement.

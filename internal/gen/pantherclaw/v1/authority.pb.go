@@ -88,6 +88,79 @@ func (Decision) EnumDescriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{0}
 }
 
+// ChecklistStatus is the outcome of one checklist item.
+type ChecklistStatus int32
+
+const (
+	ChecklistStatus_CHECKLIST_STATUS_UNSPECIFIED ChecklistStatus = 0
+	ChecklistStatus_CHECKLIST_STATUS_PASSED      ChecklistStatus = 1
+	ChecklistStatus_CHECKLIST_STATUS_FAILED      ChecklistStatus = 2
+	// Evidence (a fact, a definition) is missing or stale.
+	ChecklistStatus_CHECKLIST_STATUS_MISSING ChecklistStatus = 3
+	// An approval or step-up is required.
+	ChecklistStatus_CHECKLIST_STATUS_REQUIRED ChecklistStatus = 4
+	// An obligation constrains the action.
+	ChecklistStatus_CHECKLIST_STATUS_CONSTRAINED ChecklistStatus = 5
+	// Informational (ANNOTATE rules).
+	ChecklistStatus_CHECKLIST_STATUS_ANNOTATED ChecklistStatus = 6
+	// Depends on a check that failed.
+	ChecklistStatus_CHECKLIST_STATUS_NOT_EVALUATED  ChecklistStatus = 7
+	ChecklistStatus_CHECKLIST_STATUS_NOT_APPLICABLE ChecklistStatus = 8
+)
+
+// Enum value maps for ChecklistStatus.
+var (
+	ChecklistStatus_name = map[int32]string{
+		0: "CHECKLIST_STATUS_UNSPECIFIED",
+		1: "CHECKLIST_STATUS_PASSED",
+		2: "CHECKLIST_STATUS_FAILED",
+		3: "CHECKLIST_STATUS_MISSING",
+		4: "CHECKLIST_STATUS_REQUIRED",
+		5: "CHECKLIST_STATUS_CONSTRAINED",
+		6: "CHECKLIST_STATUS_ANNOTATED",
+		7: "CHECKLIST_STATUS_NOT_EVALUATED",
+		8: "CHECKLIST_STATUS_NOT_APPLICABLE",
+	}
+	ChecklistStatus_value = map[string]int32{
+		"CHECKLIST_STATUS_UNSPECIFIED":    0,
+		"CHECKLIST_STATUS_PASSED":         1,
+		"CHECKLIST_STATUS_FAILED":         2,
+		"CHECKLIST_STATUS_MISSING":        3,
+		"CHECKLIST_STATUS_REQUIRED":       4,
+		"CHECKLIST_STATUS_CONSTRAINED":    5,
+		"CHECKLIST_STATUS_ANNOTATED":      6,
+		"CHECKLIST_STATUS_NOT_EVALUATED":  7,
+		"CHECKLIST_STATUS_NOT_APPLICABLE": 8,
+	}
+)
+
+func (x ChecklistStatus) Enum() *ChecklistStatus {
+	p := new(ChecklistStatus)
+	*p = x
+	return p
+}
+
+func (x ChecklistStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ChecklistStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_pantherclaw_v1_authority_proto_enumTypes[1].Descriptor()
+}
+
+func (ChecklistStatus) Type() protoreflect.EnumType {
+	return &file_pantherclaw_v1_authority_proto_enumTypes[1]
+}
+
+func (x ChecklistStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ChecklistStatus.Descriptor instead.
+func (ChecklistStatus) EnumDescriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{1}
+}
+
 // Outcome of a dispatch (PAP-1 §7.4).
 type Outcome int32
 
@@ -125,11 +198,11 @@ func (x Outcome) String() string {
 }
 
 func (Outcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_pantherclaw_v1_authority_proto_enumTypes[1].Descriptor()
+	return file_pantherclaw_v1_authority_proto_enumTypes[2].Descriptor()
 }
 
 func (Outcome) Type() protoreflect.EnumType {
-	return &file_pantherclaw_v1_authority_proto_enumTypes[1]
+	return &file_pantherclaw_v1_authority_proto_enumTypes[2]
 }
 
 func (x Outcome) Number() protoreflect.EnumNumber {
@@ -138,7 +211,7 @@ func (x Outcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Outcome.Descriptor instead.
 func (Outcome) EnumDescriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{1}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{2}
 }
 
 // Reason explains one checklist outcome.
@@ -291,7 +364,27 @@ type AuthorizeResponse struct {
 	// Signed decision receipt JWS.
 	Receipt string `protobuf:"bytes,8,opt,name=receipt,proto3" json:"receipt,omitempty"`
 	// The org's current PAP/1 nonce, for the PAP-Nonce response header.
-	Nonce         string `protobuf:"bytes,9,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	Nonce string `protobuf:"bytes,9,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	// The full checklist: one item per check of the ten steps, decisive item
+	// first (F078, F092). Never contains agent-supplied text.
+	Checklist []*ChecklistItem `protobuf:"bytes,10,rep,name=checklist,proto3" json:"checklist,omitempty"`
+	// Obligations the gateway must apply (ALLOW_WITH_OBLIGATIONS).
+	Obligations []*Obligation `protobuf:"bytes,11,rep,name=obligations,proto3" json:"obligations,omitempty"`
+	// Hex SHA-256 of the effective action, when an obligation clamps a
+	// parameter (F104, F107); empty otherwise. The gateway dispatches the
+	// effective action (M6).
+	EffectiveActionHash string `protobuf:"bytes,12,opt,name=effective_action_hash,json=effectiveActionHash,proto3" json:"effective_action_hash,omitempty"`
+	// Decision-basis digest ("sha256:" and 64 hex digits): the policy
+	// version, grant chain and guardrail revisions, definition digest and
+	// facts digest the decision used. Approvals bind it (HR-030).
+	DecisionBasisDigest string `protobuf:"bytes,13,opt,name=decision_basis_digest,json=decisionBasisDigest,proto3" json:"decision_basis_digest,omitempty"`
+	// Evaluation number of this decision for the (run, action), from 1. An
+	// open decision (REQUIRE_*, CANNOT_AUTHORIZE) is evaluated again on
+	// retry (HR-006).
+	Evaluation int32 `protobuf:"varint,14,opt,name=evaluation,proto3" json:"evaluation,omitempty"`
+	// Whether this answer is a stored decision returned for a repeat
+	// (HR-005), not a new evaluation.
+	Repeat        bool `protobuf:"varint,15,opt,name=repeat,proto3" json:"repeat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -389,6 +482,250 @@ func (x *AuthorizeResponse) GetNonce() string {
 	return ""
 }
 
+func (x *AuthorizeResponse) GetChecklist() []*ChecklistItem {
+	if x != nil {
+		return x.Checklist
+	}
+	return nil
+}
+
+func (x *AuthorizeResponse) GetObligations() []*Obligation {
+	if x != nil {
+		return x.Obligations
+	}
+	return nil
+}
+
+func (x *AuthorizeResponse) GetEffectiveActionHash() string {
+	if x != nil {
+		return x.EffectiveActionHash
+	}
+	return ""
+}
+
+func (x *AuthorizeResponse) GetDecisionBasisDigest() string {
+	if x != nil {
+		return x.DecisionBasisDigest
+	}
+	return ""
+}
+
+func (x *AuthorizeResponse) GetEvaluation() int32 {
+	if x != nil {
+		return x.Evaluation
+	}
+	return 0
+}
+
+func (x *AuthorizeResponse) GetRepeat() bool {
+	if x != nil {
+		return x.Repeat
+	}
+	return false
+}
+
+// ChecklistItem is one check of the decision pipeline.
+type ChecklistItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Step, 1-10 (ARCHITECTURE §6.1).
+	Step int32 `protobuf:"varint,1,opt,name=step,proto3" json:"step,omitempty"`
+	// Check name, for example "authority".
+	Check string `protobuf:"bytes,2,opt,name=check,proto3" json:"check,omitempty"`
+	// Outcome.
+	Status ChecklistStatus `protobuf:"varint,3,opt,name=status,proto3,enum=pantherclaw.v1.ChecklistStatus" json:"status,omitempty"`
+	// Stable reason code.
+	Code string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
+	// Detail (never agent-supplied text).
+	Detail string `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
+	// The grant or guardrail level it concerns, for example "grant
+	// <id>@<revision>"; empty when none.
+	Level string `protobuf:"bytes,6,opt,name=level,proto3" json:"level,omitempty"`
+	// Whether this item decided the outcome.
+	Decisive      bool `protobuf:"varint,7,opt,name=decisive,proto3" json:"decisive,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChecklistItem) Reset() {
+	*x = ChecklistItem{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChecklistItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChecklistItem) ProtoMessage() {}
+
+func (x *ChecklistItem) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChecklistItem.ProtoReflect.Descriptor instead.
+func (*ChecklistItem) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ChecklistItem) GetStep() int32 {
+	if x != nil {
+		return x.Step
+	}
+	return 0
+}
+
+func (x *ChecklistItem) GetCheck() string {
+	if x != nil {
+		return x.Check
+	}
+	return ""
+}
+
+func (x *ChecklistItem) GetStatus() ChecklistStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ChecklistStatus_CHECKLIST_STATUS_UNSPECIFIED
+}
+
+func (x *ChecklistItem) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *ChecklistItem) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *ChecklistItem) GetLevel() string {
+	if x != nil {
+		return x.Level
+	}
+	return ""
+}
+
+func (x *ChecklistItem) GetDecisive() bool {
+	if x != nil {
+		return x.Decisive
+	}
+	return false
+}
+
+// Obligation is a constraint the gateway applies before dispatch.
+type Obligation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The policy rule that set it.
+	Rule string `protobuf:"bytes,1,opt,name=rule,proto3" json:"rule,omitempty"`
+	// Kind, for example "amount_max" or "allowed_values".
+	Kind string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Parameter it applies to.
+	Param string `protobuf:"bytes,3,opt,name=param,proto3" json:"param,omitempty"`
+	// Maximum (decimal string), for a maximum.
+	Max string `protobuf:"bytes,4,opt,name=max,proto3" json:"max,omitempty"`
+	// Allowed values, for a set.
+	Values []string `protobuf:"bytes,5,rep,name=values,proto3" json:"values,omitempty"`
+	// Whether the parameter was clamped to fit (the effective action differs
+	// from the requested one).
+	Clamp bool `protobuf:"varint,6,opt,name=clamp,proto3" json:"clamp,omitempty"`
+	// When it applies, for example "before_execution" (F071).
+	Timing        string `protobuf:"bytes,7,opt,name=timing,proto3" json:"timing,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Obligation) Reset() {
+	*x = Obligation{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Obligation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Obligation) ProtoMessage() {}
+
+func (x *Obligation) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Obligation.ProtoReflect.Descriptor instead.
+func (*Obligation) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Obligation) GetRule() string {
+	if x != nil {
+		return x.Rule
+	}
+	return ""
+}
+
+func (x *Obligation) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Obligation) GetParam() string {
+	if x != nil {
+		return x.Param
+	}
+	return ""
+}
+
+func (x *Obligation) GetMax() string {
+	if x != nil {
+		return x.Max
+	}
+	return ""
+}
+
+func (x *Obligation) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+func (x *Obligation) GetClamp() bool {
+	if x != nil {
+		return x.Clamp
+	}
+	return false
+}
+
+func (x *Obligation) GetTiming() string {
+	if x != nil {
+		return x.Timing
+	}
+	return ""
+}
+
 // BeginDispatchRequest moves a permit to DISPATCHING.
 type BeginDispatchRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -402,7 +739,7 @@ type BeginDispatchRequest struct {
 
 func (x *BeginDispatchRequest) Reset() {
 	*x = BeginDispatchRequest{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[3]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -414,7 +751,7 @@ func (x *BeginDispatchRequest) String() string {
 func (*BeginDispatchRequest) ProtoMessage() {}
 
 func (x *BeginDispatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[3]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,7 +764,7 @@ func (x *BeginDispatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginDispatchRequest.ProtoReflect.Descriptor instead.
 func (*BeginDispatchRequest) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{3}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BeginDispatchRequest) GetPermitId() string {
@@ -453,7 +790,7 @@ type BeginDispatchResponse struct {
 
 func (x *BeginDispatchResponse) Reset() {
 	*x = BeginDispatchResponse{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[4]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -465,7 +802,7 @@ func (x *BeginDispatchResponse) String() string {
 func (*BeginDispatchResponse) ProtoMessage() {}
 
 func (x *BeginDispatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[4]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -478,7 +815,7 @@ func (x *BeginDispatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginDispatchResponse.ProtoReflect.Descriptor instead.
 func (*BeginDispatchResponse) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{4}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{6}
 }
 
 // RecordExecutionRequest reports what happened at the target.
@@ -500,7 +837,7 @@ type RecordExecutionRequest struct {
 
 func (x *RecordExecutionRequest) Reset() {
 	*x = RecordExecutionRequest{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[5]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -512,7 +849,7 @@ func (x *RecordExecutionRequest) String() string {
 func (*RecordExecutionRequest) ProtoMessage() {}
 
 func (x *RecordExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[5]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -525,7 +862,7 @@ func (x *RecordExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordExecutionRequest.ProtoReflect.Descriptor instead.
 func (*RecordExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{5}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RecordExecutionRequest) GetPermitId() string {
@@ -574,7 +911,7 @@ type RecordExecutionResponse struct {
 
 func (x *RecordExecutionResponse) Reset() {
 	*x = RecordExecutionResponse{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[6]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -586,7 +923,7 @@ func (x *RecordExecutionResponse) String() string {
 func (*RecordExecutionResponse) ProtoMessage() {}
 
 func (x *RecordExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[6]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -599,7 +936,7 @@ func (x *RecordExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecordExecutionResponse.ProtoReflect.Descriptor instead.
 func (*RecordExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{6}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RecordExecutionResponse) GetReceipt() string {
@@ -634,7 +971,7 @@ type WorkloadCredentials struct {
 
 func (x *WorkloadCredentials) Reset() {
 	*x = WorkloadCredentials{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -646,7 +983,7 @@ func (x *WorkloadCredentials) String() string {
 func (*WorkloadCredentials) ProtoMessage() {}
 
 func (x *WorkloadCredentials) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -659,7 +996,7 @@ func (x *WorkloadCredentials) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadCredentials.ProtoReflect.Descriptor instead.
 func (*WorkloadCredentials) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{7}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *WorkloadCredentials) GetWorkloadToken() string {
@@ -713,7 +1050,7 @@ type GetNonceRequest struct {
 
 func (x *GetNonceRequest) Reset() {
 	*x = GetNonceRequest{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +1062,7 @@ func (x *GetNonceRequest) String() string {
 func (*GetNonceRequest) ProtoMessage() {}
 
 func (x *GetNonceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +1075,7 @@ func (x *GetNonceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNonceRequest.ProtoReflect.Descriptor instead.
 func (*GetNonceRequest) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{8}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{10}
 }
 
 // GetNonceResponse returns it.
@@ -754,7 +1091,7 @@ type GetNonceResponse struct {
 
 func (x *GetNonceResponse) Reset() {
 	*x = GetNonceResponse{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -766,7 +1103,7 @@ func (x *GetNonceResponse) String() string {
 func (*GetNonceResponse) ProtoMessage() {}
 
 func (x *GetNonceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -779,7 +1116,7 @@ func (x *GetNonceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNonceResponse.ProtoReflect.Descriptor instead.
 func (*GetNonceResponse) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{9}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetNonceResponse) GetNonce() string {
@@ -811,7 +1148,7 @@ type ReportUnknownWorkloadRequest struct {
 
 func (x *ReportUnknownWorkloadRequest) Reset() {
 	*x = ReportUnknownWorkloadRequest{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -823,7 +1160,7 @@ func (x *ReportUnknownWorkloadRequest) String() string {
 func (*ReportUnknownWorkloadRequest) ProtoMessage() {}
 
 func (x *ReportUnknownWorkloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -836,7 +1173,7 @@ func (x *ReportUnknownWorkloadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportUnknownWorkloadRequest.ProtoReflect.Descriptor instead.
 func (*ReportUnknownWorkloadRequest) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{10}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReportUnknownWorkloadRequest) GetWorkload() *WorkloadCredentials {
@@ -874,7 +1211,7 @@ type ReportUnknownWorkloadResponse struct {
 
 func (x *ReportUnknownWorkloadResponse) Reset() {
 	*x = ReportUnknownWorkloadResponse{}
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +1223,7 @@ func (x *ReportUnknownWorkloadResponse) String() string {
 func (*ReportUnknownWorkloadResponse) ProtoMessage() {}
 
 func (x *ReportUnknownWorkloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +1236,7 @@ func (x *ReportUnknownWorkloadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportUnknownWorkloadResponse.ProtoReflect.Descriptor instead.
 func (*ReportUnknownWorkloadResponse) Descriptor() ([]byte, []int) {
-	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{11}
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ReportUnknownWorkloadResponse) GetDiscoveryId() string {
@@ -928,7 +1265,7 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\bdecisive\x18\x04 \x01(\bR\bdecisive\"}\n" +
 	"\x10AuthorizeRequest\x12(\n" +
 	"\taction_ir\x18\x01 \x01(\fB\v\xbaH\bz\x06\x10\x02\x18\x80\x80@R\bactionIr\x12?\n" +
-	"\bworkload\x18\x02 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsR\bworkload\"\xbe\x02\n" +
+	"\bworkload\x18\x02 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsR\bworkload\"\xd9\x04\n" +
 	"\x11AuthorizeResponse\x124\n" +
 	"\bdecision\x18\x01 \x01(\x0e2\x18.pantherclaw.v1.DecisionR\bdecision\x12%\n" +
 	"\x0etransaction_id\x18\x02 \x01(\tR\rtransactionId\x12\x1f\n" +
@@ -939,7 +1276,33 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\tpermit_id\x18\x06 \x01(\tR\bpermitId\x12\x14\n" +
 	"\x05epoch\x18\a \x01(\x03R\x05epoch\x12\x18\n" +
 	"\areceipt\x18\b \x01(\tR\areceipt\x12\x14\n" +
-	"\x05nonce\x18\t \x01(\tR\x05nonce\"\\\n" +
+	"\x05nonce\x18\t \x01(\tR\x05nonce\x12;\n" +
+	"\tchecklist\x18\n" +
+	" \x03(\v2\x1d.pantherclaw.v1.ChecklistItemR\tchecklist\x12<\n" +
+	"\vobligations\x18\v \x03(\v2\x1a.pantherclaw.v1.ObligationR\vobligations\x122\n" +
+	"\x15effective_action_hash\x18\f \x01(\tR\x13effectiveActionHash\x122\n" +
+	"\x15decision_basis_digest\x18\r \x01(\tR\x13decisionBasisDigest\x12\x1e\n" +
+	"\n" +
+	"evaluation\x18\x0e \x01(\x05R\n" +
+	"evaluation\x12\x16\n" +
+	"\x06repeat\x18\x0f \x01(\bR\x06repeat\"\xd0\x01\n" +
+	"\rChecklistItem\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\x05R\x04step\x12\x14\n" +
+	"\x05check\x18\x02 \x01(\tR\x05check\x127\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x1f.pantherclaw.v1.ChecklistStatusR\x06status\x12\x12\n" +
+	"\x04code\x18\x04 \x01(\tR\x04code\x12\x16\n" +
+	"\x06detail\x18\x05 \x01(\tR\x06detail\x12\x14\n" +
+	"\x05level\x18\x06 \x01(\tR\x05level\x12\x1a\n" +
+	"\bdecisive\x18\a \x01(\bR\bdecisive\"\xa2\x01\n" +
+	"\n" +
+	"Obligation\x12\x12\n" +
+	"\x04rule\x18\x01 \x01(\tR\x04rule\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05param\x18\x03 \x01(\tR\x05param\x12\x10\n" +
+	"\x03max\x18\x04 \x01(\tR\x03max\x12\x16\n" +
+	"\x06values\x18\x05 \x03(\tR\x06values\x12\x14\n" +
+	"\x05clamp\x18\x06 \x01(\bR\x05clamp\x12\x16\n" +
+	"\x06timing\x18\a \x01(\tR\x06timing\"\\\n" +
 	"\x14BeginDispatchRequest\x12%\n" +
 	"\tpermit_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\bpermitId\x12\x1d\n" +
 	"\x05epoch\x18\x02 \x01(\x03B\a\xbaH\x04\"\x02 \x00R\x05epoch\"\x17\n" +
@@ -984,7 +1347,17 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\x19DECISION_REQUIRE_APPROVAL\x10\x03\x12\x1c\n" +
 	"\x18DECISION_REQUIRE_STEP_UP\x10\x04\x12\x11\n" +
 	"\rDECISION_DENY\x10\x05\x12\x1d\n" +
-	"\x19DECISION_CANNOT_AUTHORIZE\x10\x06*a\n" +
+	"\x19DECISION_CANNOT_AUTHORIZE\x10\x06*\xb5\x02\n" +
+	"\x0fChecklistStatus\x12 \n" +
+	"\x1cCHECKLIST_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17CHECKLIST_STATUS_PASSED\x10\x01\x12\x1b\n" +
+	"\x17CHECKLIST_STATUS_FAILED\x10\x02\x12\x1c\n" +
+	"\x18CHECKLIST_STATUS_MISSING\x10\x03\x12\x1d\n" +
+	"\x19CHECKLIST_STATUS_REQUIRED\x10\x04\x12 \n" +
+	"\x1cCHECKLIST_STATUS_CONSTRAINED\x10\x05\x12\x1e\n" +
+	"\x1aCHECKLIST_STATUS_ANNOTATED\x10\x06\x12\"\n" +
+	"\x1eCHECKLIST_STATUS_NOT_EVALUATED\x10\a\x12#\n" +
+	"\x1fCHECKLIST_STATUS_NOT_APPLICABLE\x10\b*a\n" +
 	"\aOutcome\x12\x17\n" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10OUTCOME_ACCEPTED\x10\x01\x12\x12\n" +
@@ -1010,47 +1383,53 @@ func file_pantherclaw_v1_authority_proto_rawDescGZIP() []byte {
 	return file_pantherclaw_v1_authority_proto_rawDescData
 }
 
-var file_pantherclaw_v1_authority_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pantherclaw_v1_authority_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_pantherclaw_v1_authority_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_pantherclaw_v1_authority_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_pantherclaw_v1_authority_proto_goTypes = []any{
 	(Decision)(0),                         // 0: pantherclaw.v1.Decision
-	(Outcome)(0),                          // 1: pantherclaw.v1.Outcome
-	(*Reason)(nil),                        // 2: pantherclaw.v1.Reason
-	(*AuthorizeRequest)(nil),              // 3: pantherclaw.v1.AuthorizeRequest
-	(*AuthorizeResponse)(nil),             // 4: pantherclaw.v1.AuthorizeResponse
-	(*BeginDispatchRequest)(nil),          // 5: pantherclaw.v1.BeginDispatchRequest
-	(*BeginDispatchResponse)(nil),         // 6: pantherclaw.v1.BeginDispatchResponse
-	(*RecordExecutionRequest)(nil),        // 7: pantherclaw.v1.RecordExecutionRequest
-	(*RecordExecutionResponse)(nil),       // 8: pantherclaw.v1.RecordExecutionResponse
-	(*WorkloadCredentials)(nil),           // 9: pantherclaw.v1.WorkloadCredentials
-	(*GetNonceRequest)(nil),               // 10: pantherclaw.v1.GetNonceRequest
-	(*GetNonceResponse)(nil),              // 11: pantherclaw.v1.GetNonceResponse
-	(*ReportUnknownWorkloadRequest)(nil),  // 12: pantherclaw.v1.ReportUnknownWorkloadRequest
-	(*ReportUnknownWorkloadResponse)(nil), // 13: pantherclaw.v1.ReportUnknownWorkloadResponse
-	(*timestamppb.Timestamp)(nil),         // 14: google.protobuf.Timestamp
+	(ChecklistStatus)(0),                  // 1: pantherclaw.v1.ChecklistStatus
+	(Outcome)(0),                          // 2: pantherclaw.v1.Outcome
+	(*Reason)(nil),                        // 3: pantherclaw.v1.Reason
+	(*AuthorizeRequest)(nil),              // 4: pantherclaw.v1.AuthorizeRequest
+	(*AuthorizeResponse)(nil),             // 5: pantherclaw.v1.AuthorizeResponse
+	(*ChecklistItem)(nil),                 // 6: pantherclaw.v1.ChecklistItem
+	(*Obligation)(nil),                    // 7: pantherclaw.v1.Obligation
+	(*BeginDispatchRequest)(nil),          // 8: pantherclaw.v1.BeginDispatchRequest
+	(*BeginDispatchResponse)(nil),         // 9: pantherclaw.v1.BeginDispatchResponse
+	(*RecordExecutionRequest)(nil),        // 10: pantherclaw.v1.RecordExecutionRequest
+	(*RecordExecutionResponse)(nil),       // 11: pantherclaw.v1.RecordExecutionResponse
+	(*WorkloadCredentials)(nil),           // 12: pantherclaw.v1.WorkloadCredentials
+	(*GetNonceRequest)(nil),               // 13: pantherclaw.v1.GetNonceRequest
+	(*GetNonceResponse)(nil),              // 14: pantherclaw.v1.GetNonceResponse
+	(*ReportUnknownWorkloadRequest)(nil),  // 15: pantherclaw.v1.ReportUnknownWorkloadRequest
+	(*ReportUnknownWorkloadResponse)(nil), // 16: pantherclaw.v1.ReportUnknownWorkloadResponse
+	(*timestamppb.Timestamp)(nil),         // 17: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_authority_proto_depIdxs = []int32{
-	9,  // 0: pantherclaw.v1.AuthorizeRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
+	12, // 0: pantherclaw.v1.AuthorizeRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
 	0,  // 1: pantherclaw.v1.AuthorizeResponse.decision:type_name -> pantherclaw.v1.Decision
-	2,  // 2: pantherclaw.v1.AuthorizeResponse.reasons:type_name -> pantherclaw.v1.Reason
-	1,  // 3: pantherclaw.v1.RecordExecutionRequest.outcome:type_name -> pantherclaw.v1.Outcome
-	14, // 4: pantherclaw.v1.GetNonceResponse.expire_time:type_name -> google.protobuf.Timestamp
-	9,  // 5: pantherclaw.v1.ReportUnknownWorkloadRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
-	3,  // 6: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
-	5,  // 7: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
-	7,  // 8: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
-	10, // 9: pantherclaw.v1.AuthorityService.GetNonce:input_type -> pantherclaw.v1.GetNonceRequest
-	12, // 10: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:input_type -> pantherclaw.v1.ReportUnknownWorkloadRequest
-	4,  // 11: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
-	6,  // 12: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
-	8,  // 13: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
-	11, // 14: pantherclaw.v1.AuthorityService.GetNonce:output_type -> pantherclaw.v1.GetNonceResponse
-	13, // 15: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:output_type -> pantherclaw.v1.ReportUnknownWorkloadResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	3,  // 2: pantherclaw.v1.AuthorizeResponse.reasons:type_name -> pantherclaw.v1.Reason
+	6,  // 3: pantherclaw.v1.AuthorizeResponse.checklist:type_name -> pantherclaw.v1.ChecklistItem
+	7,  // 4: pantherclaw.v1.AuthorizeResponse.obligations:type_name -> pantherclaw.v1.Obligation
+	1,  // 5: pantherclaw.v1.ChecklistItem.status:type_name -> pantherclaw.v1.ChecklistStatus
+	2,  // 6: pantherclaw.v1.RecordExecutionRequest.outcome:type_name -> pantherclaw.v1.Outcome
+	17, // 7: pantherclaw.v1.GetNonceResponse.expire_time:type_name -> google.protobuf.Timestamp
+	12, // 8: pantherclaw.v1.ReportUnknownWorkloadRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
+	4,  // 9: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
+	8,  // 10: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
+	10, // 11: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
+	13, // 12: pantherclaw.v1.AuthorityService.GetNonce:input_type -> pantherclaw.v1.GetNonceRequest
+	15, // 13: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:input_type -> pantherclaw.v1.ReportUnknownWorkloadRequest
+	5,  // 14: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
+	9,  // 15: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
+	11, // 16: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
+	14, // 17: pantherclaw.v1.AuthorityService.GetNonce:output_type -> pantherclaw.v1.GetNonceResponse
+	16, // 18: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:output_type -> pantherclaw.v1.ReportUnknownWorkloadResponse
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_authority_proto_init() }
@@ -1063,8 +1442,8 @@ func file_pantherclaw_v1_authority_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_authority_proto_rawDesc), len(file_pantherclaw_v1_authority_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   12,
+			NumEnums:      3,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

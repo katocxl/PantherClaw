@@ -91,6 +91,82 @@ message AuthorizeResponse {
   string receipt = 8;
   // The org's current PAP/1 nonce, for the PAP-Nonce response header.
   string nonce = 9;
+  // The full checklist: one item per check of the ten steps, decisive item
+  // first (F078, F092). Never contains agent-supplied text.
+  repeated ChecklistItem checklist = 10;
+  // Obligations the gateway must apply (ALLOW_WITH_OBLIGATIONS).
+  repeated Obligation obligations = 11;
+  // Hex SHA-256 of the effective action, when an obligation clamps a
+  // parameter (F104, F107); empty otherwise. The gateway dispatches the
+  // effective action (M6).
+  string effective_action_hash = 12;
+  // Decision-basis digest ("sha256:" and 64 hex digits): the policy
+  // version, grant chain and guardrail revisions, definition digest and
+  // facts digest the decision used. Approvals bind it (HR-030).
+  string decision_basis_digest = 13;
+  // Evaluation number of this decision for the (run, action), from 1. An
+  // open decision (REQUIRE_*, CANNOT_AUTHORIZE) is evaluated again on
+  // retry (HR-006).
+  int32 evaluation = 14;
+  // Whether this answer is a stored decision returned for a repeat
+  // (HR-005), not a new evaluation.
+  bool repeat = 15;
+}
+
+// ChecklistStatus is the outcome of one checklist item.
+enum ChecklistStatus {
+  CHECKLIST_STATUS_UNSPECIFIED = 0;
+  CHECKLIST_STATUS_PASSED = 1;
+  CHECKLIST_STATUS_FAILED = 2;
+  // Evidence (a fact, a definition) is missing or stale.
+  CHECKLIST_STATUS_MISSING = 3;
+  // An approval or step-up is required.
+  CHECKLIST_STATUS_REQUIRED = 4;
+  // An obligation constrains the action.
+  CHECKLIST_STATUS_CONSTRAINED = 5;
+  // Informational (ANNOTATE rules).
+  CHECKLIST_STATUS_ANNOTATED = 6;
+  // Depends on a check that failed.
+  CHECKLIST_STATUS_NOT_EVALUATED = 7;
+  CHECKLIST_STATUS_NOT_APPLICABLE = 8;
+}
+
+// ChecklistItem is one check of the decision pipeline.
+message ChecklistItem {
+  // Step, 1-10 (ARCHITECTURE §6.1).
+  int32 step = 1;
+  // Check name, for example "authority".
+  string check = 2;
+  // Outcome.
+  ChecklistStatus status = 3;
+  // Stable reason code.
+  string code = 4;
+  // Detail (never agent-supplied text).
+  string detail = 5;
+  // The grant or guardrail level it concerns, for example "grant
+  // <id>@<revision>"; empty when none.
+  string level = 6;
+  // Whether this item decided the outcome.
+  bool decisive = 7;
+}
+
+// Obligation is a constraint the gateway applies before dispatch.
+message Obligation {
+  // The policy rule that set it.
+  string rule = 1;
+  // Kind, for example "amount_max" or "allowed_values".
+  string kind = 2;
+  // Parameter it applies to.
+  string param = 3;
+  // Maximum (decimal string), for a maximum.
+  string max = 4;
+  // Allowed values, for a set.
+  repeated string values = 5;
+  // Whether the parameter was clamped to fit (the effective action differs
+  // from the requested one).
+  bool clamp = 6;
+  // When it applies, for example "before_execution" (F071).
+  string timing = 7;
 }
 
 // BeginDispatchRequest moves a permit to DISPATCHING.

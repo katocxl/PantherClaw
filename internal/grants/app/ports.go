@@ -22,15 +22,13 @@ import (
 	tdomain "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
-// Permissions of the grant and guardrail use cases. They join the
-// permission catalog with the M4 API (slice 213); until then no binding
-// grants them and every check fails closed.
+// Permissions of the grant and guardrail use cases (the tenancy catalog's).
 const (
-	PermGrantRead        tdomain.Permission = "grant.read"
-	PermGrantIssue       tdomain.Permission = "grant.issue" // human only (decision 7)
-	PermGrantRevoke      tdomain.Permission = "grant.revoke"
-	PermGuardrailsRead   tdomain.Permission = "guardrails.read"
-	PermGuardrailsManage tdomain.Permission = "guardrails.manage" // human only
+	PermGrantRead        = tdomain.PermGrantRead
+	PermGrantIssue       = tdomain.PermGrantIssue // human only (decision 7)
+	PermGrantRevoke      = tdomain.PermGrantRevoke
+	PermGuardrailsRead   = tdomain.PermGuardrailsRead
+	PermGuardrailsManage = tdomain.PermGuardrailsManage // human only
 )
 
 // Repository errors.

@@ -548,11 +548,177 @@ func (x *StartChildRunResponse) GetRun() *Run {
 	return nil
 }
 
+// DelegateGrantRequest delegates part of the caller's run's grant.
+type DelegateGrantRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The caller's active run; it must be bound to the caller's instance and
+	// have a grant that allows delegation.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// The child run (from StartChildRun); it must not have a grant yet.
+	ChildRunId string `protobuf:"bytes,2,opt,name=child_run_id,json=childRunId,proto3" json:"child_run_id,omitempty"`
+	// UNTRUSTED task label.
+	TaskRef string `protobuf:"bytes,3,opt,name=task_ref,json=taskRef,proto3" json:"task_ref,omitempty"`
+	// Valid until (default and maximum: the parent's expiry, and at most 24
+	// hours).
+	ExpireTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	// Bounds (grant bounds v1, JSON); at most the parent's.
+	Bounds []byte `protobuf:"bytes,5,opt,name=bounds,proto3" json:"bounds,omitempty"`
+	// Requirements (JSON array); the parent's always apply as well.
+	Requirements []byte `protobuf:"bytes,6,opt,name=requirements,proto3" json:"requirements,omitempty"`
+	// The child's own limits (JSON); its ancestors' still apply.
+	Limits []byte `protobuf:"bytes,7,opt,name=limits,proto3" json:"limits,omitempty"`
+	// Delegation settings; depth below the parent's.
+	Delegation *GrantDelegation `protobuf:"bytes,8,opt,name=delegation,proto3" json:"delegation,omitempty"`
+	// Lowest attestation level (0-2); at least the parent's.
+	MinAttestationLevel int32 `protobuf:"varint,9,opt,name=min_attestation_level,json=minAttestationLevel,proto3" json:"min_attestation_level,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *DelegateGrantRequest) Reset() {
+	*x = DelegateGrantRequest{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DelegateGrantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DelegateGrantRequest) ProtoMessage() {}
+
+func (x *DelegateGrantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DelegateGrantRequest.ProtoReflect.Descriptor instead.
+func (*DelegateGrantRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DelegateGrantRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DelegateGrantRequest) GetChildRunId() string {
+	if x != nil {
+		return x.ChildRunId
+	}
+	return ""
+}
+
+func (x *DelegateGrantRequest) GetTaskRef() string {
+	if x != nil {
+		return x.TaskRef
+	}
+	return ""
+}
+
+func (x *DelegateGrantRequest) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+func (x *DelegateGrantRequest) GetBounds() []byte {
+	if x != nil {
+		return x.Bounds
+	}
+	return nil
+}
+
+func (x *DelegateGrantRequest) GetRequirements() []byte {
+	if x != nil {
+		return x.Requirements
+	}
+	return nil
+}
+
+func (x *DelegateGrantRequest) GetLimits() []byte {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *DelegateGrantRequest) GetDelegation() *GrantDelegation {
+	if x != nil {
+		return x.Delegation
+	}
+	return nil
+}
+
+func (x *DelegateGrantRequest) GetMinAttestationLevel() int32 {
+	if x != nil {
+		return x.MinAttestationLevel
+	}
+	return 0
+}
+
+// DelegateGrantResponse returns the delegated grant.
+type DelegateGrantResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The grant, bound to the child run.
+	Grant         *Grant `protobuf:"bytes,1,opt,name=grant,proto3" json:"grant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DelegateGrantResponse) Reset() {
+	*x = DelegateGrantResponse{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DelegateGrantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DelegateGrantResponse) ProtoMessage() {}
+
+func (x *DelegateGrantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DelegateGrantResponse.ProtoReflect.Descriptor instead.
+func (*DelegateGrantResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *DelegateGrantResponse) GetGrant() *Grant {
+	if x != nil {
+		return x.Grant
+	}
+	return nil
+}
+
 var File_pantherclaw_v1_workload_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_workload_proto_rawDesc = "" +
 	"\n" +
-	"\x1dpantherclaw/v1/workload.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dpantherclaw/v1/identity.proto\x1a\x19pantherclaw/v1/runs.proto\"q\n" +
+	"\x1dpantherclaw/v1/workload.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bpantherclaw/v1/grants.proto\x1a\x1dpantherclaw/v1/identity.proto\x1a\x19pantherclaw/v1/runs.proto\"q\n" +
 	"\vAttestation\x12?\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.pantherclaw.v1.AttestationKindB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12!\n" +
@@ -596,16 +762,33 @@ const file_pantherclaw_v1_workload_proto_rawDesc = "" +
 	"ttlMinutesB\x0e\n" +
 	"\f_instance_id\">\n" +
 	"\x15StartChildRunResponse\x12%\n" +
-	"\x03run\x18\x01 \x01(\v2\x13.pantherclaw.v1.RunR\x03run*y\n" +
+	"\x03run\x18\x01 \x01(\v2\x13.pantherclaw.v1.RunR\x03run\"\xbc\x03\n" +
+	"\x14DelegateGrantRequest\x12\x1f\n" +
+	"\x06run_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x05runId\x12*\n" +
+	"\fchild_run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\n" +
+	"childRunId\x12#\n" +
+	"\btask_ref\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\ataskRef\x12;\n" +
+	"\vexpire_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\x12#\n" +
+	"\x06bounds\x18\x05 \x01(\fB\v\xbaH\bz\x06\x10\x02\x18\x80\x80\x04R\x06bounds\x12-\n" +
+	"\frequirements\x18\x06 \x01(\fB\t\xbaH\x06z\x04\x18\x80\x80\x04R\frequirements\x12!\n" +
+	"\x06limits\x18\a \x01(\fB\t\xbaH\x06z\x04\x18\x80\x80\x04R\x06limits\x12?\n" +
+	"\n" +
+	"delegation\x18\b \x01(\v2\x1f.pantherclaw.v1.GrantDelegationR\n" +
+	"delegation\x12=\n" +
+	"\x15min_attestation_level\x18\t \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x02(\x00R\x13minAttestationLevel\"D\n" +
+	"\x15DelegateGrantResponse\x12+\n" +
+	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant*y\n" +
 	"\x0fAttestationKind\x12 \n" +
 	"\x1cATTESTATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fATTESTATION_KIND_GITHUB_ACTIONS\x10\x01\x12\x1f\n" +
-	"\x1bATTESTATION_KIND_KUBERNETES\x10\x022\x8d\x02\n" +
+	"\x1bATTESTATION_KIND_KUBERNETES\x10\x022\xeb\x02\n" +
 	"\x0fWorkloadService\x12G\n" +
 	"\x06Enroll\x12\x1d.pantherclaw.v1.EnrollRequest\x1a\x1e.pantherclaw.v1.EnrollResponse\x12S\n" +
 	"\n" +
 	"IssueToken\x12!.pantherclaw.v1.IssueTokenRequest\x1a\".pantherclaw.v1.IssueTokenResponse\x12\\\n" +
-	"\rStartChildRun\x12$.pantherclaw.v1.StartChildRunRequest\x1a%.pantherclaw.v1.StartChildRunResponseB\xc6\x01\n" +
+	"\rStartChildRun\x12$.pantherclaw.v1.StartChildRunRequest\x1a%.pantherclaw.v1.StartChildRunResponse\x12\\\n" +
+	"\rDelegateGrant\x12$.pantherclaw.v1.DelegateGrantRequest\x1a%.pantherclaw.v1.DelegateGrantResponseB\xc6\x01\n" +
 	"\x12com.pantherclaw.v1B\rWorkloadProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -621,7 +804,7 @@ func file_pantherclaw_v1_workload_proto_rawDescGZIP() []byte {
 }
 
 var file_pantherclaw_v1_workload_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pantherclaw_v1_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_pantherclaw_v1_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_pantherclaw_v1_workload_proto_goTypes = []any{
 	(AttestationKind)(0),          // 0: pantherclaw.v1.AttestationKind
 	(*Attestation)(nil),           // 1: pantherclaw.v1.Attestation
@@ -631,28 +814,37 @@ var file_pantherclaw_v1_workload_proto_goTypes = []any{
 	(*IssueTokenResponse)(nil),    // 5: pantherclaw.v1.IssueTokenResponse
 	(*StartChildRunRequest)(nil),  // 6: pantherclaw.v1.StartChildRunRequest
 	(*StartChildRunResponse)(nil), // 7: pantherclaw.v1.StartChildRunResponse
-	(InstanceState)(0),            // 8: pantherclaw.v1.InstanceState
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
-	(*Run)(nil),                   // 10: pantherclaw.v1.Run
+	(*DelegateGrantRequest)(nil),  // 8: pantherclaw.v1.DelegateGrantRequest
+	(*DelegateGrantResponse)(nil), // 9: pantherclaw.v1.DelegateGrantResponse
+	(InstanceState)(0),            // 10: pantherclaw.v1.InstanceState
+	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(*Run)(nil),                   // 12: pantherclaw.v1.Run
+	(*GrantDelegation)(nil),       // 13: pantherclaw.v1.GrantDelegation
+	(*Grant)(nil),                 // 14: pantherclaw.v1.Grant
 }
 var file_pantherclaw_v1_workload_proto_depIdxs = []int32{
 	0,  // 0: pantherclaw.v1.Attestation.kind:type_name -> pantherclaw.v1.AttestationKind
 	1,  // 1: pantherclaw.v1.EnrollRequest.attestation:type_name -> pantherclaw.v1.Attestation
-	8,  // 2: pantherclaw.v1.EnrollResponse.state:type_name -> pantherclaw.v1.InstanceState
+	10, // 2: pantherclaw.v1.EnrollResponse.state:type_name -> pantherclaw.v1.InstanceState
 	1,  // 3: pantherclaw.v1.IssueTokenRequest.attestation:type_name -> pantherclaw.v1.Attestation
-	9,  // 4: pantherclaw.v1.IssueTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
-	10, // 5: pantherclaw.v1.StartChildRunResponse.run:type_name -> pantherclaw.v1.Run
-	2,  // 6: pantherclaw.v1.WorkloadService.Enroll:input_type -> pantherclaw.v1.EnrollRequest
-	4,  // 7: pantherclaw.v1.WorkloadService.IssueToken:input_type -> pantherclaw.v1.IssueTokenRequest
-	6,  // 8: pantherclaw.v1.WorkloadService.StartChildRun:input_type -> pantherclaw.v1.StartChildRunRequest
-	3,  // 9: pantherclaw.v1.WorkloadService.Enroll:output_type -> pantherclaw.v1.EnrollResponse
-	5,  // 10: pantherclaw.v1.WorkloadService.IssueToken:output_type -> pantherclaw.v1.IssueTokenResponse
-	7,  // 11: pantherclaw.v1.WorkloadService.StartChildRun:output_type -> pantherclaw.v1.StartChildRunResponse
-	9,  // [9:12] is the sub-list for method output_type
-	6,  // [6:9] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	11, // 4: pantherclaw.v1.IssueTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
+	12, // 5: pantherclaw.v1.StartChildRunResponse.run:type_name -> pantherclaw.v1.Run
+	11, // 6: pantherclaw.v1.DelegateGrantRequest.expire_time:type_name -> google.protobuf.Timestamp
+	13, // 7: pantherclaw.v1.DelegateGrantRequest.delegation:type_name -> pantherclaw.v1.GrantDelegation
+	14, // 8: pantherclaw.v1.DelegateGrantResponse.grant:type_name -> pantherclaw.v1.Grant
+	2,  // 9: pantherclaw.v1.WorkloadService.Enroll:input_type -> pantherclaw.v1.EnrollRequest
+	4,  // 10: pantherclaw.v1.WorkloadService.IssueToken:input_type -> pantherclaw.v1.IssueTokenRequest
+	6,  // 11: pantherclaw.v1.WorkloadService.StartChildRun:input_type -> pantherclaw.v1.StartChildRunRequest
+	8,  // 12: pantherclaw.v1.WorkloadService.DelegateGrant:input_type -> pantherclaw.v1.DelegateGrantRequest
+	3,  // 13: pantherclaw.v1.WorkloadService.Enroll:output_type -> pantherclaw.v1.EnrollResponse
+	5,  // 14: pantherclaw.v1.WorkloadService.IssueToken:output_type -> pantherclaw.v1.IssueTokenResponse
+	7,  // 15: pantherclaw.v1.WorkloadService.StartChildRun:output_type -> pantherclaw.v1.StartChildRunResponse
+	9,  // 16: pantherclaw.v1.WorkloadService.DelegateGrant:output_type -> pantherclaw.v1.DelegateGrantResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_workload_proto_init() }
@@ -660,6 +852,7 @@ func file_pantherclaw_v1_workload_proto_init() {
 	if File_pantherclaw_v1_workload_proto != nil {
 		return
 	}
+	file_pantherclaw_v1_grants_proto_init()
 	file_pantherclaw_v1_identity_proto_init()
 	file_pantherclaw_v1_runs_proto_init()
 	file_pantherclaw_v1_workload_proto_msgTypes[5].OneofWrappers = []any{}
@@ -669,7 +862,7 @@ func file_pantherclaw_v1_workload_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_workload_proto_rawDesc), len(file_pantherclaw_v1_workload_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
