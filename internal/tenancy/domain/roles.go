@@ -21,6 +21,7 @@ const (
 	RoleAuditor         RoleName = "auditor"
 	RoleDeveloper       RoleName = "developer"
 	RoleViewer          RoleName = "viewer"
+	RoleRunLauncher     RoleName = "run_launcher"
 )
 
 // Role is a named set of permissions and the scope types it may be bound at.
@@ -71,7 +72,8 @@ var roles = []Role{
 		Permissions: with(basicReads, []Permission{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
-			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead,
+			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
+			PermWaitlistRead,
 		}),
 	},
 	{
@@ -79,13 +81,16 @@ var roles = []Role{
 		Description: "Watches and contains: reads users, roles and audit, disables compromised users and service accounts, responds to incidents.",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermUserManage, PermRoleRead, PermInvitationRead, PermServiceAccountRead,
-			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond,
+			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
+			PermWaitlistRead,
 		}),
 	},
 	{
 		Name: RoleAgentOwner, Title: "Agent Owner", Scopes: anyScope,
 		Description: "Owns agents in scope and is accountable for them.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermAgentManage}),
+		Permissions: with(basicReads, []Permission{
+			PermAgentRead, PermAgentManage, PermRunRead, PermRunStart, PermRunManage, PermWaitlistRead,
+		}),
 	},
 	{
 		Name: RolePolicyAuthor, Title: "Policy Author", Scopes: anyScope,
@@ -105,25 +110,30 @@ var roles = []Role{
 	{
 		Name: RoleResponder, Title: "Responder", Scopes: anyScope,
 		Description: "Investigates and contains incidents in scope.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermIncidentRespond}),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage}),
 	},
 	{
 		Name: RoleAuditor, Title: "Auditor", Scopes: orgScope,
 		Description: "Reads configuration, audit and restricted evidence (human only); changes nothing.",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
-			PermAgentRead, PermEvidenceReadRestricted,
+			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead,
 		}),
 	},
 	{
 		Name: RoleDeveloper, Title: "Developer", Scopes: anyScope,
 		Description: "Builds agents in scope.",
-		Permissions: with(basicReads, []Permission{PermAgentRead}),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart}),
 	},
 	{
 		Name: RoleViewer, Title: "Viewer", Scopes: anyScope,
 		Description: "Sees the hierarchy in scope.",
 		Permissions: with(basicReads),
+	},
+	{
+		Name: RoleRunLauncher, Title: "Run Launcher", Scopes: anyScope,
+		Description: "Starts runs in scope for users who present a fresh token from the identity provider (for example a service acting for a signed-in user). The token proves who is represented and grants nothing.",
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart, PermRunRepresent}),
 	},
 }
 

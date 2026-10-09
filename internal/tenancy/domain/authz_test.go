@@ -212,7 +212,7 @@ func TestRoleCatalogIsWellFormed(t *testing.T) {
 	for _, n := range []domain.RoleName{
 		domain.RoleOrgAdmin, domain.RoleSecurityAdmin, domain.RoleAgentOwner,
 		domain.RolePolicyAuthor, domain.RolePolicyPublisher, domain.RoleApprover, domain.RoleResponder,
-		domain.RoleAuditor, domain.RoleDeveloper, domain.RoleViewer,
+		domain.RoleAuditor, domain.RoleDeveloper, domain.RoleViewer, domain.RoleRunLauncher,
 	} {
 		if !seen[n] {
 			t.Errorf("default role %s missing (SB-2)", n)
@@ -281,5 +281,19 @@ func TestPermissionsListsHeldPermissions(t *testing.T) {
 	}
 	if err := v.Require(domain.PermTeamManage, domain.OrgPath(tr.org)); err == nil {
 		t.Fatal("Require allowed a missing permission")
+	}
+}
+
+// TestHR146_OnlyTheRunLauncherRoleMayRepresentUsers: presenting a subject
+// token to start a run for someone else (run.represent) is a deliberate
+// grant of its own, never part of another default role.
+func TestHR146_OnlyTheRunLauncherRoleMayRepresentUsers(t *testing.T) {
+	for _, r := range domain.Roles() {
+		if got := r.Has(domain.PermRunRepresent); got != (r.Name == domain.RoleRunLauncher) {
+			t.Errorf("role %s: run.represent = %v", r.Name, got)
+		}
+	}
+	if !domain.PermRunRepresent.APIKeyScopable() {
+		t.Error("run.represent must be usable by service launchers")
 	}
 }

@@ -57,6 +57,16 @@ const (
 	PermEvidenceReadRestricted Permission = "evidence.read_restricted" // M7, human only
 )
 
+// Run and waitlist permissions (M3). run.represent lets a launcher present
+// an RFC 8693 subject token to start a run for another user (HR-146).
+const (
+	PermRunRead      Permission = "run.read"
+	PermRunStart     Permission = "run.start"
+	PermRunRepresent Permission = "run.represent"
+	PermRunManage    Permission = "run.manage"
+	PermWaitlistRead Permission = "waitlist.read"
+)
+
 // Gateway permissions are held only by authenticated gateways (M1.5 dev
 // gateway, M6 mTLS), never by users, service accounts or roles.
 const (
@@ -76,6 +86,8 @@ var catalog = []Permission{
 	PermServiceAccountRead, PermServiceAccountManage,
 	PermAuditRead,
 	PermAgentRead, PermAgentManage,
+	PermRunRead, PermRunStart, PermRunRepresent, PermRunManage,
+	PermWaitlistRead,
 	PermPolicyAuthor, PermPolicyPublish,
 	PermApprovalRespond, PermIncidentRespond, PermEvidenceReadRestricted,
 }
