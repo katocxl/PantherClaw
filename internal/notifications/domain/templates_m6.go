@@ -3,10 +3,10 @@
 
 package domain
 
-// m6Templates are the kill-switch notification types (G0 M6, HR-113). Like
-// every template they render only ids and fixed text (HR-158) and link to
-// the authenticated emergency-stop page; nothing in a message can engage or
-// restore.
+// m6Templates are the kill-switch and connection notification types (G0 M6,
+// HR-113, HR-183). Like every template they render only ids and fixed text
+// (HR-158); the kill-switch ones link to the authenticated emergency-stop
+// page, and nothing in a message can engage, restore or change anything.
 var m6Templates = []Template{
 	{
 		Type: "security.kill_switch_engaged", Severity: Critical, Params: []string{"user"},
@@ -33,6 +33,19 @@ var m6Templates = []Template{
 		Title: "The PantherClaw kill switch was lifted",
 		Body:  "{user} confirmed lifting the org kill switch. Agent actions are decided again.",
 		Link:  "/containment",
+	},
+	// Connections (HR-183): quarantine stops a connection at once; a
+	// weakening change is something an attacker with a stolen session would
+	// make, so every one is told.
+	{
+		Type: "security.connection_quarantined", Severity: Critical, Params: []string{"connection", "reason"},
+		Title: "A PantherClaw connection was quarantined",
+		Body:  "The connection {connection} was quarantined ({reason}). Every action through it is refused until a person restores it.",
+	},
+	{
+		Type: "security.connection_weakened", Severity: Warning, Params: []string{"connection", "user", "change"},
+		Title: "Enforcement on a PantherClaw connection was weakened",
+		Body:  "{user} changed the connection {connection}: {change}. Review the change if you did not expect it.",
 	},
 }
 

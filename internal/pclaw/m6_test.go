@@ -35,6 +35,65 @@ func (r *recordGateways) RevokeGateway(_ context.Context, req *pantherclawv1.Rev
 	return &pantherclawv1.RevokeGatewayResponse{}, nil
 }
 
+type recordConnections struct {
+	pantherclawv1connect.UnimplementedConnectionServiceHandler
+	create *pantherclawv1.CreateConnectionRequest
+	update *pantherclawv1.UpdateConnectionRequest
+	mode   *pantherclawv1.SetRouteModeRequest
+}
+
+func (r *recordConnections) CreateConnection(_ context.Context, req *pantherclawv1.CreateConnectionRequest) (*pantherclawv1.CreateConnectionResponse, error) {
+	r.create = req
+	return &pantherclawv1.CreateConnectionResponse{}, nil
+}
+
+func (r *recordConnections) UpdateConnection(_ context.Context, req *pantherclawv1.UpdateConnectionRequest) (*pantherclawv1.UpdateConnectionResponse, error) {
+	r.update = req
+	return &pantherclawv1.UpdateConnectionResponse{}, nil
+}
+
+func (r *recordConnections) SetRouteMode(_ context.Context, req *pantherclawv1.SetRouteModeRequest) (*pantherclawv1.SetRouteModeResponse, error) {
+	r.mode = req
+	return &pantherclawv1.SetRouteModeResponse{}, nil
+}
+
+func TestM6ConnectionCommands(t *testing.T) {
+	rc := &recordConnections{}
+	cs := connect.NewServer()
+	pantherclawv1connect.RegisterConnectionServiceHandler(cs, rc)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, cs)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	env := envOf(map[string]string{"PANTHERCLAW_SERVER": ts.URL, "PANTHERCLAW_API_KEY": "pck_test_x"})
+
+	code, _, errs := run(t, env, "connection", "create", "payments", "--kind", "http", "--gateway", "0192aaaa-bbbb-7ccc-8ddd-000000000001",
+		"--package", "pc.mock-payments", "--base-url", "https://payments.example.test", "--allowed-host", "a.test", "--allowed-host", "b.test",
+		"--access", "pantherclaw_held", "--header", "Authorization", "--scheme", "Bearer", "--default-mode", "enforce")
+	c := rc.create
+	if code != 0 || c.GetName() != "payments" || c.GetKind() != pantherclawv1.ConnectionKind_CONNECTION_KIND_HTTP ||
+		len(c.GetAllowedHosts()) != 2 || c.GetAccessMode() != pantherclawv1.AccessMode_ACCESS_MODE_PANTHERCLAW_HELD ||
+		c.GetDefaultMode() != pantherclawv1.RouteMode_ROUTE_MODE_ENFORCE || c.GetDestinationClass() != pantherclawv1.DestinationClass_DESTINATION_CLASS_UNSPECIFIED {
+		t.Fatalf("connection create = %d %q, request %v", code, errs, c)
+	}
+	if code, _, errs := run(t, env, "connection", "create", "x", "--kind", "ftp"); code == 0 || !strings.Contains(errs, "--kind") {
+		t.Fatalf("bad kind = %d %q", code, errs)
+	}
+	if code, _, errs := run(t, env, "connection", "update", "0192aaaa-bbbb-7ccc-8ddd-000000000002", "--revision", "3", "--clear-allowed-hosts",
+		"--default-mode", "monitor", "--timeout-ms", "2500"); code != 0 || rc.update.GetRevision() != 3 || !rc.update.GetUpdateAllowedHosts() ||
+		len(rc.update.GetAllowedHosts()) != 0 || rc.update.GetDefaultMode() != pantherclawv1.RouteMode_ROUTE_MODE_MONITOR ||
+		rc.update.GetTimeoutMs() != 2500 || rc.update.BaseUrl != nil || rc.update.AccessMode != nil {
+		t.Fatalf("connection update = %d %q, request %v", code, errs, rc.update)
+	}
+	if code, _, _ := run(t, env, "connection", "set-mode", "0192aaaa-bbbb-7ccc-8ddd-000000000002", "payments-refund", "enforce"); code != 0 ||
+		rc.mode.GetRoute() != "payments-refund" || rc.mode.GetMode() != pantherclawv1.RouteMode_ROUTE_MODE_ENFORCE {
+		t.Fatalf("connection set-mode = %d, request %v", code, rc.mode)
+	}
+	if code, _, _ := run(t, env, "connection", "set-mode", "0192aaaa-bbbb-7ccc-8ddd-000000000002", "payments-refund", "observe"); code == 0 {
+		t.Fatal("an unknown mode was sent")
+	}
+}
+
 type fixedKillSwitch struct {
 	pantherclawv1connect.UnimplementedContainmentServiceHandler
 }

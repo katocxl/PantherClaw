@@ -366,7 +366,7 @@ func (q *Queries) ListGatewayCerts(ctx context.Context, orgID ids.OrgID, gateway
 const listGateways = `-- name: ListGateways :many
 SELECT org_id, id, name, state, config_version, created_by, created_at, revoked_by, revoked_at, revoke_reason FROM pc.gateways
 WHERE org_id = $1 AND ($2::boolean OR state = 'ACTIVE')
-  AND id > $3
+  AND id > coalesce($3::uuid, '00000000-0000-0000-0000-000000000000')
 ORDER BY id
 LIMIT $4
 `

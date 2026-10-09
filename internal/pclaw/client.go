@@ -136,6 +136,7 @@ func (a *app) clients() (clients, error) {
 		m6Clients: m6Clients{
 			gateways:    pantherclawv1connect.NewGatewayAdminServiceClient(c),
 			containment: pantherclawv1connect.NewContainmentServiceClient(c),
+			connections: pantherclawv1connect.NewConnectionServiceClient(c),
 		},
 	}, nil
 }

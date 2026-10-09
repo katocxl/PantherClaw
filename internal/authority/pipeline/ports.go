@@ -36,11 +36,14 @@ type Identity struct {
 	AttestationLevel int
 }
 
-// Request is one action to decide.
+// Request is one action to decide. Gateway is the id of the gateway asking,
+// from its certificate (HR-020): a connection the action names must be one
+// it serves.
 type Request struct {
 	Org      ids.OrgID
 	Action   actionir.Parsed
 	Identity Identity
+	Gateway  string
 }
 
 // Pinned is an org's pinned definition with its lifecycle state.
@@ -111,6 +114,35 @@ type Claim struct {
 	At            time.Time
 }
 
+// Dispatch modes of a connection's routes (PN-013, HR-184).
+const (
+	ModeEnforce = "enforce"
+	ModeMonitor = "monitor"
+)
+
+// Connection is a registered connection as the Authority checks it (G0 M6,
+// PAP-1 §6): the gateway that serves it, its package, its state, how
+// credentials reach the target, and each route's mode.
+type Connection struct {
+	ID          ids.UUID
+	Gateway     ids.UUID
+	Kind        string // http, mcp or local
+	Package     string
+	State       string // ACTIVE, QUARANTINED or RETIRED
+	AccessMode  string
+	DefaultMode string
+	// Modes are the explicit route modes; other routes take DefaultMode.
+	Modes map[string]string
+}
+
+// Mode is a route's mode on the connection.
+func (c Connection) Mode(route string) string {
+	if m, ok := c.Modes[route]; ok {
+		return m
+	}
+	return c.DefaultMode
+}
+
 // Reader is every read the pipeline makes. Implementations return
 // ErrNotFound for missing records; any other error is treated as missing
 // evidence (CANNOT_AUTHORIZE), never as a pass.
@@ -130,4 +162,6 @@ type Reader interface {
 	Usage(ctx context.Context, org ids.OrgID, plan gdomain.Plan) (Usage, error)
 	// Claim returns the latest attempt on a dedupe key, or nil.
 	Claim(ctx context.Context, org ids.OrgID, key string) (*Claim, error)
+	// Connection returns a connection with its route modes.
+	Connection(ctx context.Context, org ids.OrgID, id ids.UUID) (Connection, error)
 }
