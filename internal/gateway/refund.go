@@ -47,6 +47,7 @@ type Gateway struct {
 	run         []func(ctx context.Context) error
 	containment Containment
 	config      Configuration
+	broker      *Broker
 	authority   pantherclawv1connect.AuthorityServiceClient
 	permits     *permitVerifier
 	egress      *http.Client
