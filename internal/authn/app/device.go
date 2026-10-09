@@ -55,6 +55,15 @@ type IDClaims struct {
 	Nonce           string
 }
 
+// SubjectClaims are the verified claims of an RFC 8693 subject token
+// (HR-145): who it proves, and what makes it single use.
+type SubjectClaims struct {
+	Issuer, Subject string
+	// JTI is empty when the token has none.
+	JTI       string
+	ExpiresAt time.Time
+}
+
 // IdP is an OpenID provider PantherClaw is a relying party of
 // (adapters/oidc). Exchange verifies the ID token's signature (RS256, ES256
 // or EdDSA), iss, aud, azp and expiry; the caller checks the nonce.

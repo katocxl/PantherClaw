@@ -113,3 +113,76 @@ WHERE org_id = sqlc.arg(org_id) AND slot = ANY (sqlc.arg(slots)::smallint[])
 
 -- name: DeleteExpiredNonces :execrows
 DELETE FROM pc.dpop_nonces WHERE org_id = sqlc.arg(org_id) AND minute < sqlc.arg(before_minute);
+
+-- Attestations (HR-143): the unique (issuer, token_key) makes a token
+-- single use; no row means a replay.
+-- name: InsertAttestation :execrows
+INSERT INTO pc.attestations (org_id, id, instance_id, issuer_revision_id, issuer, token_key, claims, release_digest,
+    issued_at, expires_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(instance_id), sqlc.arg(issuer_revision_id), sqlc.arg(issuer),
+    sqlc.arg(token_key), sqlc.arg(claims), sqlc.narg(release_digest), sqlc.arg(issued_at), sqlc.arg(expires_at))
+ON CONFLICT (org_id, issuer, token_key) DO NOTHING;
+
+-- An instance enrolled with an attestation: admitted at once when its
+-- entry auto-admits, otherwise waiting for the owner.
+-- name: InsertAttestedInstance :one
+INSERT INTO pc.agent_instances (org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id,
+    issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, last_network, last_seen_at,
+    decided_by, decided_at, expires_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(agent_id), sqlc.arg(jkt), sqlc.arg(public_jwk), sqlc.arg(state),
+    sqlc.arg(enrolled_via), sqlc.narg(enrollment_token_id), sqlc.arg(issuer_revision_id), sqlc.arg(binding), 2,
+    sqlc.arg(attested_until), sqlc.narg(release_state), sqlc.narg(release_digest), sqlc.narg(last_network), now(),
+    sqlc.narg(decided_by), CASE WHEN sqlc.arg(state)::text = 'ADMITTED' THEN now() END,
+    CASE WHEN sqlc.arg(state)::text = 'ADMITTED' THEN NULL ELSE now() + interval '7 days' END)
+RETURNING *;
+
+-- Renews L2 until a fresh attestation expires (HR-143).
+-- name: AttestInstance :one
+UPDATE pc.agent_instances SET attested_until = sqlc.arg(attested_until), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ADMITTED' AND att_level = 2
+RETURNING *;
+
+-- Discovery (HR-148): unknown keys a gateway reports. One advisory lock per
+-- org serializes the limit checks.
+-- name: LockDiscoveries :exec
+SELECT pg_advisory_xact_lock(hashtextextended('pc.discoveries:' || sqlc.arg(org_id)::text, 0));
+
+-- Later sightings of a known key are only counted.
+-- name: TouchDiscovery :execrows
+UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now()
+WHERE org_id = sqlc.arg(org_id) AND key_jkt = sqlc.arg(key_jkt);
+
+-- name: DiscoveryLoad :one
+SELECT
+    (SELECT count(*) FROM pc.discoveries d WHERE d.org_id = sqlc.arg(org_id) AND d.state = 'OPEN')::int AS open_discoveries,
+    (SELECT count(*) FROM pc.discoveries d
+      WHERE d.org_id = sqlc.arg(org_id) AND d.source = 'gateway' AND d.first_seen_at > now() - interval '1 minute'
+        AND d.observed->>'gateway' = sqlc.arg(gateway)::text)::int AS recent_from_gateway;
+
+-- name: InsertGatewayDiscovery :one
+INSERT INTO pc.discoveries (org_id, id, agent_id, source, key_jkt, public_jwk, observed)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(agent_id), 'gateway', sqlc.arg(key_jkt), sqlc.arg(public_jwk),
+    sqlc.arg(observed))
+RETURNING *;
+
+-- name: InsertAgentAdmissionEntry :one
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ADMISSION', 'agent', sqlc.arg(agent_id), sqlc.arg(agent_id), sqlc.arg(evidence),
+    now() + interval '7 days')
+RETURNING *;
+
+-- Janitor: pending instances whose admission deadline passed.
+-- name: ExpirePendingInstances :many
+UPDATE pc.agent_instances SET state = 'EXPIRED', updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND state = 'PENDING_ADMISSION' AND expires_at <= now()
+RETURNING id, agent_id;
+
+-- A verified request (Authorize): last seen moves at most once a minute and
+-- the network only when it changed, so a busy instance does not serialize
+-- on its row. No row means nothing changed, or a concurrent request
+-- already recorded the change (and raised any network alert).
+-- name: SeeInstance :execrows
+UPDATE pc.agent_instances SET last_seen_at = now(), last_network = sqlc.narg(last_network), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ADMITTED'
+  AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute'
+       OR last_network IS DISTINCT FROM sqlc.narg(last_network));

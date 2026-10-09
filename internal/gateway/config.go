@@ -5,9 +5,10 @@
 // hard-coded route, POST /v1/refunds, that turns a request into ActionIR,
 // asks the Transaction Authority, verifies the permit, commits to dispatch
 // and sends a re-serialized request to the target. It has no database access
-// (ADR-0002). Workload identity comes from DEVELOPMENT-ONLY headers until
-// PAP/1 (M3); authority authentication is the dev gateway token until mTLS
-// (M6).
+// (ADR-0002). Workloads prove who they are with PAP/1 (a workload token and
+// a proof over each request), which the gateway forwards to the Authority
+// for verification (M3); authority authentication is the dev gateway token
+// until mTLS (M6).
 package gateway
 
 import (
@@ -23,16 +24,13 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
-// DevEnv is the placeholder environment of every dev action until
-// environments exist (M2).
-const DevEnv = "01920000-0000-7000-8000-0000000000e1"
-
 // Config is the pantherclaw-gateway configuration (JSON file + PC_GW_* env).
 type Config struct {
 	Log struct {
 		Level string `json:"level" env:"PC_GW_LOG_LEVEL"`
 	} `json:"log"`
-	// Listen must be a loopback address: dev workload headers are trusted.
+	// Listen must be a loopback address while the gateway authenticates to
+	// the Authority with the development token (mTLS arrives in M6).
 	Listen    string `json:"listen" env:"PC_GW_LISTEN"`
 	GatewayID string `json:"gateway_id" env:"PC_GW_ID"`
 	Org       string `json:"org" env:"PC_GW_ORG"`
@@ -49,8 +47,9 @@ type Config struct {
 		// example 127.0.0.1/32 for pantherclaw-sim (HR-071, HR-077).
 		AllowedPrefixes []string `json:"allowed_prefixes" env:"PC_GW_TARGET_ALLOWED_PREFIXES"`
 	} `json:"target"`
-	// DevWorkloads lists the agent instance ids accepted in PC-Dev-Workload.
-	DevWorkloads []string `json:"dev_workloads" env:"PC_GW_DEV_WORKLOADS"`
+	// PublicURL is the base URL workloads call; request proofs are checked
+	// against it, never against the Host header (PAP-1 §4).
+	PublicURL string `json:"public_url" env:"PC_GW_PUBLIC_URL"`
 }
 
 // DefaultConfig returns development defaults.
@@ -58,6 +57,7 @@ func DefaultConfig() Config {
 	var c Config
 	c.Log.Level = "info"
 	c.Listen = "127.0.0.1:8090"
+	c.PublicURL = "http://127.0.0.1:8090"
 	c.GatewayID = "gw-dev-1"
 	c.Authority.URL = "http://127.0.0.1:8080"
 	c.Authority.Timeout = config.Duration(2 * time.Second)
@@ -72,7 +72,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("log.level must be debug, info, warn or error"))
 	}
 	if !loopback(c.Listen) {
-		errs = append(errs, errors.New("listen must be a loopback address (dev workload headers are development-only)"))
+		errs = append(errs, errors.New("listen must be a loopback address (the development gateway token is development-only)"))
 	}
 	if c.GatewayID == "" {
 		errs = append(errs, errors.New("gateway_id is required"))
@@ -97,13 +97,8 @@ func (c *Config) Validate() error {
 	if c.Authority.Timeout.D() <= 0 || c.Target.Timeout.D() <= 0 || c.Target.Timeout.D() > time.Minute {
 		errs = append(errs, errors.New("timeouts must be positive (target at most 1m)"))
 	}
-	if len(c.DevWorkloads) == 0 {
-		errs = append(errs, errors.New("dev_workloads must list at least one agent instance id"))
-	}
-	for _, w := range c.DevWorkloads {
-		if _, err := ids.ParseUUID(w); err != nil {
-			errs = append(errs, fmt.Errorf("dev_workloads: %q is not a UUID", w))
-		}
+	if _, err := baseURL(c.PublicURL); err != nil {
+		errs = append(errs, fmt.Errorf("public_url: %w", err))
 	}
 	return errors.Join(errs...)
 }

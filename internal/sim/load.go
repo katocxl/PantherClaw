@@ -5,6 +5,7 @@ package sim
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json/v2"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -25,8 +27,12 @@ import (
 // load (requests start on schedule whatever the latency, so slow responses
 // are measured instead of hidden by coordinated omission).
 type loadConfig struct {
-	Gateway     string
-	Workload    string
+	Gateway string
+	// Key signs every request (PAP-1 §4); Token returns the workload token
+	// and Run is the run the requests belong to.
+	Key         ed25519.PrivateKey
+	Token       func() string
+	Run         string
 	Rate        int
 	Duration    time.Duration
 	Warmup      time.Duration
@@ -58,11 +64,15 @@ type Summary struct {
 }
 
 func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx) // also stops the token renewal
+	defer cancel()
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var c loadConfig
 	fs.StringVar(&c.Gateway, "gateway", "http://127.0.0.1:8090", "gateway base URL")
-	fs.StringVar(&c.Workload, "workload", "", "dev workload (agent instance id) listed in the gateway config")
+	workloadFile := fs.String("workload-file", "", "workload key file (from `pantherclaw-server dev seed --workload-out`)")
+	tokenFile := fs.String("token-file", "", "use this workload token instead of asking the key file's server")
+	fs.StringVar(&c.Run, "run", "", "run id (default: the key file's run)")
 	fs.IntVar(&c.Rate, "rate", 1000, "requests per second")
 	fs.DurationVar(&c.Duration, "duration", 30*time.Second, "measured duration (after warm-up)")
 	fs.DurationVar(&c.Warmup, "warmup", 5*time.Second, "warm-up excluded from the results")
@@ -72,9 +82,22 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if c.Workload == "" || c.Rate < 1 || c.Rate > 20000 || c.Duration <= 0 || c.MaxInFlight < 1 {
+	if *workloadFile == "" || c.Rate < 1 || c.Rate > 20000 || c.Duration <= 0 || c.MaxInFlight < 1 {
 		fs.Usage()
 		return flag.ErrHelp
+	}
+	kf, err := workloadclient.ReadKeyFile(*workloadFile)
+	if err != nil {
+		return err
+	}
+	if c.Key, err = kf.Key(); err != nil {
+		return err
+	}
+	if c.Run == "" {
+		c.Run = kf.RunID
+	}
+	if c.Token, err = workloadTokens(ctx, kf, *tokenFile); err != nil {
+		return err
 	}
 	s, err := drive(ctx, c)
 	if err != nil {
@@ -93,10 +116,12 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 func drive(ctx context.Context, c loadConfig) (Summary, error) {
 	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: &http.Transport{Proxy: nil, MaxIdleConns: c.MaxInFlight, MaxIdleConnsPerHost: c.MaxInFlight, IdleConnTimeout: 90 * time.Second},
+		Timeout: 30 * time.Second,
+		Transport: &workloadclient.Transport{Key: c.Key, Token: c.Token, Base: &http.Transport{
+			Proxy: nil, MaxIdleConns: c.MaxInFlight, MaxIdleConnsPerHost: c.MaxInFlight, IdleConnTimeout: 90 * time.Second,
+		}},
 	}
-	run := ids.NewV7().String()
+	run := c.Run
 	body := `{"charge":"ch_load1","amount":"` + c.Amount + `","currency":"USD","reason":"duplicate"}`
 	interval := time.Second / time.Duration(c.Rate)
 	total := int((c.Warmup + c.Duration) / interval)
@@ -145,8 +170,7 @@ func one(ctx context.Context, client *http.Client, c loadConfig, run, body strin
 		return sample{}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("PC-Dev-Workload", c.Workload)
-	req.Header.Set("PC-Run-Id", run)
+	req.Header.Set("PAP-Run-Id", run)
 	req.Header.Set("PC-Action-Id", ids.NewV7().String())
 	t0 := time.Now()
 	resp, err := client.Do(req)

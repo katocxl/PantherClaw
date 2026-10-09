@@ -45,3 +45,10 @@ RETURNING *;
 -- Active entries of one preset kind, for attestation (slice 10).
 -- name: ListActiveIssuers :many
 SELECT * FROM pc.trusted_issuers WHERE org_id = sqlc.arg(org_id) AND kind = sqlc.arg(kind) AND state = 'ACTIVE';
+
+-- The active revision of the entry another revision belongs to. An
+-- instance keeps L2 only while its entry has one (HR-141: disabling takes
+-- effect at the next token refresh).
+-- name: ActiveRevisionFor :one
+SELECT a.* FROM pc.trusted_issuers r JOIN pc.trusted_issuers a ON a.org_id = r.org_id AND a.entry_id = r.entry_id
+WHERE r.org_id = sqlc.arg(org_id) AND r.id = sqlc.arg(revision_id) AND a.state = 'ACTIVE';

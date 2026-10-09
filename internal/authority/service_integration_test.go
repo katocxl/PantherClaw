@@ -16,15 +16,18 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
+	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 )
 
 type fixture struct {
@@ -33,9 +36,18 @@ type fixture struct {
 	reg    *keys.Registry
 	gw     authority.Gateway
 	budget ids.UUID
+
+	ident            *iapp.Service
+	runs             *runsapp.Service
+	inv              *aapp.Inventory
+	team, env, owner ids.UUID
+	// wl is an admitted instance of a verified agent; run is bound to it.
+	wl  workload
+	run ids.UUID
 }
 
-func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixture {
+// setupBase seeds an org with containment and a budget.
+func setupBase(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixture {
 	t.Helper()
 	p := dbtest.New(t).AppPool(t)
 	org := ids.New[ids.Org]()
@@ -71,9 +83,15 @@ func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixtu
 
 func (f fixture) action(t *testing.T, amount string, run, act ids.UUID) []byte {
 	t.Helper()
+	return f.actionAs(t, amount, run, act, f.env.String(), f.wl.inst.Instance.String())
+}
+
+// actionAs is an action of instance in env.
+func (f fixture) actionAs(t *testing.T, amount string, run, act ids.UUID, env, instance string) []byte {
+	t.Helper()
 	p, err := actionir.Encode(actionir.ActionIR{
-		V: 1, Org: f.gw.Org.String(), Env: "01920000-0000-7000-8000-00000000000e", RunID: run.String(), ActionID: act.String(),
-		AgentInstance: "01920000-0000-7000-8000-0000000000c1", Operation: actionir.OpRefundCreate,
+		V: 1, Org: f.gw.Org.String(), Env: env, RunID: run.String(), ActionID: act.String(),
+		AgentInstance: instance, Operation: actionir.OpRefundCreate,
 		Definition: actionir.Definition{
 			Package: "pc.mock-payments", Version: "1.0.0",
 			Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
@@ -103,7 +121,7 @@ func (f fixture) budgetRow(t *testing.T) dbq.GetBudgetRow {
 
 func (f fixture) authorize(t *testing.T, amount string) authority.Result {
 	t.Helper()
-	res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, amount, ids.NewV7(), ids.NewV7()))
+	res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, amount, f.run, ids.NewV7()), f.creds(t, f.wl, f.wl.token))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,16 +240,16 @@ func TestHR001_BeginDispatchRejectsExpiredPermit(t *testing.T) {
 func TestT012_SameActionDifferentHashIsTampered(t *testing.T) {
 	f := setup(t, "1000", nil, 5*time.Second)
 	ctx := context.Background()
-	run, act := ids.NewV7(), ids.NewV7()
-	first, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act))
+	run, act := f.run, ids.NewV7()
+	first, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act), f.creds(t, f.wl, f.wl.token))
 	if err != nil || first.Decision != domain.Allow {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
-	again, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act))
+	again, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act), f.creds(t, f.wl, f.wl.token))
 	if err != nil || again.Decision != domain.Allow || again.Permit != "" || again.TransactionID != first.TransactionID {
 		t.Fatalf("retry returned %+v, %v; want the stored ALLOW without a second permit (HR-005)", again, err)
 	}
-	tampered, err := f.svc.Authorize(ctx, f.gw, f.action(t, "90.00", run, act))
+	tampered, err := f.svc.Authorize(ctx, f.gw, f.action(t, "90.00", run, act), f.creds(t, f.wl, f.wl.token))
 	if err != nil || tampered.Decision != domain.Deny || tampered.Reasons[0].Code != domain.ReasonActionTampered || tampered.Permit != "" {
 		t.Fatalf("changed amount under the same action id: %+v, %v", tampered, err)
 	}
@@ -246,11 +264,11 @@ func TestIntDenialsReserveNothing(t *testing.T) {
 		t.Fatalf("$125 = %+v", res)
 	}
 	other := authority.Gateway{ID: f.gw.ID, Org: ids.New[ids.Org]()}
-	res, err := f.svc.Authorize(context.Background(), other, f.action(t, "10.00", ids.NewV7(), ids.NewV7()))
+	res, err := f.svc.Authorize(context.Background(), other, f.action(t, "10.00", f.run, ids.NewV7()), f.creds(t, f.wl, f.wl.token))
 	if err != nil || res.Decision != domain.Deny || res.Reasons[0].Code != domain.ReasonOrgMismatch {
 		t.Fatalf("org mismatch = %+v, %v", res, err)
 	}
-	if res, _ := f.svc.Authorize(context.Background(), f.gw, []byte(`{"v":1}`)); res.Decision != domain.CannotAuthorize {
+	if res, _ := f.svc.Authorize(context.Background(), f.gw, []byte(`{"v":1}`), f.creds(t, f.wl, f.wl.token)); res.Decision != domain.CannotAuthorize {
 		t.Fatalf("garbage = %+v", res)
 	}
 	if b := f.budgetRow(t); !b.Reserved.IsZero() {
@@ -272,9 +290,14 @@ func TestT011_NoOverspendUnder1000ConcurrentReservations(t *testing.T) {
 			var wg sync.WaitGroup
 			var mu sync.Mutex
 			counts := map[domain.Decision]int{}
+			nonce, err := f.ident.Nonce(context.Background(), f.gw.Org)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for range 1000 {
+				c, action := f.credsWith(t, f.wl, f.wl.token, nonce), f.action(t, "30.00", f.run, ids.NewV7())
 				wg.Go(func() {
-					res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, "30.00", ids.NewV7(), ids.NewV7()))
+					res, err := f.svc.Authorize(context.Background(), f.gw, action, c)
 					if err != nil {
 						t.Error(err)
 						return

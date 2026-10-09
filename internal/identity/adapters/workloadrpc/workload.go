@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -28,10 +30,13 @@ import (
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/app"
+	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
+	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 )
 
 // Prefix is the URL path prefix of WorkloadService procedures.
@@ -76,6 +81,7 @@ func RawBody(next http.Handler, clientIP httpx.ClientIPFunc) http.Handler {
 type Workload struct {
 	pantherclawv1connect.UnimplementedWorkloadServiceHandler
 	svc       *app.Service
+	runs      *runsapp.Service
 	publicURL string
 	clk       clock.Clock
 }
@@ -83,8 +89,8 @@ type Workload struct {
 // NewWorkload returns the WorkloadService handler. publicURL is the
 // server's configured public URL: proofs are checked against it, never
 // against the Host header.
-func NewWorkload(svc *app.Service, publicURL string, clk clock.Clock) *Workload {
-	return &Workload{svc: svc, publicURL: strings.TrimSuffix(publicURL, "/"), clk: clk}
+func NewWorkload(svc *app.Service, runs *runsapp.Service, publicURL string, clk clock.Clock) *Workload {
+	return &Workload{svc: svc, runs: runs, publicURL: strings.TrimSuffix(publicURL, "/"), clk: clk}
 }
 
 // papError turns a PAP failure into Unauthenticated with its PAP-Error code
@@ -139,30 +145,33 @@ func (s *Workload) Enroll(ctx context.Context, req *pantherclawv1.EnrollRequest)
 	if err != nil {
 		return nil, err
 	}
-	if req.GetAttestation() != nil && req.GetEnrollmentToken() == "" {
-		// L2 enrollment arrives with the attestation presets (slice 10).
-		return nil, connect.NewError(connect.CodeUnimplemented, "attestation enrollment is not available yet")
-	}
+	att := attestation(req.GetAttestation())
 	var org ids.OrgID
 	if tok, err := credential.Parse(credential.EnrollmentToken, req.GetEnrollmentToken()); err == nil {
 		org = tok.Org()
+	} else if req.GetEnrollmentToken() == "" && att != nil {
+		org = app.AttestationOrg(att.Token)
 	}
 	c, rb, err := s.verify(ctx, info)
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
 	}
 	e, err := s.svc.Enroll(ctx, app.EnrollInput{
-		Proof: c, EnrollmentToken: req.GetEnrollmentToken(), PublicJWK: []byte(req.GetPublicJwk()),
+		Proof: c, EnrollmentToken: req.GetEnrollmentToken(), Attestation: att, PublicJWK: []byte(req.GetPublicJwk()),
 		DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
 	})
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
 	}
 	s.setNonce(ctx, info, org)
-	return &pantherclawv1.EnrollResponse{
+	resp := &pantherclawv1.EnrollResponse{
 		InstanceId: e.Instance.Instance.String(), Identifier: e.Instance.String(),
 		State: pantherclawv1.InstanceState_INSTANCE_STATE_PENDING_ADMISSION, Fingerprint: e.Fingerprint,
-	}, nil
+	}
+	if e.State == "ADMITTED" {
+		resp.State, resp.AttestationLevel = pantherclawv1.InstanceState_INSTANCE_STATE_ADMITTED, int32(e.Level) //nolint:gosec // G115: 1 or 2
+	}
+	return resp, nil
 }
 
 // IssueToken implements WorkloadServiceHandler.
@@ -170,9 +179,6 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 	info, err := callInfo(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if req.GetAttestation() != nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, "re-attestation is not available yet")
 	}
 	var org ids.OrgID
 	if id, err := pap.ParseInstance(req.GetIdentifier()); err == nil {
@@ -183,7 +189,7 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 		return nil, s.papError(ctx, info, org, err)
 	}
 	iss, err := s.svc.IssueToken(ctx, app.TokenInput{
-		Proof: c, Identifier: req.GetIdentifier(), DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
+		Proof: c, Identifier: req.GetIdentifier(), Attestation: attestation(req.GetAttestation()), DeclaredRelease: req.GetDeclaredReleaseDigest(), ClientAddress: rb.clientIP,
 	})
 	if err != nil {
 		return nil, s.papError(ctx, info, org, err)
@@ -192,6 +198,88 @@ func (s *Workload) IssueToken(ctx context.Context, req *pantherclawv1.IssueToken
 	return &pantherclawv1.IssueTokenResponse{
 		WorkloadToken: iss.Token, ExpireTime: ts(iss.ExpiresAt), AttestationLevel: int32(iss.Level), //nolint:gosec // G115: 1 or 2
 	}, nil
+}
+
+// StartChildRun implements WorkloadServiceHandler. The caller proves its
+// instance with a workload token and a proof over the request (PAP-1 §4);
+// the child run is checked against the instance the token names.
+func (s *Workload) StartChildRun(ctx context.Context, req *pantherclawv1.StartChildRunRequest) (*pantherclawv1.StartChildRunResponse, error) {
+	info, err := callInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	token, _ := strings.CutPrefix(info.RequestHeader().Get("Authorization"), "PAP ")
+	org := tokenOrg(token)
+	c, _, err := s.verify(ctx, info)
+	if err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	tok, ok := c.Token()
+	if !ok {
+		return nil, s.papError(ctx, info, org, pap.Err(pap.CodeInvalidToken))
+	}
+	org = tok.Instance.Org
+	if err := s.svc.Consume(ctx, org, c); err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	in := runsapp.ChildInput{
+		Caller: tok.Instance, TaskRef: req.GetTaskRef(), TTL: time.Duration(req.GetTtlMinutes()) * time.Minute,
+	}
+	if in.ParentRunID, err = runsrpc.ParseID(req.GetParentRunId()); err != nil {
+		return nil, err
+	}
+	if in.AgentID, err = runsrpc.ParseID(req.GetAgentId()); err != nil {
+		return nil, err
+	}
+	if req.InstanceId != nil {
+		id, err := runsrpc.ParseID(req.GetInstanceId())
+		if err != nil {
+			return nil, err
+		}
+		in.InstanceID = &id
+	}
+	r, err := s.runs.StartChildRun(ctx, in)
+	if err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	s.setNonce(ctx, info, org)
+	return &pantherclawv1.StartChildRunResponse{Run: runsrpc.RunProto(r)}, nil
+}
+
+// tokenOrg reads the org of a workload token's subject without verifying
+// it, only to return that org's nonce with a refusal.
+func tokenOrg(token string) ids.OrgID {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || len(token) > MaxBody {
+		return ids.OrgID{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ids.OrgID{}
+	}
+	var c struct {
+		Sub string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &c) != nil {
+		return ids.OrgID{}
+	}
+	id, err := pap.ParseInstance(c.Sub)
+	if err != nil {
+		return ids.OrgID{}
+	}
+	return id.Org
+}
+
+// attestation maps the request's attestation to its preset.
+func attestation(a *pantherclawv1.Attestation) *app.Attestation {
+	if a == nil {
+		return nil
+	}
+	kind := issuers.KindGitHub
+	if a.GetKind() == pantherclawv1.AttestationKind_ATTESTATION_KIND_KUBERNETES {
+		kind = issuers.KindKubernetes
+	}
+	return &app.Attestation{Kind: kind, Token: a.GetToken()}
 }
 
 func ts(t time.Time) *timestamppb.Timestamp {

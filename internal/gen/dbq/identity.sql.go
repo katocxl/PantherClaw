@@ -10,6 +10,7 @@ package dbq
 
 import (
 	"context"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -25,6 +26,44 @@ RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment
 // not passed.
 func (q *Queries) AdmitInstance(ctx context.Context, decidedBy *string, orgID ids.OrgID, iD ids.UUID) (PcAgentInstance, error) {
 	row := q.db.QueryRow(ctx, admitInstance, decidedBy, orgID, iD)
+	var i PcAgentInstance
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Jkt,
+		&i.PublicJwk,
+		&i.State,
+		&i.EnrolledVia,
+		&i.EnrollmentTokenID,
+		&i.IssuerRevisionID,
+		&i.Binding,
+		&i.AttLevel,
+		&i.AttestedUntil,
+		&i.ReleaseState,
+		&i.ReleaseDigest,
+		&i.NeedsReview,
+		&i.LastNetwork,
+		&i.LastSeenAt,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.RevokeReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const attestInstance = `-- name: AttestInstance :one
+UPDATE pc.agent_instances SET attested_until = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'ADMITTED' AND att_level = 2
+RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id, issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, needs_review, last_network, last_seen_at, decided_by, decided_at, revoke_reason, created_at, updated_at, expires_at
+`
+
+// Renews L2 until a fresh attestation expires (HR-143).
+func (q *Queries) AttestInstance(ctx context.Context, attestedUntil *time.Time, orgID ids.OrgID, iD ids.UUID) (PcAgentInstance, error) {
+	row := q.db.QueryRow(ctx, attestInstance, attestedUntil, orgID, iD)
 	var i PcAgentInstance
 	err := row.Scan(
 		&i.OrgID,
@@ -205,6 +244,58 @@ func (q *Queries) DeleteExpiredProofs(ctx context.Context, orgID ids.OrgID, slot
 	return result.RowsAffected(), nil
 }
 
+const discoveryLoad = `-- name: DiscoveryLoad :one
+SELECT
+    (SELECT count(*) FROM pc.discoveries d WHERE d.org_id = $1 AND d.state = 'OPEN')::int AS open_discoveries,
+    (SELECT count(*) FROM pc.discoveries d
+      WHERE d.org_id = $1 AND d.source = 'gateway' AND d.first_seen_at > now() - interval '1 minute'
+        AND d.observed->>'gateway' = $2::text)::int AS recent_from_gateway
+`
+
+type DiscoveryLoadRow struct {
+	OpenDiscoveries   int32
+	RecentFromGateway int32
+}
+
+func (q *Queries) DiscoveryLoad(ctx context.Context, orgID ids.OrgID, gateway string) (DiscoveryLoadRow, error) {
+	row := q.db.QueryRow(ctx, discoveryLoad, orgID, gateway)
+	var i DiscoveryLoadRow
+	err := row.Scan(&i.OpenDiscoveries, &i.RecentFromGateway)
+	return i, err
+}
+
+const expirePendingInstances = `-- name: ExpirePendingInstances :many
+UPDATE pc.agent_instances SET state = 'EXPIRED', updated_at = now()
+WHERE org_id = $1 AND state = 'PENDING_ADMISSION' AND expires_at <= now()
+RETURNING id, agent_id
+`
+
+type ExpirePendingInstancesRow struct {
+	ID      ids.UUID
+	AgentID ids.UUID
+}
+
+// Janitor: pending instances whose admission deadline passed.
+func (q *Queries) ExpirePendingInstances(ctx context.Context, orgID ids.OrgID) ([]ExpirePendingInstancesRow, error) {
+	rows, err := q.db.Query(ctx, expirePendingInstances, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExpirePendingInstancesRow{}
+	for rows.Next() {
+		var i ExpirePendingInstancesRow
+		if err := rows.Scan(&i.ID, &i.AgentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEnrollmentTokenByHash = `-- name: GetEnrollmentTokenByHash :one
 SELECT org_id, id, agent_id, environment_id, token_hash, state, created_by, created_at, expires_at, used_at, revoked_at FROM pc.enrollment_tokens WHERE org_id = $1 AND token_hash = $2
 `
@@ -274,6 +365,167 @@ func (q *Queries) GetNonceForMinute(ctx context.Context, orgID ids.OrgID, minute
 	return nonce, err
 }
 
+const insertAgentAdmissionEntry = `-- name: InsertAgentAdmissionEntry :one
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
+VALUES ($1, $2, 'ADMISSION', 'agent', $3, $3, $4,
+    now() + interval '7 days')
+RETURNING org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at
+`
+
+type InsertAgentAdmissionEntryParams struct {
+	OrgID    ids.OrgID
+	ID       ids.UUID
+	AgentID  ids.UUID
+	Evidence []byte
+}
+
+func (q *Queries) InsertAgentAdmissionEntry(ctx context.Context, arg InsertAgentAdmissionEntryParams) (PcWaitlistEntry, error) {
+	row := q.db.QueryRow(ctx, insertAgentAdmissionEntry,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.Evidence,
+	)
+	var i PcWaitlistEntry
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.Kind,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.AgentID,
+		&i.State,
+		&i.Evidence,
+		&i.DeadlineAt,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.DecisionReason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertAttestation = `-- name: InsertAttestation :execrows
+INSERT INTO pc.attestations (org_id, id, instance_id, issuer_revision_id, issuer, token_key, claims, release_digest,
+    issued_at, expires_at)
+VALUES ($1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10)
+ON CONFLICT (org_id, issuer, token_key) DO NOTHING
+`
+
+type InsertAttestationParams struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	InstanceID       ids.UUID
+	IssuerRevisionID ids.UUID
+	Issuer           string
+	TokenKey         []byte
+	Claims           []byte
+	ReleaseDigest    *string
+	IssuedAt         time.Time
+	ExpiresAt        time.Time
+}
+
+// Attestations (HR-143): the unique (issuer, token_key) makes a token
+// single use; no row means a replay.
+func (q *Queries) InsertAttestation(ctx context.Context, arg InsertAttestationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertAttestation,
+		arg.OrgID,
+		arg.ID,
+		arg.InstanceID,
+		arg.IssuerRevisionID,
+		arg.Issuer,
+		arg.TokenKey,
+		arg.Claims,
+		arg.ReleaseDigest,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertAttestedInstance = `-- name: InsertAttestedInstance :one
+INSERT INTO pc.agent_instances (org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id,
+    issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, last_network, last_seen_at,
+    decided_by, decided_at, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, 2,
+    $11, $12, $13, $14, now(),
+    $15, CASE WHEN $6::text = 'ADMITTED' THEN now() END,
+    CASE WHEN $6::text = 'ADMITTED' THEN NULL ELSE now() + interval '7 days' END)
+RETURNING org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id, issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, needs_review, last_network, last_seen_at, decided_by, decided_at, revoke_reason, created_at, updated_at, expires_at
+`
+
+type InsertAttestedInstanceParams struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	AgentID           ids.UUID
+	Jkt               string
+	PublicJwk         []byte
+	State             string
+	EnrolledVia       string
+	EnrollmentTokenID *ids.UUID
+	IssuerRevisionID  *ids.UUID
+	Binding           []byte
+	AttestedUntil     *time.Time
+	ReleaseState      *string
+	ReleaseDigest     *string
+	LastNetwork       *string
+	DecidedBy         *string
+}
+
+// An instance enrolled with an attestation: admitted at once when its
+// entry auto-admits, otherwise waiting for the owner.
+func (q *Queries) InsertAttestedInstance(ctx context.Context, arg InsertAttestedInstanceParams) (PcAgentInstance, error) {
+	row := q.db.QueryRow(ctx, insertAttestedInstance,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.Jkt,
+		arg.PublicJwk,
+		arg.State,
+		arg.EnrolledVia,
+		arg.EnrollmentTokenID,
+		arg.IssuerRevisionID,
+		arg.Binding,
+		arg.AttestedUntil,
+		arg.ReleaseState,
+		arg.ReleaseDigest,
+		arg.LastNetwork,
+		arg.DecidedBy,
+	)
+	var i PcAgentInstance
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Jkt,
+		&i.PublicJwk,
+		&i.State,
+		&i.EnrolledVia,
+		&i.EnrollmentTokenID,
+		&i.IssuerRevisionID,
+		&i.Binding,
+		&i.AttLevel,
+		&i.AttestedUntil,
+		&i.ReleaseState,
+		&i.ReleaseDigest,
+		&i.NeedsReview,
+		&i.LastNetwork,
+		&i.LastSeenAt,
+		&i.DecidedBy,
+		&i.DecidedAt,
+		&i.RevokeReason,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const insertEnrollmentToken = `-- name: InsertEnrollmentToken :one
 
 INSERT INTO pc.enrollment_tokens (org_id, id, agent_id, environment_id, token_hash, created_by, expires_at)
@@ -322,6 +574,49 @@ func (q *Queries) InsertEnrollmentToken(ctx context.Context, arg InsertEnrollmen
 		&i.ExpiresAt,
 		&i.UsedAt,
 		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const insertGatewayDiscovery = `-- name: InsertGatewayDiscovery :one
+INSERT INTO pc.discoveries (org_id, id, agent_id, source, key_jkt, public_jwk, observed)
+VALUES ($1, $2, $3, 'gateway', $4, $5,
+    $6)
+RETURNING org_id, id, agent_id, source, key_jkt, public_jwk, scan_key, state, observed, seen_count, first_seen_at, last_seen_at
+`
+
+type InsertGatewayDiscoveryParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	AgentID   ids.UUID
+	KeyJkt    *string
+	PublicJwk []byte
+	Observed  []byte
+}
+
+func (q *Queries) InsertGatewayDiscovery(ctx context.Context, arg InsertGatewayDiscoveryParams) (PcDiscovery, error) {
+	row := q.db.QueryRow(ctx, insertGatewayDiscovery,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.KeyJkt,
+		arg.PublicJwk,
+		arg.Observed,
+	)
+	var i PcDiscovery
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Source,
+		&i.KeyJkt,
+		&i.PublicJwk,
+		&i.ScanKey,
+		&i.State,
+		&i.Observed,
+		&i.SeenCount,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
 	)
 	return i, err
 }
@@ -567,6 +862,17 @@ func (q *Queries) LiveNonceMinute(ctx context.Context, orgID ids.OrgID, nonce st
 	return minute, err
 }
 
+const lockDiscoveries = `-- name: LockDiscoveries :exec
+SELECT pg_advisory_xact_lock(hashtextextended('pc.discoveries:' || $1::text, 0))
+`
+
+// Discovery (HR-148): unknown keys a gateway reports. One advisory lock per
+// org serializes the limit checks.
+func (q *Queries) LockDiscoveries(ctx context.Context, orgID string) error {
+	_, err := q.db.Exec(ctx, lockDiscoveries, orgID)
+	return err
+}
+
 const lockInstance = `-- name: LockInstance :one
 SELECT org_id, id, agent_id, jkt, public_jwk, state, enrolled_via, enrollment_token_id, issuer_revision_id, binding, att_level, attested_until, release_state, release_digest, needs_review, last_network, last_seen_at, decided_by, decided_at, revoke_reason, created_at, updated_at, expires_at FROM pc.agent_instances WHERE org_id = $1 AND id = $2 FOR UPDATE
 `
@@ -600,6 +906,39 @@ func (q *Queries) LockInstance(ctx context.Context, orgID ids.OrgID, iD ids.UUID
 		&i.ExpiresAt,
 	)
 	return i, err
+}
+
+const seeInstance = `-- name: SeeInstance :execrows
+UPDATE pc.agent_instances SET last_seen_at = now(), last_network = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'ADMITTED'
+  AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute'
+       OR last_network IS DISTINCT FROM $1)
+`
+
+// A verified request (Authorize): last seen moves at most once a minute and
+// the network only when it changed, so a busy instance does not serialize
+// on its row. No row means nothing changed, or a concurrent request
+// already recorded the change (and raised any network alert).
+func (q *Queries) SeeInstance(ctx context.Context, lastNetwork *string, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, seeInstance, lastNetwork, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchDiscovery = `-- name: TouchDiscovery :execrows
+UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now()
+WHERE org_id = $1 AND key_jkt = $2
+`
+
+// Later sightings of a known key are only counted.
+func (q *Queries) TouchDiscovery(ctx context.Context, orgID ids.OrgID, keyJkt *string) (int64, error) {
+	result, err := q.db.Exec(ctx, touchDiscovery, orgID, keyJkt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchInstance = `-- name: TouchInstance :one

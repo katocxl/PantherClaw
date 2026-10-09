@@ -12,6 +12,7 @@ package issuers
 
 import (
 	"crypto/sha256"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
@@ -66,6 +67,44 @@ func Lifetime(iat, nbf, exp, now time.Time) error {
 		return rejected("lifetime over %s", MaxTokenLifetime)
 	}
 	return nil
+}
+
+// Window is the validity window and jti of an attestation token, read from
+// a payload that was verified (GitHub) or authenticated by TokenReview
+// (Kubernetes).
+type Window struct {
+	IssuedAt  time.Time
+	NotBefore time.Time
+	ExpiresAt time.Time
+	JTI       string
+}
+
+// ParseWindow reads iat, nbf and exp (whole seconds since the epoch) and jti.
+func ParseWindow(payload []byte) (Window, error) {
+	var c struct {
+		IAT int64  `json:"iat"`
+		NBF int64  `json:"nbf"`
+		EXP int64  `json:"exp"`
+		JTI string `json:"jti"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return Window{}, rejected("token times: %v", err)
+	}
+	w := Window{JTI: c.JTI}
+	for _, f := range []struct {
+		sec int64
+		to  *time.Time
+	}{{c.IAT, &w.IssuedAt}, {c.NBF, &w.NotBefore}, {c.EXP, &w.ExpiresAt}} {
+		if f.sec > 0 {
+			*f.to = time.Unix(f.sec, 0)
+		}
+	}
+	return w, nil
+}
+
+// Check applies Lifetime to the window at now.
+func (w Window) Check(now time.Time) error {
+	return Lifetime(w.IssuedAt, w.NotBefore, w.ExpiresAt, now)
 }
 
 // ReplayKey is the single-use key of an attestation token: the SHA-256 of

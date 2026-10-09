@@ -47,6 +47,41 @@ func (q *Queries) ActivateIssuerRevision(ctx context.Context, activatedBy *strin
 	return i, err
 }
 
+const activeRevisionFor = `-- name: ActiveRevisionFor :one
+SELECT a.org_id, a.id, a.entry_id, a.revision, a.agent_id, a.kind, a.issuer, a.audience, a.algorithms, a.binding, a.auto_admit, a.widening, a.state, a.proposed_by, a.proposed_at, a.activated_by, a.activated_at, a.closed_by, a.closed_at FROM pc.trusted_issuers r JOIN pc.trusted_issuers a ON a.org_id = r.org_id AND a.entry_id = r.entry_id
+WHERE r.org_id = $1 AND r.id = $2 AND a.state = 'ACTIVE'
+`
+
+// The active revision of the entry another revision belongs to. An
+// instance keeps L2 only while its entry has one (HR-141: disabling takes
+// effect at the next token refresh).
+func (q *Queries) ActiveRevisionFor(ctx context.Context, orgID ids.OrgID, revisionID ids.UUID) (PcTrustedIssuer, error) {
+	row := q.db.QueryRow(ctx, activeRevisionFor, orgID, revisionID)
+	var i PcTrustedIssuer
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.EntryID,
+		&i.Revision,
+		&i.AgentID,
+		&i.Kind,
+		&i.Issuer,
+		&i.Audience,
+		&i.Algorithms,
+		&i.Binding,
+		&i.AutoAdmit,
+		&i.Widening,
+		&i.State,
+		&i.ProposedBy,
+		&i.ProposedAt,
+		&i.ActivatedBy,
+		&i.ActivatedAt,
+		&i.ClosedBy,
+		&i.ClosedAt,
+	)
+	return i, err
+}
+
 const insertIssuerRevision = `-- name: InsertIssuerRevision :one
 
 INSERT INTO pc.trusted_issuers (org_id, id, entry_id, revision, agent_id, kind, issuer, audience, algorithms, binding,
