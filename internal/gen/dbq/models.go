@@ -117,6 +117,19 @@ type PcAuthReplay struct {
 	ExpiresAt time.Time
 }
 
+type PcBrokerKey struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	GatewayID    ids.UUID
+	Version      int32
+	PublicKey    []byte
+	Fingerprint  string
+	CertID       ids.UUID
+	State        string
+	RegisteredAt time.Time
+	RetiredAt    *time.Time
+}
+
 type PcBudget struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -169,6 +182,18 @@ type PcBusinessUnit struct {
 	UpdatedAt   time.Time
 }
 
+type PcCircuitState struct {
+	OrgID        ids.OrgID
+	ConnectionID ids.UUID
+	GatewayID    ids.UUID
+	State        string
+	UnknownCount int32
+	TotalCount   int32
+	OpenedAt     *time.Time
+	ClosedAt     *time.Time
+	ReportedAt   time.Time
+}
+
 type PcCliSession struct {
 	OrgID           ids.OrgID
 	ID              ids.UUID
@@ -185,6 +210,40 @@ type PcCliSession struct {
 	ExpiresAt       time.Time
 	RefreshedAt     *time.Time
 	RevokedAt       *time.Time
+}
+
+type PcConnection struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	Name             string
+	Kind             string
+	GatewayID        ids.UUID
+	Package          string
+	BaseUrl          *string
+	AllowedHosts     []string
+	DestinationClass string
+	AccessMode       string
+	CredentialHeader *string
+	CredentialScheme *string
+	DefaultMode      string
+	MaxResponseBytes int32
+	TimeoutMs        int32
+	State            string
+	QuarantineReason *string
+	Revision         int32
+	CreatedBy        string
+	CreatedAt        time.Time
+	UpdatedBy        string
+	UpdatedAt        time.Time
+}
+
+type PcConnectionRoute struct {
+	OrgID        ids.OrgID
+	ConnectionID ids.UUID
+	Route        string
+	Mode         string
+	ChangedBy    string
+	ChangedAt    time.Time
 }
 
 type PcConsequenceRule struct {
@@ -207,6 +266,24 @@ type PcCounter struct {
 	Reserved    int32
 	Spent       int32
 	CreatedAt   time.Time
+}
+
+type PcCredential struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	ConnectionID ids.UUID
+	Version      int32
+	BrokerKeyID  ids.UUID
+	Sealed       []byte
+	AllowedHosts []string
+	Header       string
+	Scheme       *string
+	State        string
+	CreatedBy    string
+	CreatedAt    time.Time
+	SupersededAt *time.Time
+	RevokedBy    *string
+	RevokedAt    *time.Time
 }
 
 type PcCrossOrgListAudit struct {
@@ -382,6 +459,7 @@ type PcExecutionAttempt struct {
 	ResponseDigest []byte
 	DispatchMs     *int32
 	RecordedAt     time.Time
+	AccessMode     *string
 }
 
 type PcFact struct {
@@ -414,6 +492,48 @@ type PcFactProvider struct {
 	State            string
 	CreatedBy        string
 	CreatedAt        time.Time
+}
+
+type PcGateway struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	Name          string
+	State         string
+	ConfigVersion int64
+	CreatedBy     string
+	CreatedAt     time.Time
+	RevokedBy     *string
+	RevokedAt     *time.Time
+	RevokeReason  *string
+}
+
+type PcGatewayCert struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	GatewayID     ids.UUID
+	Serial        []byte
+	KeyThumbprint string
+	IssuedVia     string
+	PreviousID    *ids.UUID
+	NotBefore     time.Time
+	NotAfter      time.Time
+	State         string
+	IssuedAt      time.Time
+	SupersededAt  *time.Time
+	RevokedAt     *time.Time
+	RevokeReason  *string
+}
+
+type PcGatewayEnrollmentToken struct {
+	OrgID      ids.OrgID
+	ID         ids.UUID
+	GatewayID  ids.UUID
+	TokenHash  []byte
+	CreatedBy  string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	UsedAt     *time.Time
+	UsedCertID *ids.UUID
 }
 
 type PcGrant struct {
@@ -491,6 +611,21 @@ type PcKey struct {
 	State             string
 	CreatedAt         time.Time
 	StateChangedAt    time.Time
+}
+
+type PcKillSwitchRequest struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	Epoch        int64
+	ProposedBy   ids.UUID
+	ProposerCred ids.UUID
+	Reason       string
+	State        string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	DecidedBy    *ids.UUID
+	DeciderCred  *ids.UUID
+	DecidedAt    *time.Time
 }
 
 type PcLedgerChain struct {
@@ -604,10 +739,13 @@ type PcOrg struct {
 }
 
 type PcOrgContainment struct {
-	OrgID      ids.OrgID
-	Epoch      int64
-	KillSwitch bool
-	UpdatedAt  time.Time
+	OrgID        ids.OrgID
+	Epoch        int64
+	KillSwitch   bool
+	UpdatedAt    time.Time
+	EngagedBy    *string
+	EngagedAt    *time.Time
+	EngageReason *string
 }
 
 type PcPackagePin struct {
@@ -652,6 +790,8 @@ type PcPermit struct {
 	ExpiresAt     time.Time
 	DispatchingAt *time.Time
 	FinishedAt    *time.Time
+	Mode          string
+	ConnectionID  *ids.UUID
 }
 
 type PcPolicy struct {
@@ -815,6 +955,8 @@ type PcTransaction struct {
 	BasisDigest   *string
 	EffectiveHash []byte
 	DedupeKey     *string
+	Mode          string
+	ConnectionID  *ids.UUID
 }
 
 type PcTrustedIssuer struct {

@@ -393,7 +393,7 @@ func TestHR001_BeginDispatchRejectsStaleEpochAndKillSwitch(t *testing.T) {
 	}
 	res2 := f.authorize(t, "10.00")
 	err = f.pool.InTenantTx(ctx, f.gw.Org, func(ctx context.Context, tx db.TenantTx) error {
-		_, err := dbq.New(tx).SetKillSwitch(ctx, true, f.gw.Org)
+		_, err := dbq.New(tx).EngageKillSwitch(ctx, "test", "test", f.gw.Org)
 		return err
 	})
 	if err != nil {

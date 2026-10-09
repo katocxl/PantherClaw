@@ -133,9 +133,21 @@ UPDATE pc.org_containment SET epoch = epoch + 1, updated_at = now()
 WHERE org_id = sqlc.arg(org_id)
 RETURNING epoch;
 
--- name: SetKillSwitch :one
-UPDATE pc.org_containment SET kill_switch = sqlc.arg(engaged), epoch = epoch + 1, updated_at = now()
-WHERE org_id = sqlc.arg(org_id)
+-- EngageKillSwitch sets the kill switch and raises the epoch in one
+-- statement (HR-002, HR-113); it changes nothing while already engaged.
+-- name: EngageKillSwitch :one
+UPDATE pc.org_containment
+SET kill_switch = true, epoch = epoch + 1, engaged_by = sqlc.arg(engaged_by)::text, engaged_at = now(),
+    engage_reason = sqlc.arg(reason)::text, updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND NOT kill_switch
+RETURNING epoch, engaged_at;
+
+-- ClearKillSwitch lifts the kill switch and raises the epoch; it changes
+-- nothing while not engaged.
+-- name: ClearKillSwitch :one
+UPDATE pc.org_containment
+SET kill_switch = false, epoch = epoch + 1, engaged_by = NULL, engaged_at = NULL, engage_reason = NULL, updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND kill_switch
 RETURNING epoch;
 
 -- name: InsertBudget :exec

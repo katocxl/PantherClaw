@@ -61,6 +61,22 @@ func (q *Queries) BumpEpoch(ctx context.Context, orgID ids.OrgID) (int64, error)
 	return epoch, err
 }
 
+const clearKillSwitch = `-- name: ClearKillSwitch :one
+UPDATE pc.org_containment
+SET kill_switch = false, epoch = epoch + 1, engaged_by = NULL, engaged_at = NULL, engage_reason = NULL, updated_at = now()
+WHERE org_id = $1 AND kill_switch
+RETURNING epoch
+`
+
+// ClearKillSwitch lifts the kill switch and raises the epoch; it changes
+// nothing while not engaged.
+func (q *Queries) ClearKillSwitch(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	row := q.db.QueryRow(ctx, clearKillSwitch, orgID)
+	var epoch int64
+	err := row.Scan(&epoch)
+	return epoch, err
+}
+
 const commitReservation = `-- name: CommitReservation :execresult
 UPDATE pc.budgets
 SET reserved = reserved - $1, spent = spent + $1,
@@ -87,6 +103,28 @@ func (q *Queries) DBNow(ctx context.Context) (time.Time, error) {
 	var now time.Time
 	err := row.Scan(&now)
 	return now, err
+}
+
+const engageKillSwitch = `-- name: EngageKillSwitch :one
+UPDATE pc.org_containment
+SET kill_switch = true, epoch = epoch + 1, engaged_by = $1::text, engaged_at = now(),
+    engage_reason = $2::text, updated_at = now()
+WHERE org_id = $3 AND NOT kill_switch
+RETURNING epoch, engaged_at
+`
+
+type EngageKillSwitchRow struct {
+	Epoch     int64
+	EngagedAt *time.Time
+}
+
+// EngageKillSwitch sets the kill switch and raises the epoch in one
+// statement (HR-002, HR-113); it changes nothing while already engaged.
+func (q *Queries) EngageKillSwitch(ctx context.Context, engagedBy string, reason string, orgID ids.OrgID) (EngageKillSwitchRow, error) {
+	row := q.db.QueryRow(ctx, engageKillSwitch, engagedBy, reason, orgID)
+	var i EngageKillSwitchRow
+	err := row.Scan(&i.Epoch, &i.EngagedAt)
+	return i, err
 }
 
 const finishPermit = `-- name: FinishPermit :one
@@ -573,19 +611,6 @@ func (q *Queries) ReserveBudget(ctx context.Context, arg ReserveBudgetParams) (p
 		arg.ID,
 		arg.Currency,
 	)
-}
-
-const setKillSwitch = `-- name: SetKillSwitch :one
-UPDATE pc.org_containment SET kill_switch = $1, epoch = epoch + 1, updated_at = now()
-WHERE org_id = $2
-RETURNING epoch
-`
-
-func (q *Queries) SetKillSwitch(ctx context.Context, engaged bool, orgID ids.OrgID) (int64, error) {
-	row := q.db.QueryRow(ctx, setKillSwitch, engaged, orgID)
-	var epoch int64
-	err := row.Scan(&epoch)
-	return epoch, err
 }
 
 const shareContainment = `-- name: ShareContainment :one
