@@ -31,8 +31,9 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// milestones in delivery order.
-var milestones = []string{"M0", "M1", "M1.5", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13"}
+// milestones in delivery order, which is not numeric order (ADR-0017):
+// M12 comes before the v0.1.0 preview, and M14 before M13.
+var milestones = []string{"M0", "M1", "M1.5", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M12", "M10", "M11", "M14", "M13"}
 
 func milestoneIndex(m string) int { return slices.Index(milestones, strings.TrimSpace(m)) }
 

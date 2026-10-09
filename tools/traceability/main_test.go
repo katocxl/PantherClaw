@@ -35,6 +35,21 @@ func TestMissing(t *testing.T) {
 	}
 }
 
+func TestDeliveryOrder(t *testing.T) {
+	// ADR-0017: the range (M12) lands before the preview, so its rules are due
+	// before those of M10; M14 lands before M13.
+	rules := []Item{{ID: "HR-120", Due: "M12"}, {ID: "HR-200", Due: "M10"}}
+	if got := Missing(rules, nil, map[string]bool{}, "M9"); len(got) != 0 {
+		t.Fatalf("through M9: %v, want nothing due", got)
+	}
+	if got := Missing(rules, nil, map[string]bool{}, "M12"); len(got) != 1 || !strings.HasPrefix(got[0], "HR-120") {
+		t.Fatalf("through M12: %v, want only HR-120", got)
+	}
+	if milestoneIndex("M14") >= milestoneIndex("M13") {
+		t.Fatalf("M14 must come before M13")
+	}
+}
+
 func TestRunAgainstRepository(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run([]string{"-root", "../..", "-through", "M1"}, &out, &errb)

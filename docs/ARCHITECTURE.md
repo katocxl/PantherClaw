@@ -202,7 +202,7 @@ Gateway health: revocation/containment stream heartbeat; **fails closed** when s
 ## 10. Identity
 
 - **Humans:** OIDC relying party (Keycloak for dev, customer IdP in production), browser sessions + WebAuthn step-up; CLI uses OIDC device flow. PantherClaw never becomes a human IdP.
-- **Workloads:** PAP/1 ([protocol/PAP-1.md](protocol/PAP-1.md)).
+- **Workloads:** PAP/1 ([protocol/PAP-1.md](protocol/PAP-1.md)). L2 attestation accepts workload tokens from configured trusted issuers (GitHub Actions and Kubernetes presets first), so existing CI, cluster and agent identities are federated rather than replaced; `StartRun` can prove a represented user with an RFC 8693 subject token from the org's OIDC provider (ADR-0018).
 - **Services:** `private_key_jwt` client credentials; scoped `pck_` API keys (never able to approve).
 - **Gateways:** enrolled via one-time token; mTLS client certificate (24 h) from the internal CA binding gateway → org(s).
 

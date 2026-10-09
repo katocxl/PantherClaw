@@ -1,14 +1,28 @@
 # PantherClaw
 
-**Runtime authorization for AI agents.**
+**The agent transaction firewall.**
 
-PantherClaw sits between AI agents and the systems they act on, so that every consequential action an agent takes is authorized, controlled and accounted for.
+PantherClaw gives every AI agent a verified identity, only the access its current task needs, and a firewall it cannot route around, with evidence your auditors can check. It answers one question for every consequential action: can this agent run do this, for this task, through this route, right now, and can we prove the boundary held?
 
-> **Status: pre-alpha.** Under active development; not ready for production use.
+> **Status: pre-alpha.** Under active development; not ready for production use. Everything below is planned.
+
+## What's inside
+
+| Component | What it does |
+|---|---|
+| **Agent Identity** | Finds every agent, gives it an owner, and verifies which workload is acting and for whom, using the identities you already have (your IdP, GitHub Actions, Kubernetes) |
+| **Task Access** | Just enough access for one task, for a limited time, with exact human approvals |
+| **Policy & Limits** | Org rules, budgets and sequence limits that hold across parallel agents and sub-agents |
+| **Agent Firewall** | A gateway for MCP and API calls plus a containment sandbox, with per-route proof that there is no way around it |
+| **Credential Custody** | Agents never hold your keys; credentials are used only for authorized actions |
+| **Detect & Respond** | Spot misuse, see the blast radius, stop a run, an agent or the whole org in under a second |
+| **Proof** | Signed decision, execution and effect receipts you can verify offline, plus a red-team range for your own policies |
+
+Details: [docs/PRODUCT.md](docs/PRODUCT.md).
 
 ## Integrations
 
-Planned (not yet released): MCP clients, Claude Code, and Python, TypeScript and Go SDKs. See the milestones in [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md).
+Planned (not yet released), coding agents first: Claude Code and the Claude Agent SDK, MCP clients, GitHub, and Go, Python and TypeScript SDKs. See the milestones in [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md).
 
 ## Development
 

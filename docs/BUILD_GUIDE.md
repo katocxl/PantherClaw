@@ -1,7 +1,7 @@
 # PantherClaw — Build Guide
 
 **The authoritative guide for building PantherClaw from an empty repository to a production-ready v1.0 backend.**
-Version 1.0 · 2026-10-08 · Owner: Joshua Kato · Approved at G0 (M0).
+Version 1.1 · 2026-10-09 · Owner: Joshua Kato · Approved at G0 (M0); delivery order and first market revised by ADR-0017, M3 identity scope by ADR-0018.
 
 > PantherClaw is an AI Agent Identity & Runtime Authorization Firewall — an *agent transaction firewall*. It gives agents useful authority, makes every consequential action explainable, and stops that authority when it is no longer appropriate.
 
@@ -19,7 +19,8 @@ Version 1.0 · 2026-10-08 · Owner: Joshua Kato · Approved at G0 (M0).
 4. [security/SECURITY_BASELINES.md](security/SECURITY_BASELINES.md) — auth, crypto, logging, dependencies, checks.
 5. **This guide** — process, conventions, milestones, tests, definition of done.
 6. [FEATURES.md](FEATURES.md) — what to build (pillars, phases, editions, F-/PN- IDs).
-7. [reference/](reference/) — original product specification (F001–F802) for detailed behavior.
+7. [PRODUCT.md](PRODUCT.md) — positioning, the seven product components, first market and packaging (how features are grouped and sold; never changes behavior).
+8. [reference/](reference/) — original product specification (F001–F802) for detailed behavior.
 
 Also: [THREAT_MODEL.md](security/THREAT_MODEL.md) (`T-###`), [GATES_AND_REVIEW.md](security/GATES_AND_REVIEW.md) (gates, exceptions, briefs), [OWASP_CWE_MAPPING.md](security/OWASP_CWE_MAPPING.md), [DEPENDENCY_POLICY.md](security/DEPENDENCY_POLICY.md), [adr/](adr/), [UPGRADES.md](UPGRADES.md), [IP_PROTECTION.md](IP_PROTECTION.md), [runbooks/](runbooks/).
 
@@ -64,6 +65,10 @@ Rules for the AI implementer:
 **Twelve invariants:** see [ARCHITECTURE §1](ARCHITECTURE.md#1-product-invariants-non-negotiable). Tests in `test/invariants/` are named `TestINV01_…` … `TestINV12_…`.
 
 **Twenty commercial pillars** ([FEATURES.md](FEATURES.md)): Inventory · Discovery · Lifecycle · Identity & Authority Protocol · Authorization · Non-bypassable Transaction Boundary · Agent Waitlist · Agent Controls · Sessions · Containment · Monitoring · Threat Detection · Investigation · Breach Radius · Proof · Coverage & Bypass Resistance · Adversarial Sandbox · Deployments · Performance · Management.
+
+**Seven product components** ([PRODUCT.md](PRODUCT.md)), the way buyers see the pillars: Agent Identity · Task Access · Policy & Limits · Agent Firewall · Credential Custody · Detect & Respond · Proof, on a shared Platform.
+
+**First market** ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)): coding and DevOps agents. The v0.1.0 preview proves enforced coverage for a coding agent ("three routes, three stops"); refunds stay the engine's test harness and become the second market.
 
 **Editions:** Community (BSL free grant: ≤ 5 agents, 1 org) · Team · Business · Enterprise (private repo + licence keys).
 
@@ -304,7 +309,16 @@ docs/                    this guide and companions
 
 ## 8. Milestones
 
-Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AND_REVIEW.md) §7 and ends when its exit criteria pass in CI. Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M8**; **v1.0 after M13**.
+Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AND_REVIEW.md) §7 and ends when its exit criteria pass in CI.
+
+**Delivery order** ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)); milestone numbers are identifiers, not order, and `tools/traceability` holds this order:
+
+```
+M0 → M1 → M1.5 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M12 → v0.1.0 preview
+   → M10 → M11 → M14 → M13 → v1.0 → UI phase
+```
+
+Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-agent wedge, exit below); **v1.0 after M13**.
 
 ### M0 — Bootstrap (done when CI is green)
 - Docs set (this guide and companions), IP/legal files, repo security settings, rulesets, `release` environment.
@@ -343,13 +357,15 @@ Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AN
 - **Exit:** authenticated, authorized CRUD for tenancy via Connect + CLI.
 
 ### M3 — Agents & PAP/1 identity
-**Threat slice:** T-001, T-004, T-032, T-033, T-035 · **HR:** HR-022, HR-090..094 · **F:** F015–F037, F224–F236 · **PN:** PN-001 (part), PN-002, PN-004 (ADMISSION).
+**Threat slice:** T-001, T-004, T-032, T-033, T-035 · **HR:** HR-022, HR-090..094 · **F:** F015–F037, F224–F236 · **PN:** PN-001 (part), PN-002 (incl. PN-002.8), PN-004 (ADMISSION) · **ADR:** 0018.
 - Agents inventory, owners/backup, purpose, environment, lifecycle state machine, change history.
 - Enrollment tokens, instance key registration, ADMISSION waitlist entries, fingerprint confirmation.
-- Workload tokens, proofs, server nonces, replay store (partitioned), attestation L1 + L2 (GitHub OIDC, Kubernetes TokenReview).
-- Runs (server-minted, launcher vs represented principal, child runs).
+- Workload tokens, proofs, server nonces, replay store (partitioned), attestation L1 + L2.
+- **L2 through configured trusted issuers** (ADR-0018): each entry pins issuer, key source, audience, algorithms and immutable binding claims; presets carry rules configuration cannot disable. Ships the GitHub Actions OIDC and Kubernetes TokenReview presets; further presets are PN-002.3 (Next). Issuer changes are protected changes (F582).
+- Runs (server-minted, launcher vs represented principal, child runs). **`StartRun` accepts an RFC 8693 subject token** from a configured OIDC provider to prove the represented user, with the launcher as actor (PN-002.8); it grants nothing by itself.
 - Discovery: gateway-observed unknown workloads → unclaimed queue.
-- **Tests:** replay, stolen token without key, wrong `htu`/`bh`, stale nonce, GitHub fork/`pull_request_target` rejection, name-collision instances not inheriting authority.
+- The G0 brief turns the ADR-0018 constraints into HR rules and threat rows (issuer without pinned claims, key fetch through egress guards, single-use attestation tokens, subject-token audience and freshness).
+- **Tests:** replay, stolen token without key, wrong `htu`/`bh`, stale nonce, GitHub fork/`pull_request_target` rejection, name-collision instances not inheriting authority, issuer entry without binding claims rejected, token from an unconfigured issuer or for another org's audience rejected, subject token from an unconfigured IdP, for another audience, stale or replayed rejected, subject token never widening a grant.
 
 ### M4 — Authority core
 **Threat slice:** T-001, T-008, T-011, T-012, T-018, T-020, T-023, T-036 · **HR:** HR-005..007, HR-023, HR-040..049, HR-100..103, HR-123, HR-124 · **F:** F038–F130.
@@ -401,11 +417,11 @@ Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AN
 - Execution/effect receipts, Merkle tiles, signed checkpoints, Rekor v2 anchoring (global root, RFC 3161), `pclaw verify` (offline), decision replay (non-executing; proposed-policy replay; difference explanation), evidence packs (signed), retention categories, restricted payload capture profile, optional ML-DSA co-signing.
 - **Tests:** tampering detected (row edit, deletion, re-signing without witness), replay never dispatches, pack completeness incl. uncertain states.
 
-### M8 — SDKs, integrations & real connectors → v0.1.0 preview
-**PN:** PN-014, PN-016, PN-017.
-- `sdk/go` (client + target verifier middleware), `sdk/python` (async + sync, LangChain/LangGraph, OpenAI Agents SDK, CrewAI on py3.13), `sdk/typescript` (Vercel AI SDK, MCP TS); cross-language conformance fixtures.
-- Claude Agent SDK `canUseTool` integration; `pclaw init` (detect framework/MCP config, enroll, rewrite config with backup, apply template).
-- Connectors: GitHub App (installation tokens, PR/merge, branch protection facts), Stripe test mode (refunds, idempotency keys), Slack (approval deep links, notifications), Postgres query (read-only, row limits, field filtering).
+### M8 — Coding-agent integrations
+**PN:** PN-001.2, PN-014, PN-016.1, PN-016.2, PN-017.1 · **F:** F158, F346, F351 · **ADR:** 0017.
+- `sdk/go` (client + target verifier middleware); core `sdk/python` and `sdk/typescript` clients (PAP/1, DPoP, ActionIR canonicalizer, wait handles), which the Agent SDK callback needs; cross-language conformance fixtures. Framework wrappers wait for M14.
+- Claude Agent SDK `canUseTool` integration; `pclaw init` (detect Claude Code, MCP and framework config, enroll, rewrite config with backup, apply the "coding to production" template).
+- GitHub App connector (per-action installation tokens, PR/merge, branch protection facts) and GitHub organisation scan.
 - §43 coding-agent scenario on a sandbox GitHub repo: merge requires independent reviewer; deployment consequence requires release approver.
 
 ### M9 — Coverage & containment sandbox
@@ -425,13 +441,27 @@ Each milestone starts with a G0 brief in [GATES_AND_REVIEW.md](security/GATES_AN
 - Templates (support, refund, diagnostics, release, analysis), policy tests with expected reasons, historical simulation (newly denied/held/constrained/allowed/unevaluable), shadow evaluation, pilot cohorts, per-target rollout states, rollback, exceptions, behavioral diffs.
 - Automations: definitions (When/If/Under authority/Do/Wait/If fails/Finish), schedules (timezone, DST, missed-run policy), event/manual triggers, linear steps with waits and approvals, bounded retries, loop detection via ancestry, shadow mode, execution inspector data. Full branching engine = Next.
 
-### M12 — Adversarial range
+### M12 — Adversarial range (delivered after M9, before the preview)
 **HR:** HR-120 · **PN:** PN-009.
 - Scenario engine (YAML), ≥ 30 attacks (see FEATURES pillar 17), simulator-only enforcement, assurance reports (signed), CI regression gate on every PR touching authority/gateway.
+- Coding-agent scenarios first: direct-API bypass of an MCP merge, found PAT/SSH key, sub-agent escalation, approval reuse after a new commit, injection → exfiltration over an allowed channel, stolen workload token, sandbox DNS/IPv6 escape.
+
+### v0.1.0 preview exit — coding-agent wedge (ADR-0017)
+- **Three routes, three stops**, in CI against the git simulator and live against a sandbox GitHub repository: a merge through the GitHub MCP server without a reviewer is held; the same merge by direct `curl` to the GitHub API is mapped to the same action and decision (F099); a push with a found PAT or SSH key fails because the sandbox holds no reusable credentials and its egress is closed. Each attempt has a signed receipt that `pclaw verify` checks offline.
+- The §43 scenario passes end to end with effect verification on the target branch.
+- The coverage card shows the repository routes `ENFORCED` from sandbox probe evidence, with expiry.
+- The 30-minute onboarding path for Claude Code (F335) is measured and recorded.
+- The coding-agent scenarios of M12 are green and gate CI.
 
 ### M13 — Commercial & production hardening → v1.0
 **PN:** PN-010, PN-011, PN-012, PN-019.
 - Entitlements & metering per edition, rate limits/quotas, support access (task-bound, customer-approved, audited), data export/deletion, Helm chart, backup/restore + DR drill, FIPS build variant, k6 at SLOs, Schemathesis clean, threat-model refresh (G4), docs site.
+
+### M14 — Framework SDKs & business connectors (delivered after M11, before M13)
+**PN:** PN-016.3, PN-017.2, PN-017.3, PN-017.4 · **F:** F101 · **ADR:** 0017.
+- Framework wrappers on the core clients: Python (LangChain/LangGraph, OpenAI Agents SDK, CrewAI on py3.13), TypeScript (Vercel AI SDK, MCP TS), all on the conformance suite.
+- Connectors: Stripe test mode (refunds, idempotency keys), Slack (approval deep links, notifications), Postgres query (read-only, row limits, field filtering); data-scoping constraints where connectors support them.
+- Refund scenario as the second-market demo on real Stripe test mode.
 
 ### UI phase (after backend)
 Next.js console over generated Connect clients: seven surfaces (Operations, Agents, Policies, Approvals, Investigations, Connections, Automations) + universal search; accessibility and comprehension tests (F001–F014, F643–F651).
@@ -456,11 +486,14 @@ Hardening: SHA-pinned actions (repo policy), `permissions: {}` default, `persist
 
 ## 10. Demo scenarios (investor / design partner)
 
-1. **Refund firewall** (M6): S01–S09 live, with evidence explorer showing decision/execution/effect receipts.
+Ordered for the coding-agent first market (ADR-0017); scripts and talk tracks follow [PRODUCT.md](PRODUCT.md) §6.
+
+1. **Three routes, three stops** (v0.1.0): MCP merge held, direct API call gets the same decision, found credential useless in the sandbox; every attempt has a verifiable receipt.
 2. **Coding agent to production** (M8): merge vs deployment consequence; independent reviewer + release approver; effect verification on the target branch; partial deployment.
-3. **Shadow agent discovery** (M8): `pclaw scan` on a laptop finds MCP configs and keys; claims → ADMISSION waitlist.
+3. **Shadow agent discovery** (M3/M8): `pclaw scan` on a laptop finds MCP configs and keys; claims → ADMISSION waitlist.
 4. **Kill switch** (M6): engage → gateways refuse within 1 s → restore with two people.
 5. **Prove it** (M12): red-team range report against the demo tenant; sandbox closure evidence promotes coverage to ENFORCED.
+6. **Refund firewall** (M6, second market): S01–S09 live, with evidence explorer showing decision/execution/effect receipts.
 
 All demo data is synthetic and labeled `SIMULATED` (F630).
 
@@ -482,3 +515,5 @@ All demo data is synthetic and labeled `SIMULATED` (F630).
 | Receipts | Decision, execution and effect evidence records |
 | Waitlist | Unified queue of agents/actions awaiting a security decision |
 | PAP/1 | PantherClaw Authority Protocol, version 1 |
+| Component | One of the seven buyer-facing groupings of pillars ([PRODUCT.md](PRODUCT.md)) |
+| Trusted issuer | A configured source of workload tokens accepted as L2 attestation (ADR-0018) |
