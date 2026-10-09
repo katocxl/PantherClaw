@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
 // Package identityrpc serves IdentityService for people and services:
-// enrollment tokens and instance admission (G0 M3). Handlers only
-// translate; the use cases authorize where the agent lives. Trusted-issuer
-// entries arrive with slice 9 and answer Unimplemented until then.
+// enrollment tokens, instance admission and trusted-issuer entries (G0 M3).
+// Handlers only translate; the use cases authorize where the agent lives.
 package identityrpc
 
 import (
@@ -24,11 +23,15 @@ import (
 // Identity serves IdentityService.
 type Identity struct {
 	pantherclawv1connect.UnimplementedIdentityServiceHandler
-	svc *app.Service
+	svc      *app.Service
+	clusters app.Clusters
 }
 
-// NewIdentity returns the IdentityService handler.
-func NewIdentity(svc *app.Service) *Identity { return &Identity{svc: svc} }
+// NewIdentity returns the IdentityService handler. clusters says which
+// configured Kubernetes clusters each org may use.
+func NewIdentity(svc *app.Service, clusters app.Clusters) *Identity {
+	return &Identity{svc: svc, clusters: clusters}
+}
 
 var errInvalidID = pcerr.New(pcerr.InvalidArgument, "INVALID_ID", "invalid id")
 

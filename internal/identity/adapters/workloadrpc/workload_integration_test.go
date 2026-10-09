@@ -100,7 +100,7 @@ func newStack(t *testing.T) *stack {
 	}
 	svc := iapp.New(pool, reg, ts.URL, clock.System{})
 	pantherclawv1connect.RegisterAgentServiceHandler(s, agentsrpc.NewAgents(aapp.NewInventory(pool, unlimited{})))
-	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc))
+	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc, nil))
 	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, ts.URL, clock.System{}))
 	inner := http.NewServeMux()
 	rpc.Mount(inner, s)

@@ -40,17 +40,17 @@ var (
 
 // GitHubBinding pins GitHub Actions tokens to one agent (HR-093, HR-140).
 type GitHubBinding struct {
-	RepositoryID      string
-	RepositoryOwnerID string
-	JobType           JobType
+	RepositoryID      string  `json:"repository_id"`
+	RepositoryOwnerID string  `json:"repository_owner_id"`
+	JobType           JobType `json:"job_type"`
 	// WorkflowRefs are accepted values of workflow_ref (ordinary jobs) or
 	// job_workflow_ref (reusable workflows), each on a branch or tag.
-	WorkflowRefs []string
+	WorkflowRefs []string `json:"workflow_refs"`
 	// WorkflowSHAs optionally pin exact revisions (workflow_sha or
 	// job_workflow_sha); empty accepts any revision of the refs.
-	WorkflowSHAs      []string
-	Environment       string
-	RunnerEnvironment string
+	WorkflowSHAs      []string `json:"workflow_shas,omitzero"`
+	Environment       string   `json:"environment,omitzero"`
+	RunnerEnvironment string   `json:"runner_environment,omitzero"`
 }
 
 // Validate checks that the binding pins immutable ids and protected-looking
