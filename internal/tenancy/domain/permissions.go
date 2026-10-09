@@ -57,11 +57,41 @@ const (
 	PermEvidenceReadRestricted Permission = "evidence.read_restricted" // M7, human only
 )
 
+// Run and waitlist permissions (M3). run.represent lets a launcher present
+// an RFC 8693 subject token to start a run for another user (HR-146).
+const (
+	PermRunRead      Permission = "run.read"
+	PermRunStart     Permission = "run.start"
+	PermRunRepresent Permission = "run.represent"
+	PermRunManage    Permission = "run.manage"
+	PermWaitlistRead Permission = "waitlist.read"
+)
+
+// Workload identity permissions (M3). agent.admit (confirming an instance's
+// fingerprint, HR-094) and identity.issuer.activate (switching on a
+// trusted-issuer revision, HR-141) are human only.
+const (
+	PermAgentEnroll    Permission = "agent.enroll"
+	PermAgentAdmit     Permission = "agent.admit"
+	PermIssuerRead     Permission = "identity.issuer.read"
+	PermIssuerManage   Permission = "identity.issuer.manage"
+	PermIssuerActivate Permission = "identity.issuer.activate"
+)
+
 // Gateway permissions are held only by authenticated gateways (M1.5 dev
 // gateway, M6 mTLS), never by users, service accounts or roles.
 const (
 	PermGatewayAuthorize Permission = "gateway.authorize"
 	PermGatewayDispatch  Permission = "gateway.dispatch"
+	PermGatewayObserve   Permission = "gateway.observe"
+)
+
+// Workload permissions are held only by PAP/1-authenticated workloads
+// (WorkloadService), never by users, service accounts or roles.
+const (
+	PermWorkloadEnroll Permission = "workload.enroll"
+	PermWorkloadToken  Permission = "workload.token"
+	PermWorkloadRun    Permission = "workload.run"
 )
 
 // catalog lists every grantable permission.
@@ -76,6 +106,10 @@ var catalog = []Permission{
 	PermServiceAccountRead, PermServiceAccountManage,
 	PermAuditRead,
 	PermAgentRead, PermAgentManage,
+	PermRunRead, PermRunStart, PermRunRepresent, PermRunManage,
+	PermWaitlistRead,
+	PermAgentEnroll, PermAgentAdmit,
+	PermIssuerRead, PermIssuerManage, PermIssuerActivate,
 	PermPolicyAuthor, PermPolicyPublish,
 	PermApprovalRespond, PermIncidentRespond, PermEvidenceReadRestricted,
 }
@@ -83,7 +117,9 @@ var catalog = []Permission{
 // humanOnly permissions can never be exercised by a service account or an
 // API key, whatever their bindings say (ARCHITECTURE §10: "pck_ keys never
 // able to approve"; F583).
-var humanOnly = []Permission{PermApprovalRespond, PermPolicyPublish, PermEvidenceReadRestricted}
+var humanOnly = []Permission{
+	PermApprovalRespond, PermPolicyPublish, PermEvidenceReadRestricted, PermAgentAdmit, PermIssuerActivate,
+}
 
 // Catalog returns every grantable permission in a stable order.
 func Catalog() []Permission { return slices.Clone(catalog) }
@@ -97,10 +133,17 @@ func (p Permission) HumanOnly() bool { return slices.Contains(humanOnly, p) }
 // Gateway reports whether p belongs to gateways.
 func (p Permission) Gateway() bool { return strings.HasPrefix(string(p), "gateway.") }
 
-// Declarable reports whether an RPC may declare p as its requirement.
-func (p Permission) Declarable() bool {
-	return p == PermPublic || p == PermAuthenticated || p == PermGatewayAuthorize || p == PermGatewayDispatch || p.Known()
+// Workload reports whether p belongs to PAP/1-authenticated workloads.
+func (p Permission) Workload() bool { return strings.HasPrefix(string(p), "workload.") }
+
+// declarableOnly are requirements an RPC may declare that no role grants.
+var declarableOnly = []Permission{
+	PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve,
+	PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun,
 }
+
+// Declarable reports whether an RPC may declare p as its requirement.
+func (p Permission) Declarable() bool { return slices.Contains(declarableOnly, p) || p.Known() }
 
 // APIKeyScopable reports whether p may appear in an API key's scopes.
 func (p Permission) APIKeyScopable() bool { return p.Known() && !p.HumanOnly() }

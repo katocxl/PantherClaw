@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// WaitlistService reads the Agent Waitlist (Pass; PN-004.1). M3 creates
+// ADMISSION entries only; M5 adds the other entry types, escalation and wait
+// handles. Entries are decided through the service that owns their subject
+// (for example IdentityService.AdmitInstance), never here.
+service WaitlistService {
+  // ListWaitlistEntries lists waitlist entries.
+  // permission: waitlist.read
+  rpc ListWaitlistEntries(ListWaitlistEntriesRequest) returns (ListWaitlistEntriesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetWaitlistEntry returns one entry.
+  // permission: waitlist.read
+  rpc GetWaitlistEntry(GetWaitlistEntryRequest) returns (GetWaitlistEntryResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// WaitlistKind is the type of decision an entry waits for.
+enum WaitlistKind {
+  WAITLIST_KIND_UNSPECIFIED = 0;
+  // Admit an instance's key, or claim a discovered agent.
+  WAITLIST_KIND_ADMISSION = 1;
+}
+
+// WaitlistState is an entry's state; expiry resolves to rejection, never to
+// approval (PN-004.2).
+enum WaitlistState {
+  WAITLIST_STATE_UNSPECIFIED = 0;
+  WAITLIST_STATE_OPEN = 1;
+  WAITLIST_STATE_APPROVED = 2;
+  WAITLIST_STATE_REJECTED = 3;
+  WAITLIST_STATE_EXPIRED = 4;
+  WAITLIST_STATE_CANCELLED = 5;
+}
+
+// WaitlistEntry is one pending or decided entry.
+message WaitlistEntry {
+  // Entry id.
+  string id = 1;
+  // Kind.
+  WaitlistKind kind = 2;
+  // "agent" or "instance".
+  string subject_type = 3;
+  // Subject id.
+  string subject_id = 4;
+  // The agent concerned.
+  string agent_id = 5;
+  // State.
+  WaitlistState state = 6;
+  // Evidence PantherClaw established itself, for example the key
+  // thumbprint or the verified attestation claims.
+  map<string, string> evidence = 7;
+  // UNTRUSTED evidence reported by the workload or observed at a gateway,
+  // shown separately and never used to decide.
+  map<string, string> untrusted_evidence = 8;
+  // Deadline; an open entry past it is expired.
+  google.protobuf.Timestamp deadline_time = 9;
+  // Who decided ("user:<id>" or "system").
+  string decided_by = 10;
+  // Decision time.
+  google.protobuf.Timestamp decide_time = 11;
+  // Reason given with the decision.
+  string decision_reason = 12;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 13;
+}
+
+// ListWaitlistEntriesRequest pages through entries.
+message ListWaitlistEntriesRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only entries in these states (open entries when empty).
+  repeated WaitlistState states = 3 [(buf.validate.field).repeated = {
+    max_items: 5
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only entries about this agent.
+  optional string agent_id = 4 [(buf.validate.field).string.uuid = true];
+}
+
+// ListWaitlistEntriesResponse is one page.
+message ListWaitlistEntriesResponse {
+  // Entries, oldest first.
+  repeated WaitlistEntry entries = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// GetWaitlistEntryRequest names an entry.
+message GetWaitlistEntryRequest {
+  // Entry id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetWaitlistEntryResponse returns it.
+message GetWaitlistEntryResponse {
+  // The entry.
+  WaitlistEntry entry = 1;
+}

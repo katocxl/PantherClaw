@@ -211,7 +211,7 @@ func TestIntRPCTenancyAndAccess(t *testing.T) {
 		t.Fatalf("self-grant = %v, %v", b, err)
 	}
 	roles, err := acc.ListRoles(ctx, &pantherclawv1.ListRolesRequest{})
-	if err != nil || len(roles.GetRoles()) != 10 {
+	if err != nil || len(roles.GetRoles()) != len(td.Roles()) {
 		t.Fatalf("ListRoles = %d, %v", len(roles.GetRoles()), err)
 	}
 

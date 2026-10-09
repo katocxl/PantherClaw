@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// RunService starts and reads runs (PAP-1 §5; HR-022, HR-145, HR-146; G0
+// M3). Only the Authority mints run ids. A run is bound to an agent,
+// optionally one instance, the launcher (the authenticated caller) and the
+// represented principal: the launcher itself, or a user proven by an
+// RFC 8693 subject token. A subject token grants nothing. M3 runs carry no
+// grant; grant selection arrives in M4.
+service RunService {
+  // StartRun starts a run of an agent. Presenting a subject token also needs
+  // the run.represent permission.
+  // permission: run.start
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+  // GetRun returns one run.
+  // permission: run.read
+  rpc GetRun(GetRunRequest) returns (GetRunResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListRuns lists runs.
+  // permission: run.read
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // EndRun ends a run and its child runs.
+  // permission: run.manage
+  rpc EndRun(EndRunRequest) returns (EndRunResponse);
+}
+
+// RunState is a run's state.
+enum RunState {
+  RUN_STATE_UNSPECIFIED = 0;
+  RUN_STATE_ACTIVE = 1;
+  // Ended by its launcher or an operator.
+  RUN_STATE_ENDED = 2;
+  // Cancelled before use.
+  RUN_STATE_CANCELLED = 3;
+  // Past its expiry time.
+  RUN_STATE_EXPIRED = 4;
+  // Ended because its agent, instance or parent run was retired or revoked.
+  RUN_STATE_REVOKED = 5;
+}
+
+// SubjectTokenType is the RFC 8693 type of a subject token.
+enum SubjectTokenType {
+  SUBJECT_TOKEN_TYPE_UNSPECIFIED = 0;
+  // urn:ietf:params:oauth:token-type:id_token
+  SUBJECT_TOKEN_TYPE_ID_TOKEN = 1;
+  // urn:ietf:params:oauth:token-type:access_token, as a signed JWT with
+  // "typ": "at+jwt" (RFC 9068); opaque access tokens are rejected.
+  SUBJECT_TOKEN_TYPE_ACCESS_TOKEN = 2;
+}
+
+// PrincipalSource says how the represented principal was established.
+enum PrincipalSource {
+  PRINCIPAL_SOURCE_UNSPECIFIED = 0;
+  // The launcher represents itself.
+  PRINCIPAL_SOURCE_LAUNCHER = 1;
+  // A subject token proved the user.
+  PRINCIPAL_SOURCE_SUBJECT_TOKEN = 2;
+  // Inherited from the parent run.
+  PRINCIPAL_SOURCE_PARENT_RUN = 3;
+}
+
+// Actor is one party in a run's actor chain.
+message Actor {
+  // "user", "service_account" or "instance".
+  string kind = 1;
+  // Its id.
+  string id = 2;
+}
+
+// Run is one server-minted run.
+message Run {
+  // Run id, minted by the Authority.
+  string id = 1;
+  // Agent.
+  string agent_id = 2;
+  // Bound instance; empty until the first instance uses the run.
+  string instance_id = 3;
+  // Environment (the agent's).
+  string environment_id = 4;
+  // Who started the run.
+  Actor launcher = 5;
+  // Whose authority the run uses.
+  Actor principal = 6;
+  // How the principal was established.
+  PrincipalSource principal_source = 7;
+  // For a subject token: the provider's issuer.
+  string subject_issuer = 8;
+  // For a subject token: the user's subject at the provider.
+  string subject_subject = 9;
+  // Actor chain, outermost first (F027).
+  repeated Actor actor_chain = 10;
+  // Parent run, for a child run.
+  string parent_run_id = 11;
+  // Nesting depth; 0 for a top-level run.
+  int32 depth = 12;
+  // UNTRUSTED task label from the launcher; it never changes scope.
+  string task_ref = 13;
+  // State.
+  RunState state = 14;
+  // Why the run ended.
+  string end_reason = 15;
+  // Start time.
+  google.protobuf.Timestamp create_time = 16;
+  // Expiry time.
+  google.protobuf.Timestamp expire_time = 17;
+  // End time.
+  google.protobuf.Timestamp end_time = 18;
+}
+
+// StartRunRequest starts a run. Grant selection (field 7) is reserved for
+// M4; until then a run carries no grant.
+message StartRunRequest {
+  reserved 7;
+  reserved "grant_id", "task_template";
+
+  // Agent to run.
+  string agent_id = 1 [(buf.validate.field).string.uuid = true];
+  // Optional admitted instance to bind; otherwise the first instance of the
+  // agent that uses the run is bound.
+  optional string instance_id = 2 [(buf.validate.field).string.uuid = true];
+  // UNTRUSTED task label.
+  string task_ref = 3 [(buf.validate.field).string.max_len = 256];
+  // Lifetime in minutes (default 480, at most 1440).
+  int32 ttl_minutes = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1440
+  }];
+  // The represented user's token from a configured OIDC provider (RFC 8693
+  // subject_token). Never logged or stored.
+  string subject_token = 5 [(buf.validate.field).string.max_len = 16384];
+  // Its type; required with a subject token.
+  SubjectTokenType subject_token_type = 6 [(buf.validate.field).enum.defined_only = true];
+
+  option (buf.validate.message).cel = {
+    id: "subject_token_type"
+    message: "subject_token and subject_token_type go together"
+    expression: "(this.subject_token == '') == (this.subject_token_type == 0)"
+  };
+}
+
+// StartRunResponse returns the run.
+message StartRunResponse {
+  // The run.
+  Run run = 1;
+}
+
+// GetRunRequest names a run.
+message GetRunRequest {
+  // Run id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetRunResponse returns it.
+message GetRunResponse {
+  // The run.
+  Run run = 1;
+}
+
+// ListRunsRequest pages through runs.
+message ListRunsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only runs of this agent.
+  optional string agent_id = 3 [(buf.validate.field).string.uuid = true];
+  // Only runs in these states (all when empty).
+  repeated RunState states = 4 [(buf.validate.field).repeated = {
+    max_items: 5
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+}
+
+// ListRunsResponse is one page.
+message ListRunsResponse {
+  // Runs, newest first.
+  repeated Run runs = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// EndRunRequest ends a run.
+message EndRunRequest {
+  // Run id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason, recorded with the run.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+// EndRunResponse returns the run.
+message EndRunResponse {
+  // The run.
+  Run run = 1;
+}

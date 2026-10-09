@@ -29,6 +29,7 @@ func TestRoundTrip(t *testing.T) {
 		{credential.DeviceCode, ""},
 		{credential.RefreshToken, ""},
 		{credential.OAuthState, ""},
+		{credential.EnrollmentToken, ""},
 		{credential.BrowserSession, ""},
 		{credential.LoginState, ""},
 	} {
