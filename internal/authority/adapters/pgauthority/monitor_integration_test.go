@@ -19,13 +19,16 @@ import (
 
 // withConnection gives the world's gateway a row and one connection to the
 // mock payments API in mode (the default for all its routes).
-func (w *world) withConnection(mode string) ids.UUID {
+func (w *world) withConnection(mode string) ids.UUID { return w.withAccess(mode, "none") }
+
+// withAccess is withConnection with the connection's access mode.
+func (w *world) withAccess(mode, access string) ids.UUID {
 	w.t.Helper()
 	gw, conn := ids.NewV7(), ids.NewV7()
 	exec(w.t, w.pool, w.org, "INSERT INTO pc.gateways (org_id, id, name, created_by) VALUES ($1, $2, 'edge', 'test')", w.org, gw)
 	exec(w.t, w.pool, w.org, `INSERT INTO pc.connections (org_id, id, name, kind, gateway_id, package, base_url, access_mode,
 		default_mode, created_by, updated_by) VALUES ($1, $2, 'payments', 'http', $3, 'pc.mock-payments', 'https://payments.example.test',
-		'none', $4, 'test', 'test')`, w.org, conn, gw, mode)
+		$5, $4, 'test', 'test')`, w.org, conn, gw, mode, access)
 	w.gw = finalize.Gateway{ID: gw.String(), Org: w.org}
 	return conn
 }
@@ -91,7 +94,7 @@ func TestHR184_MonitorPermitsReserveNothingAndStillMeetContainment(t *testing.T)
 		FROM pc.transactions WHERE connection_id = $1`, conn); got != "monitor:mcp:payments.charge:ch_1" {
 		t.Fatalf("transactions record %q", got)
 	}
-	if err := w.auth.BeginDispatch(ctx, w.gw, permits[0].PermitID, permits[0].Epoch); err != nil {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, permits[0].PermitID, permits[0].Epoch, finalize.Outbound{}); err != nil {
 		t.Fatalf("a monitor permit goes through BeginDispatch: %v", err)
 	}
 	if _, err := w.auth.RecordExecution(ctx, w.gw, finalize.Execution{Permit: permits[0].PermitID, Outcome: finalize.Accepted}); err != nil {
@@ -99,7 +102,7 @@ func TestHR184_MonitorPermitsReserveNothingAndStillMeetContainment(t *testing.T)
 	}
 	exec(t, w.pool, w.org, `UPDATE pc.org_containment SET kill_switch = true, epoch = epoch + 1, engaged_by = 'test', engaged_at = now(),
 		engage_reason = 'test' WHERE org_id = $1`, w.org)
-	if err := w.auth.BeginDispatch(ctx, w.gw, permits[2].PermitID, permits[2].Epoch); !errors.Is(err, finalize.ErrKillSwitch) {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, permits[2].PermitID, permits[2].Epoch, finalize.Outbound{}); !errors.Is(err, finalize.ErrKillSwitch) {
 		t.Fatalf("the kill switch did not stop a monitor permit: %v", err)
 	}
 	if res := w.authorize(w.through(conn, run, "ch_1", "10.00")); res.Permit != "" {

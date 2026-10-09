@@ -126,16 +126,20 @@ func (h *Handler) BeginDispatch(ctx context.Context, req *pantherclawv1.BeginDis
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid permit id")
 	}
-	if err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch()); err != nil {
+	token, err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch(), Outbound{
+		Method: req.GetOutboundMethod(), URL: req.GetOutboundUrl(), BodySHA256: req.GetOutboundBodySha256(),
+	})
+	if err != nil {
 		return nil, err
 	}
-	return &pantherclawv1.BeginDispatchResponse{}, nil
+	return &pantherclawv1.BeginDispatchResponse{ActionToken: token}, nil
 }
 
 var outcomeFromProto = map[pantherclawv1.Outcome]Outcome{
-	pantherclawv1.Outcome_OUTCOME_ACCEPTED: Accepted,
-	pantherclawv1.Outcome_OUTCOME_FAILED:   Failed,
-	pantherclawv1.Outcome_OUTCOME_UNKNOWN:  Unknown,
+	pantherclawv1.Outcome_OUTCOME_ACCEPTED:  Accepted,
+	pantherclawv1.Outcome_OUTCOME_FAILED:    Failed,
+	pantherclawv1.Outcome_OUTCOME_UNKNOWN:   Unknown,
+	pantherclawv1.Outcome_OUTCOME_DELEGATED: Delegated,
 }
 
 // RecordExecution implements AuthorityServiceHandler.

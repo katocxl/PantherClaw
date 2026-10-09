@@ -202,15 +202,20 @@ type Execution struct {
 // executionReceipt signs what the gateway reported about a dispatch. It
 // records the attempt, never a verified effect (invariant 11): effect
 // receipts come with reconciliation (M7).
-func (a *Authority) executionReceipt(gw Gateway, e Execution, txn ids.UUID, now time.Time) (Receipt, error) {
-	payload, err := json.Marshal(map[string]any{
-		"iss": a.issuer(), "jti": e.Permit.String(), "iat": now.Unix(),
-		"pap": map[string]any{
-			"v": 1, "kind": "execution", "org": gw.Org.String(), "txn": txn.String(), "permit": e.Permit.String(),
-			"outcome": string(e.Outcome), "target_status": e.TargetStatus, "response_digest": hex.EncodeToString(e.ResponseDigest),
-			"gateway": gw.ID, "access_mode": "pantherclaw-held", "simulated": false,
-		},
-	}, json.Deterministic(true))
+func (a *Authority) executionReceipt(gw Gateway, e Execution, x Executed, now time.Time) (Receipt, error) {
+	txn := x.Transaction
+	pap := map[string]any{
+		"v": 1, "kind": "execution", "org": gw.Org.String(), "txn": txn.String(), "permit": e.Permit.String(),
+		"outcome": string(e.Outcome), "target_status": e.TargetStatus, "response_digest": hex.EncodeToString(e.ResponseDigest),
+		"gateway": gw.ID, "access_mode": x.AccessMode, "simulated": false,
+	}
+	if x.Monitor {
+		pap["monitor"] = true // nothing was prevented (HR-184)
+	}
+	if x.Connection != nil {
+		pap["connection"] = x.Connection.String()
+	}
+	payload, err := json.Marshal(map[string]any{"iss": a.issuer(), "jti": e.Permit.String(), "iat": now.Unix(), "pap": pap}, json.Deterministic(true))
 	if err != nil {
 		return Receipt{}, err
 	}

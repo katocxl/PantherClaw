@@ -5,6 +5,7 @@ package pipelinetest
 
 import (
 	"context"
+	"encoding/hex"
 	"slices"
 	"strconv"
 	"time"
@@ -31,6 +32,10 @@ type permitRow struct {
 	dispatched time.Time
 	lines      []bdomain.Line
 	claim      string
+	// What the permit bound (G0 M6), and what BeginDispatch recorded.
+	dispatch Dispatched
+	channel  string
+	monitor  bool
 }
 
 type finalState struct {
@@ -180,7 +185,8 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 		}
 		f.permits[wr.Permit.ID] = &permitRow{
 			gateway: wr.Permit.GatewayID, txn: wr.TransactionID, epoch: wr.Permit.Epoch,
-			state: "ISSUED", expires: wr.Permit.ExpiresAt, lines: wr.Lines, claim: claim,
+			state: "ISSUED", expires: wr.Permit.ExpiresAt, lines: wr.Lines, claim: claim, channel: ev.Channel, monitor: ev.MonitorPermit(),
+			dispatch: dispatchOf(ev, wr.TransactionID),
 		}
 	}
 	receipt, err := wr.Sign(w.budgetStates(ev))
@@ -272,8 +278,42 @@ func (w *World) Tamper(_ context.Context, _ ids.OrgID, prev finalize.Stored, rec
 	return nil
 }
 
+// Dispatched is what a permit bound for its dispatch and what BeginDispatch
+// recorded on it.
+type Dispatched struct {
+	finalize.Dispatching
+	Outbound finalize.Outbound
+	TokenID  *ids.UUID
+}
+
+func dispatchOf(ev *pipeline.Evaluation, txn ids.UUID) Dispatched {
+	d := finalize.Dispatching{Transaction: txn, Operation: ev.Operation, TargetType: ev.Target.Type, TargetID: ev.Target.ID}
+	hash := ev.EffectiveHash
+	if ev.MonitorPermit() {
+		hash = ev.ActionHash
+	}
+	d.EffectiveHash, _ = hex.DecodeString(hash)
+	if c := ev.Connection; c != nil {
+		id := c.ID
+		d.Connection, d.AccessMode = &id, c.AccessMode
+	}
+	return Dispatched{Dispatching: d}
+}
+
+// Dispatch returns what a permit's BeginDispatch recorded.
+func (w *World) Dispatch(permit ids.UUID) Dispatched {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if p, ok := w.fin().permits[permit]; ok {
+		return p.dispatch
+	}
+	return Dispatched{}
+}
+
 // BeginDispatch implements finalize.Store.
-func (w *World) BeginDispatch(_ context.Context, _ ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error {
+func (w *World) BeginDispatch(_ context.Context, _ ids.OrgID, gatewayID string, permit ids.UUID, epoch int64, out finalize.Outbound,
+	mint func(finalize.Dispatching) (*ids.UUID, error),
+) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	p, ok := w.fin().permits[permit]
@@ -289,13 +329,20 @@ func (w *World) BeginDispatch(_ context.Context, _ ids.OrgID, gatewayID string, 
 	case epoch != p.epoch || epoch != w.Cont.Epoch:
 		return finalize.ErrEpochStale
 	}
-	p.state, p.dispatched = "DISPATCHING", w.Cont.Now
+	d := p.dispatch
+	d.Now = w.Cont.Now
+	jti, err := mint(d.Dispatching)
+	if err != nil {
+		return err // nothing changes: the permit stays ISSUED
+	}
+	d.Outbound, d.TokenID = out, jti
+	p.state, p.dispatched, p.dispatch = "DISPATCHING", w.Cont.Now, d
 	return nil
 }
 
 // RecordExecution implements finalize.Store.
 func (w *World) RecordExecution(_ context.Context, _ ids.OrgID, gatewayID string, e finalize.Execution,
-	sign func(txn ids.UUID, now time.Time) (finalize.Receipt, error),
+	sign func(x finalize.Executed, now time.Time) (finalize.Receipt, error),
 ) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -303,12 +350,22 @@ func (w *World) RecordExecution(_ context.Context, _ ids.OrgID, gatewayID string
 	if !ok || p.gateway != gatewayID || p.state != "DISPATCHING" {
 		return "", finalize.ErrNotDispatching
 	}
-	r, err := sign(p.txn, w.Cont.Now)
+	x := finalize.Executed{Transaction: p.txn, Connection: p.dispatch.Connection, AccessMode: finalize.AccessPantherClawHeld, Monitor: p.monitor}
+	if p.dispatch.AccessMode != "" {
+		x.AccessMode = p.dispatch.AccessMode
+	}
+	if e.Outcome == finalize.Delegated {
+		if p.channel != "hook" && p.channel != "sdk" {
+			return "", finalize.ErrNotCooperative
+		}
+		x.AccessMode = finalize.AccessAgentHeld
+	}
+	r, err := sign(x, w.Cont.Now)
 	if err != nil {
 		return "", err
 	}
 	switch e.Outcome {
-	case finalize.Accepted:
+	case finalize.Accepted, finalize.Delegated:
 		p.state = "DISPATCHED"
 		w.settle(p, bdomain.Commit, pipeline.ClaimSucceeded)
 	case finalize.Failed:

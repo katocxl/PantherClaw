@@ -366,13 +366,15 @@ func (s *Store) Tamper(ctx context.Context, org ids.OrgID, prev finalize.Stored,
 	})
 }
 
-// BeginDispatch implements finalize.Store (HR-001).
-func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error {
+// BeginDispatch implements finalize.Store (HR-001, HR-188).
+func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64, out finalize.Outbound,
+	mint func(finalize.Dispatching) (*ids.UUID, error),
+) error {
 	return s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		_, err := q.BeginDispatch(ctx, dbq.BeginDispatchParams{OrgID: org, ID: permit, GatewayID: gatewayID, Epoch: epoch})
 		if err == nil {
-			return nil
+			return dispatching(ctx, q, org, permit, out, mint)
 		}
 		if !db.IsNoRows(err) {
 			return err
@@ -396,15 +398,68 @@ func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID stri
 	})
 }
 
+// dispatching records the outbound request on a permit that just moved to
+// DISPATCHING and lets mint issue its action token over what the permit
+// bound: a monitor permit the requested action, any other the effective
+// one.
+func dispatching(ctx context.Context, q *dbq.Queries, org ids.OrgID, permit ids.UUID, out finalize.Outbound,
+	mint func(finalize.Dispatching) (*ids.UUID, error),
+) error {
+	p, err := q.DispatchingPermit(ctx, org, permit)
+	if err != nil {
+		return err
+	}
+	d := finalize.Dispatching{
+		Transaction: p.TransactionID, Connection: p.ConnectionID, Operation: p.Operation, EffectiveHash: p.EffectiveHash, Now: p.Now,
+	}
+	if p.AccessMode != nil {
+		d.AccessMode = *p.AccessMode
+	}
+	if p.TargetType != nil && p.TargetID != nil {
+		d.TargetType, d.TargetID = *p.TargetType, *p.TargetID
+	}
+	if p.Mode == pipeline.ModeMonitor || len(p.EffectiveHash) == 0 {
+		d.EffectiveHash = p.ActionHash
+	}
+	jti, err := mint(d)
+	if err != nil {
+		return err
+	}
+	rec := dbq.RecordOutboundParams{OrgID: org, ID: permit, ActionTokenJti: jti}
+	if out.Method != "" {
+		rec.OutboundMethod, rec.OutboundUrl = &out.Method, &out.URL
+	}
+	if len(out.BodySHA256) == sha256.Size {
+		rec.OutboundBodySha256 = out.BodySHA256
+	}
+	return q.RecordOutbound(ctx, rec)
+}
+
 // RecordExecution implements finalize.Store: the attempt, the execution
 // receipt and its ledger entry, then the settlement, in one transaction.
 func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e finalize.Execution,
-	sign func(txn ids.UUID, now time.Time) (finalize.Receipt, error),
+	sign func(x finalize.Executed, now time.Time) (finalize.Receipt, error),
 ) (string, error) {
 	var receipt string
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		o, permit := e.Outcome, e.Permit
+		pc, err := q.ExecutionContext(ctx, org, permit, gatewayID)
+		if db.IsNoRows(err) {
+			return finalize.ErrNotDispatching
+		} else if err != nil {
+			return err
+		}
+		x := finalize.Executed{Connection: pc.ConnectionID, AccessMode: finalize.AccessPantherClawHeld, Monitor: pc.Mode == pipeline.ModeMonitor}
+		if pc.AccessMode != nil {
+			x.AccessMode = *pc.AccessMode
+		}
+		if o == finalize.Delegated {
+			if pc.Channel == nil || (*pc.Channel != "hook" && *pc.Channel != "sdk") {
+				return finalize.ErrNotCooperative
+			}
+			x.AccessMode = finalize.AccessAgentHeld // the agent performed it with its own access (HR-186)
+		}
 		to := "DISPATCHED"
 		if o == finalize.Unknown {
 			to = "UNKNOWN"
@@ -416,8 +471,9 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		if err != nil {
 			return err
 		}
+		x.Transaction = txn
 		attempt := dbq.InsertExecutionAttemptParams{
-			OrgID: org, ID: ids.NewV7(), PermitID: permit, TransactionID: txn, Outcome: string(o),
+			OrgID: org, ID: ids.NewV7(), PermitID: permit, TransactionID: txn, Outcome: string(o), AccessMode: &x.AccessMode,
 		}
 		if e.TargetStatus > 0 {
 			attempt.TargetStatus = &e.TargetStatus
@@ -435,7 +491,7 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		if err != nil {
 			return err
 		}
-		r, err := sign(txn, now)
+		r, err := sign(x, now)
 		if err != nil {
 			return err
 		}
@@ -444,7 +500,7 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		}
 		receipt = r.JWS
 		switch o {
-		case finalize.Accepted:
+		case finalize.Accepted, finalize.Delegated:
 			if err := pgbudgets.Settle(ctx, q, org, permit, bdomain.Commit); err != nil {
 				return err
 			}

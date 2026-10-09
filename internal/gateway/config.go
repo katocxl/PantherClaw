@@ -50,6 +50,20 @@ type Config struct {
 		IdentityDir string          `json:"identity_dir" env:"PC_GW_IDENTITY_DIR"`
 		Timeout     config.Duration `json:"timeout" env:"PC_GW_CONTROL_TIMEOUT"`
 	} `json:"control"`
+	// Egress is what the gateway may reach (HR-071, HR-077).
+	Egress struct {
+		// AllowedPrefixes re-allow private ranges the operator's targets
+		// live in, for example 10.0.0.0/8. Cloud metadata stays denied.
+		AllowedPrefixes []string `json:"allowed_prefixes" env:"PC_GW_EGRESS_ALLOWED_PREFIXES"`
+	} `json:"egress"`
+	// Broker holds the broker key (G0 M6 design decision 8): the key file
+	// from `broker-key generate` and the key-encryption key files that
+	// unwrap it (first current, others for rotation). Without it, no
+	// pantherclaw_held credential can be used.
+	Broker struct {
+		KeyFile  string   `json:"key_file" env:"PC_GW_BROKER_KEY_FILE"`
+		KEKFiles []string `json:"kek_files" env:"PC_GW_BROKER_KEK_FILES"`
+	} `json:"broker"`
 	Target struct {
 		// URL is the base URL of the payments target (scheme and host only).
 		URL     string          `json:"url" env:"PC_GW_TARGET_URL"`
@@ -111,6 +125,9 @@ func (c *Config) Validate() error {
 	if _, err := c.allowedPrefixes(); err != nil {
 		errs = append(errs, err)
 	}
+	if (c.Broker.KeyFile == "") != (len(c.Broker.KEKFiles) == 0) {
+		errs = append(errs, errors.New("broker.key_file and broker.kek_files must be set together"))
+	}
 	if c.Control.Timeout.D() <= 0 || c.Target.Timeout.D() <= 0 || c.Target.Timeout.D() > time.Minute {
 		errs = append(errs, errors.New("timeouts must be positive (target at most 1m)"))
 	}
@@ -120,12 +137,15 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
+// allowedPrefixes are egress.allowed_prefixes and, until the single
+// target goes (slice 15), target.allowed_prefixes.
 func (c *Config) allowedPrefixes() ([]netip.Prefix, error) {
-	out := make([]netip.Prefix, 0, len(c.Target.AllowedPrefixes))
-	for _, s := range c.Target.AllowedPrefixes {
+	all := append(append([]string(nil), c.Egress.AllowedPrefixes...), c.Target.AllowedPrefixes...)
+	out := make([]netip.Prefix, 0, len(all))
+	for _, s := range all {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
-			return nil, fmt.Errorf("target.allowed_prefixes: %q is not a CIDR prefix", s)
+			return nil, fmt.Errorf("egress.allowed_prefixes: %q is not a CIDR prefix", s)
 		}
 		out = append(out, p.Masked())
 	}
