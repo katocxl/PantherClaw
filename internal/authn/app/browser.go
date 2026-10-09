@@ -45,6 +45,8 @@ const (
 	LoginPath   = "/login"
 	LogoutPath  = "/logout"
 	AccountPath = "/account"
+	// ContainmentPath is the emergency-stop page (G0 M6, response/app).
+	ContainmentPath = "/containment"
 )
 
 // CredBrowserSession marks a caller authenticated by a browser session.
@@ -61,7 +63,7 @@ var (
 
 // returnPaths are the pages a sign-in may return to (HR-152). Part 2 adds
 // the approval pages.
-var returnPaths = []string{AccountPath}
+var returnPaths = []string{AccountPath, ContainmentPath}
 
 // ValidReturnPath reports whether p is a page a sign-in may return to.
 func ValidReturnPath(p string) bool { return slices.Contains(returnPaths, p) }

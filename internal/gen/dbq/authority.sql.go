@@ -105,6 +105,48 @@ func (q *Queries) DBNow(ctx context.Context) (time.Time, error) {
 	return now, err
 }
 
+const dispatchingPermit = `-- name: DispatchingPermit :one
+SELECT t.id AS transaction_id, p.connection_id, c.access_mode, p.mode, t.operation, t.target_type, t.target_id,
+       t.action_hash, t.effective_hash, clock_timestamp()::timestamptz AS now
+FROM pc.permits p
+JOIN pc.transactions t ON t.org_id = p.org_id AND t.id = p.transaction_id
+LEFT JOIN pc.connections c ON c.org_id = p.org_id AND c.id = p.connection_id
+WHERE p.org_id = $1 AND p.id = $2
+`
+
+type DispatchingPermitRow struct {
+	TransactionID ids.UUID
+	ConnectionID  *ids.UUID
+	AccessMode    *string
+	Mode          string
+	Operation     string
+	TargetType    *string
+	TargetID      *string
+	ActionHash    []byte
+	EffectiveHash []byte
+	Now           time.Time
+}
+
+// DispatchingPermit is what a permit bound, read at BeginDispatch for the
+// action token (G0 M6 decision 17, HR-188).
+func (q *Queries) DispatchingPermit(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (DispatchingPermitRow, error) {
+	row := q.db.QueryRow(ctx, dispatchingPermit, orgID, iD)
+	var i DispatchingPermitRow
+	err := row.Scan(
+		&i.TransactionID,
+		&i.ConnectionID,
+		&i.AccessMode,
+		&i.Mode,
+		&i.Operation,
+		&i.TargetType,
+		&i.TargetID,
+		&i.ActionHash,
+		&i.EffectiveHash,
+		&i.Now,
+	)
+	return i, err
+}
+
 const engageKillSwitch = `-- name: EngageKillSwitch :one
 UPDATE pc.org_containment
 SET kill_switch = true, epoch = epoch + 1, engaged_by = $1::text, engaged_at = now(),
@@ -124,6 +166,35 @@ func (q *Queries) EngageKillSwitch(ctx context.Context, engagedBy string, reason
 	row := q.db.QueryRow(ctx, engageKillSwitch, engagedBy, reason, orgID)
 	var i EngageKillSwitchRow
 	err := row.Scan(&i.Epoch, &i.EngagedAt)
+	return i, err
+}
+
+const executionContext = `-- name: ExecutionContext :one
+SELECT p.mode, p.connection_id, t.channel, c.access_mode
+FROM pc.permits p
+JOIN pc.transactions t ON t.org_id = p.org_id AND t.id = p.transaction_id
+LEFT JOIN pc.connections c ON c.org_id = p.org_id AND c.id = p.connection_id
+WHERE p.org_id = $1 AND p.id = $2 AND p.gateway_id = $3
+`
+
+type ExecutionContextRow struct {
+	Mode         string
+	ConnectionID *ids.UUID
+	Channel      *string
+	AccessMode   *string
+}
+
+// ExecutionContext is what an execution receipt states about a permit:
+// its mode, connection, channel and the connection's access mode (F416).
+func (q *Queries) ExecutionContext(ctx context.Context, orgID ids.OrgID, iD ids.UUID, gatewayID string) (ExecutionContextRow, error) {
+	row := q.db.QueryRow(ctx, executionContext, orgID, iD, gatewayID)
+	var i ExecutionContextRow
+	err := row.Scan(
+		&i.Mode,
+		&i.ConnectionID,
+		&i.Channel,
+		&i.AccessMode,
+	)
 	return i, err
 }
 
@@ -369,9 +440,10 @@ func (q *Queries) InsertDecisionReceipt(ctx context.Context, arg InsertDecisionR
 }
 
 const insertExecutionAttempt = `-- name: InsertExecutionAttempt :exec
-INSERT INTO pc.execution_attempts (org_id, id, permit_id, transaction_id, outcome, target_status, response_digest, dispatch_ms)
+INSERT INTO pc.execution_attempts (org_id, id, permit_id, transaction_id, outcome, target_status, response_digest, dispatch_ms,
+                                   access_mode)
 VALUES ($1, $2, $3, $4, $5,
-        $6, $7, $8)
+        $6, $7, $8, $9)
 `
 
 type InsertExecutionAttemptParams struct {
@@ -383,6 +455,7 @@ type InsertExecutionAttemptParams struct {
 	TargetStatus   *int32
 	ResponseDigest []byte
 	DispatchMs     *int32
+	AccessMode     *string
 }
 
 func (q *Queries) InsertExecutionAttempt(ctx context.Context, arg InsertExecutionAttemptParams) error {
@@ -395,6 +468,7 @@ func (q *Queries) InsertExecutionAttempt(ctx context.Context, arg InsertExecutio
 		arg.TargetStatus,
 		arg.ResponseDigest,
 		arg.DispatchMs,
+		arg.AccessMode,
 	)
 	return err
 }
@@ -511,6 +585,34 @@ func (q *Queries) MarkStaleDispatchingUnknown(ctx context.Context, orgID ids.Org
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordOutbound = `-- name: RecordOutbound :exec
+UPDATE pc.permits
+SET outbound_method = $1, outbound_url = $2,
+    outbound_body_sha256 = $3, action_token_jti = $4
+WHERE org_id = $5 AND id = $6
+`
+
+type RecordOutboundParams struct {
+	OutboundMethod     *string
+	OutboundUrl        *string
+	OutboundBodySha256 []byte
+	ActionTokenJti     *ids.UUID
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+}
+
+func (q *Queries) RecordOutbound(ctx context.Context, arg RecordOutboundParams) error {
+	_, err := q.db.Exec(ctx, recordOutbound,
+		arg.OutboundMethod,
+		arg.OutboundUrl,
+		arg.OutboundBodySha256,
+		arg.ActionTokenJti,
+		arg.OrgID,
+		arg.ID,
+	)
+	return err
 }
 
 const releaseExpiredPermits = `-- name: ReleaseExpiredPermits :many

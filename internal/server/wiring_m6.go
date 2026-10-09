@@ -19,7 +19,11 @@ import (
 	"connectrpc.com/connect/v2"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/webhttp"
 	"github.com/katocxl/pantherclaw/internal/authority"
+	"github.com/katocxl/pantherclaw/internal/connections/adapters/connectionsrpc"
+	capp "github.com/katocxl/pantherclaw/internal/connections/app"
+	credapp "github.com/katocxl/pantherclaw/internal/credentials/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/adapters/gatewaysrpc"
 	gwapp "github.com/katocxl/pantherclaw/internal/gateways/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/ca"
@@ -29,37 +33,60 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
+	"github.com/katocxl/pantherclaw/internal/response/adapters/responserpc"
+	rapp "github.com/katocxl/pantherclaw/internal/response/app"
 )
 
-// m6Services are the M6 services (G0 M6): the internal CA and gateway
-// identity.
+// m6Services are the M6 services (G0 M6): the internal CA, gateway identity,
+// the kill switch and connections.
 type m6Services struct {
 	reg      *keys.Registry
 	ca       *ca.Authority
 	gateways *gwapp.Service
 	// hub feeds the containment streams (HR-010).
 	hub *gwapp.Hub
+	// response is the kill switch (HR-113).
+	response *rapp.Service
+	// connections are the targets gateways serve (HR-183).
+	connections *capp.Service
+	// credentials hold sealed credentials (HR-182).
+	credentials *credapp.Service
 }
 
-func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry, log *slog.Logger) (*m6Services, error) {
+// newM6 builds the M6 services; notify (M5 notifications) may be nil.
+func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry, notify rapp.Notifier, log *slog.Logger) (*m6Services, error) {
 	authority, err := ca.New(reg)
 	if err != nil {
 		return nil, err
 	}
 	return &m6Services{
 		reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{}), hub: gwapp.NewHub(pool, log),
+		response:    rapp.New(pool, notify, cfg.Auth.PublicURL),
+		connections: capp.New(pool, notify, cfg.Auth.PublicURL, cfg.GatewayAPI.URL),
+		credentials: credapp.New(pool, notify),
 	}, nil
 }
 
-// registerPublic adds gateway administration and gateway enrollment to the
-// public API. GatewayService's other procedures declare gateway permissions,
-// which the public API never grants (HR-181).
+// registerPublic adds gateway administration, gateway enrollment, the
+// containment state and connections to the public API. GatewayService's
+// other procedures declare gateway permissions, which the public API never
+// grants (HR-181).
 func (m *m6Services) registerPublic(rs *connect.Server) {
 	if m == nil {
 		return
 	}
 	pantherclawv1connect.RegisterGatewayAdminServiceHandler(rs, gatewaysrpc.NewAdmin(m.gateways))
 	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
+	pantherclawv1connect.RegisterContainmentServiceHandler(rs, responserpc.New(m.response))
+	pantherclawv1connect.RegisterConnectionServiceHandler(rs, connectionsrpc.New(m.connections, m.credentials))
+}
+
+// mountPages adds the emergency-stop page, the only place the kill switch
+// is engaged or restored (G0 M6 decision 2).
+func (m *m6Services) mountPages(web *webhttp.Handler) {
+	if m != nil {
+		web.WithContainment(m.response)
+	}
 }
 
 // gatewayHandler is the gateway listener's handler: AuthorityService and

@@ -91,6 +91,8 @@ type Result struct {
 	BasisDigest   string
 	Evaluation    int
 	Repeat        bool
+	// Mode is the route's mode and AccessMode the connection's (G0 M6).
+	Mode, AccessMode string
 }
 
 // Authorize decides on raw canonical ActionIR bytes sent with the
@@ -134,7 +136,7 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *
 		Decision: res.Decision, Reasons: res.Reasons, TransactionID: res.TransactionID, ActionHash: res.ActionHash,
 		Permit: res.Permit, PermitID: res.PermitID, Epoch: res.Epoch, Receipt: res.Receipt, Nonce: s.nonce(ctx, gw),
 		Checklist: res.Checklist, Obligations: res.Obligations, EffectiveHash: res.EffectiveHash, BasisDigest: res.BasisDigest,
-		Evaluation: res.Evaluation, Repeat: res.Repeat,
+		Evaluation: res.Evaluation, Repeat: res.Repeat, Mode: res.Mode, AccessMode: res.AccessMode,
 	}, nil
 }
 
@@ -148,11 +150,16 @@ var (
 	ErrNotDispatching = finalize.ErrNotDispatching
 )
 
-// BeginDispatch is the commit point (HR-001). It returns nil only if the
-// permit moved ISSUED → DISPATCHING; any error means "do not dispatch".
-func (s *Service) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64) error {
-	return s.decider.BeginDispatch(ctx, gw.final(), permit, epoch)
+// BeginDispatch is the commit point (HR-001). It succeeds only if the
+// permit moved ISSUED → DISPATCHING; any error means "do not dispatch". It
+// records out and returns the action token of a target-enforced dispatch
+// (HR-188).
+func (s *Service) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64, out Outbound) (string, error) {
+	return s.decider.BeginDispatch(ctx, gw.final(), permit, epoch, out)
 }
+
+// Outbound is the request a gateway is about to send (PAP-1 §7.3).
+type Outbound = finalize.Outbound
 
 // Outcome of a dispatch.
 type Outcome = finalize.Outcome
@@ -162,6 +169,8 @@ const (
 	Accepted = finalize.Accepted
 	Failed   = finalize.Failed
 	Unknown  = finalize.Unknown
+	// Delegated: a cooperative channel's agent performed the action (HR-186).
+	Delegated = finalize.Delegated
 )
 
 // Execution describes one dispatch attempt.

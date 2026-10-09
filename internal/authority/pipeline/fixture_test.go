@@ -69,15 +69,13 @@ func newFxWith(t *testing.T, edit func([]byte) []byte, mcpParams string) *fx {
 		raw = edit(raw)
 	}
 	if mcpParams != "" {
-		mcp := []byte(`      - channel: mcp
-        tool: create_refund
-        route: payments-refund
-        extract:
-          target_id: input.charge
-          params:
-            amount: money(input.amount, input.currency)
-            reason: input.reason`)
-		raw = bytes.Replace(raw, mcp, append(bytes.TrimSuffix(mcp, []byte("            reason: input.reason")), []byte(mcpParams)...), 1)
+		// The MCP refund mapping is the refund definition's last mapping,
+		// right before its dispatch template.
+		mcp := []byte("            reason: input.reason\n    dispatch:")
+		if !bytes.Contains(raw, mcp) {
+			t.Fatal("the MCP refund mapping moved; update the fixture")
+		}
+		raw = bytes.Replace(raw, mcp, []byte(mcpParams+"\n    dispatch:"), 1)
 	}
 	pkg, err := manifest.Decode(raw)
 	if err != nil {

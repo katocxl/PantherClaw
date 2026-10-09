@@ -81,6 +81,8 @@ type Handler struct {
 	log     *slog.Logger
 	routes  []Route
 	keys    Keys
+	// containment is the emergency-stop page (G0 M6); nil when not mounted.
+	containment Containment
 }
 
 // New returns the handler. publicURL is the server's public URL: its origin
@@ -110,6 +112,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	h.withSession(mux, http.MethodGet, authnapp.AccountPath, h.account)
 	h.withSession(mux, http.MethodPost, authnapp.AccountPath+"/sessions/{id}/revoke", h.revokeSession)
 	h.mountKeys(mux)
+	h.mountContainment(mux)
 }
 
 // Routes lists the mounted routes.
@@ -421,7 +424,10 @@ func (h *Handler) revokeSession(w http.ResponseWriter, r *http.Request, s authna
 // static serves the embedded script and stylesheet.
 func (h *Handler) static(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
-	types := map[string]string{"account.js": "text/javascript; charset=utf-8", "pc.css": "text/css; charset=utf-8"}
+	types := map[string]string{
+		"account.js": "text/javascript; charset=utf-8", "containment.js": "text/javascript; charset=utf-8",
+		"pc.css": "text/css; charset=utf-8",
+	}
 	ct, ok := types[name]
 	if !ok {
 		http.NotFound(w, r)

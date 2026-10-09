@@ -69,7 +69,7 @@ func newM6Env(t *testing.T) *m6Env {
 	}
 	cfg := DefaultConfig()
 	cfg.GatewayAPI = GatewayAPIConfig{Addr: ln.Addr().String(), Hostnames: []string{"127.0.0.1"}, URL: "https://" + ln.Addr().String()}
-	m6, err := newM6(&cfg, pool, reg, nil)
+	m6, err := newM6(&cfg, pool, reg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
