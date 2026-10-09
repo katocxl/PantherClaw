@@ -309,6 +309,9 @@ type BrowserSession struct {
 	// Rotated is set when this request rotated the session secret: the
 	// caller must replace the cookie with it.
 	Rotated string
+	// secretHash is the hash of the presented secret when it is the
+	// current one (empty inside the rotation grace).
+	secretHash []byte
 }
 
 // SignedInWithin reports whether the provider authenticated the person no
@@ -395,17 +398,23 @@ func (b *Browser) Authenticate(ctx context.Context, cookie string) (BrowserSessi
 		if s.AuthTime != nil {
 			out.AuthTime = *s.AuthTime
 		}
+		if s.Current {
+			out.secretHash = tok.Hash()
+		}
 		if s.StepUpAt != nil && s.StepUpCredentialID != nil {
 			out.StepUpAt, out.StepUpCredential = *s.StepUpAt, *s.StepUpCredentialID
 		}
 		// A role change rotates the secret (SB-2). A request carrying the
 		// previous secret inside the grace never rotates again.
 		if digest := rolesDigest(bs); s.Current && string(digest) != string(s.RolesDigest) {
-			secret, err := b.rotate(ctx, q, org, s.ID, tok.Hash(), digest)
+			secret, err := rotateSession(ctx, q, org, s.ID, tok.Hash(), digest)
 			if err != nil {
 				return err
 			}
 			out.Rotated = secret
+			if secret != "" {
+				out.secretHash = credential.HashString(secret)
+			}
 			return nil
 		}
 		if s.Touch {
@@ -422,10 +431,10 @@ func (b *Browser) Authenticate(ctx context.Context, cookie string) (BrowserSessi
 	return out, nil
 }
 
-// rotate replaces a session's secret, keeping the old one for the grace
-// period. A lost race (another request rotated first) returns "": the
+// rotateSession replaces a session's secret, keeping the old one for the
+// grace period. A lost race (another request rotated first) returns "": the
 // caller keeps its cookie, which is now inside the grace.
-func (b *Browser) rotate(ctx context.Context, q *dbq.Queries, org ids.OrgID, id ids.UUID, oldHash, digest []byte) (string, error) {
+func rotateSession(ctx context.Context, q *dbq.Queries, org ids.OrgID, id ids.UUID, oldHash, digest []byte) (string, error) {
 	next, err := credential.New(credential.BrowserSession, "", org)
 	if err != nil {
 		return "", err
@@ -545,4 +554,25 @@ func boolString(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// Profile is what the account page shows about its user.
+type Profile struct {
+	Org         ids.OrgID
+	User        ids.UUID
+	Email, Name string
+}
+
+// Profile returns the caller's own profile.
+func (b *Browser) Profile(ctx context.Context, s BrowserSession) (Profile, error) {
+	var out Profile
+	err := b.pool.InTenantTx(ctx, s.Org, func(ctx context.Context, tx db.TenantTx) error {
+		u, err := dbq.New(tx).GetUser(ctx, s.Org, s.User())
+		if err != nil {
+			return err
+		}
+		out = Profile{Org: s.Org, User: u.ID, Email: u.Email, Name: u.DisplayName}
+		return nil
+	}, db.ReadOnly())
+	return out, err
 }
