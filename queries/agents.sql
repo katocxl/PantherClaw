@@ -108,9 +108,18 @@ WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND state IN (
 UPDATE pc.enrollment_tokens SET state = 'REVOKED', revoked_at = now()
 WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND state = 'ACTIVE';
 
+-- Revokes the agent's active runs and their descendants (G0 M3 17).
 -- name: RevokeAgentRuns :execrows
-UPDATE pc.runs SET state = 'REVOKED', end_reason = sqlc.arg(reason), ended_at = now()
-WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND state = 'ACTIVE';
+WITH RECURSIVE tree AS (
+    SELECT r.id FROM pc.runs r WHERE r.org_id = sqlc.arg(org_id) AND r.agent_id = sqlc.arg(agent_id) AND r.state = 'ACTIVE'
+    UNION
+    SELECT c.id FROM pc.runs c JOIN tree t ON c.parent_run_id = t.id WHERE c.org_id = sqlc.arg(org_id)
+)
+UPDATE pc.runs
+SET state = 'REVOKED',
+    end_reason = CASE WHEN runs.agent_id = sqlc.arg(agent_id) THEN sqlc.arg(reason)::text ELSE 'parent_ended' END,
+    ended_at = now()
+WHERE runs.org_id = sqlc.arg(org_id) AND runs.id IN (SELECT id FROM tree) AND runs.state = 'ACTIVE';
 
 -- name: CloseOpenAgentEntries :execrows
 UPDATE pc.waitlist_entries

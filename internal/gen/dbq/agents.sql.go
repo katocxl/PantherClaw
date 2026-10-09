@@ -609,12 +609,21 @@ func (q *Queries) RevokeAgentInstances(ctx context.Context, arg RevokeAgentInsta
 }
 
 const revokeAgentRuns = `-- name: RevokeAgentRuns :execrows
-UPDATE pc.runs SET state = 'REVOKED', end_reason = $1, ended_at = now()
-WHERE org_id = $2 AND agent_id = $3 AND state = 'ACTIVE'
+WITH RECURSIVE tree AS (
+    SELECT r.id FROM pc.runs r WHERE r.org_id = $3 AND r.agent_id = $1 AND r.state = 'ACTIVE'
+    UNION
+    SELECT c.id FROM pc.runs c JOIN tree t ON c.parent_run_id = t.id WHERE c.org_id = $3
+)
+UPDATE pc.runs
+SET state = 'REVOKED',
+    end_reason = CASE WHEN runs.agent_id = $1 THEN $2::text ELSE 'parent_ended' END,
+    ended_at = now()
+WHERE runs.org_id = $3 AND runs.id IN (SELECT id FROM tree) AND runs.state = 'ACTIVE'
 `
 
-func (q *Queries) RevokeAgentRuns(ctx context.Context, reason *string, orgID ids.OrgID, agentID ids.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeAgentRuns, reason, orgID, agentID)
+// Revokes the agent's active runs and their descendants (G0 M3 17).
+func (q *Queries) RevokeAgentRuns(ctx context.Context, agentID ids.UUID, reason string, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAgentRuns, agentID, reason, orgID)
 	if err != nil {
 		return 0, err
 	}

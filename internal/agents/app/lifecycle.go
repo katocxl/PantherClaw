@@ -221,7 +221,7 @@ func (inv *Inventory) Retire(ctx context.Context, id ids.UUID, reason string) (A
 		if err != nil {
 			return err
 		}
-		runs, err := q.RevokeAgentRuns(ctx, ptr("agent_retired"), c.Org, r.ID)
+		runs, err := q.RevokeAgentRuns(ctx, r.ID, "agent_retired", c.Org)
 		if err != nil {
 			return err
 		}

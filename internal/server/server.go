@@ -54,6 +54,8 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
+	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
+	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
@@ -372,7 +374,9 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	}
 	identity := iapp.New(pool, reg, d.publicURL, clock.System{}).WithAttestors(attestors)
 	pantherclawv1connect.RegisterIdentityServiceHandler(rs, identityrpc.NewIdentity(identity, d.clusters))
-	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, d.publicURL, clock.System{}))
+	runs := runsapp.New(pool)
+	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)

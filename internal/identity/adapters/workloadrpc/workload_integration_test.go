@@ -22,6 +22,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/katocxl/pantherclaw/internal/agents/adapters/agentsrpc"
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
@@ -47,6 +48,8 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc/protoperms"
+	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
+	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
@@ -103,9 +106,11 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 	svc := iapp.New(pool, reg, ts.URL, clock.System{})
+	runs := runsapp.New(pool)
+	pantherclawv1connect.RegisterRunServiceHandler(s, runsrpc.NewRuns(runs))
 	pantherclawv1connect.RegisterAgentServiceHandler(s, agentsrpc.NewAgents(aapp.NewInventory(pool, unlimited{})))
 	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc, nil))
-	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, ts.URL, clock.System{}))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, runs, ts.URL, clock.System{}))
 	inner := http.NewServeMux()
 	rpc.Mount(inner, s)
 	mux.Handle("/", workloadrpc.RawBody(inner, nil))
@@ -256,6 +261,27 @@ func TestIntWorkloadEnrollAdmitAndToken(t *testing.T) {
 	_, err = stolen.IssueToken(ctx, &pantherclawv1.IssueTokenRequest{Identifier: enrolled.GetIdentifier()})
 	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "key_mismatch") {
 		t.Errorf("thief's key: %v", err)
+	}
+
+	// The owner starts a run bound to the instance; the workload, proving
+	// itself with its token and a proof, starts a child of it (HR-022).
+	root, err := pantherclawv1connect.NewRunServiceClient(admin).StartRun(ctx, &pantherclawv1.StartRunRequest{
+		AgentId: a.GetAgent().GetId(), InstanceId: proto.String(enrolled.GetInstanceId()), TaskRef: "nightly",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withToken := pantherclawv1connect.NewWorkloadServiceClient(s.connectClient(&workloadclient.Transport{
+		Key: key, Token: func() string { return issued.GetWorkloadToken() },
+	}))
+	child, err := withToken.StartChildRun(ctx, &pantherclawv1.StartChildRunRequest{ParentRunId: root.GetRun().GetId(), AgentId: a.GetAgent().GetId()})
+	if err != nil || child.GetRun().GetDepth() != 1 ||
+		child.GetRun().GetPrincipalSource() != pantherclawv1.PrincipalSource_PRINCIPAL_SOURCE_PARENT_RUN {
+		t.Fatalf("StartChildRun = %v, %v", child, err)
+	}
+	_, err = workload.StartChildRun(ctx, &pantherclawv1.StartChildRunRequest{ParentRunId: root.GetRun().GetId(), AgentId: a.GetAgent().GetId()})
+	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "invalid_token") {
+		t.Errorf("child run without a workload token: %v", err)
 	}
 }
 

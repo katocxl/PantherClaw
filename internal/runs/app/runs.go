@@ -1,0 +1,494 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+// Package app holds the run use cases (Badge; PAP-1 §5, HR-022, HR-146,
+// G0 M3 constraints 17 and 18). A run is minted here, never by a client,
+// and bound to an agent, optionally one admitted instance, the launcher
+// and the represented principal. The principal is the launcher itself or,
+// for a child run, its parent's principal; a launcher can never name one.
+// M3 runs carry no grant: the run's authority arrives with M4.
+package app
+
+import (
+	"context"
+	"encoding/json/v2"
+	"strconv"
+	"time"
+	"unicode/utf8"
+
+	agents "github.com/katocxl/pantherclaw/internal/agents/app"
+	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
+	"github.com/katocxl/pantherclaw/internal/evidence/audit"
+	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
+	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	"github.com/katocxl/pantherclaw/internal/identity/pap"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/page"
+	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
+)
+
+// Run limits (G0 M3 constraint 17).
+const (
+	DefaultTTL = 8 * time.Hour
+	MaxTTL     = 24 * time.Hour
+	MaxDepth   = 8
+	MaxTaskRef = 256
+	MaxReason  = 64
+)
+
+// Principal sources (HR-146).
+const (
+	SourceLauncher     = "launcher"
+	SourceSubjectToken = "subject_token"
+	SourceParentRun    = "parent_run"
+)
+
+// Errors.
+var (
+	ErrRunNotFound   = pcerr.New(pcerr.NotFound, "RUN_NOT_FOUND", "run not found")
+	ErrAgentNotFound = pcerr.New(pcerr.NotFound, "AGENT_NOT_FOUND", "agent not found")
+	ErrAgentUnusable = pcerr.New(pcerr.FailedPrecondition, "AGENT_STATE",
+		"the agent must be claimed and neither suspended nor retired")
+	ErrInstance = pcerr.New(pcerr.FailedPrecondition, "INSTANCE_STATE",
+		"the instance must be an admitted instance of the agent")
+	ErrRunState = pcerr.New(pcerr.FailedPrecondition, "RUN_STATE", "the run is not active")
+	ErrDepth    = pcerr.New(pcerr.FailedPrecondition, "RUN_DEPTH", "child runs nest at most 8 levels deep")
+	ErrLauncher = pcerr.New(pcerr.PermissionDenied, "LAUNCHER_KIND", "runs are started by users and service accounts")
+	ErrTaskRef  = pcerr.New(pcerr.InvalidArgument, "TASK_REF", "task_ref is at most 256 characters of valid UTF-8")
+	ErrTTL      = pcerr.New(pcerr.InvalidArgument, "RUN_TTL", "a run lasts at most 24 hours")
+	ErrReason   = pcerr.New(pcerr.InvalidArgument, "REASON", "the reason is 1 to 64 characters")
+	// ErrSubjectToken is returned until subject tokens are verified (M3
+	// slice 11b).
+	ErrSubjectToken = pcerr.New(pcerr.FailedPrecondition, "SUBJECT_TOKEN_UNAVAILABLE",
+		"subject tokens are not accepted by this server yet")
+)
+
+// Actor is one link of a run's actor chain (F027).
+type Actor struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+// Run is one run.
+type Run struct {
+	ID              ids.UUID
+	AgentID         ids.UUID
+	InstanceID      *ids.UUID
+	EnvironmentID   ids.UUID
+	Launcher        Actor
+	Principal       Actor
+	PrincipalSource string
+	SubjectIssuer   string
+	SubjectSubject  string
+	ActorChain      []Actor
+	ParentRunID     *ids.UUID
+	Depth           int
+	TaskRef         string
+	// State is the effective state: an active run past its expiry reads
+	// EXPIRED.
+	State     string
+	EndReason string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	EndedAt   *time.Time
+}
+
+func actorOf(user, sa, instance *ids.UUID) Actor {
+	switch {
+	case user != nil:
+		return Actor{Kind: string(td.KindUser), ID: user.String()}
+	case sa != nil:
+		return Actor{Kind: string(td.KindServiceAccount), ID: sa.String()}
+	case instance != nil:
+		return Actor{Kind: "instance", ID: instance.String()}
+	}
+	return Actor{}
+}
+
+func view(r dbq.PcRun, state string) (Run, error) {
+	out := Run{
+		ID: r.ID, AgentID: r.AgentID, InstanceID: r.InstanceID, EnvironmentID: r.EnvironmentID,
+		Launcher:        actorOf(r.LauncherUserID, r.LauncherSaID, r.LauncherInstanceID),
+		Principal:       actorOf(r.PrincipalUserID, r.PrincipalSaID, nil),
+		PrincipalSource: r.PrincipalSource, ParentRunID: r.ParentRunID, Depth: int(r.Depth), TaskRef: r.TaskRef,
+		State: state, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, EndedAt: r.EndedAt,
+	}
+	if r.SubjectIssuer != nil {
+		out.SubjectIssuer = *r.SubjectIssuer
+	}
+	if r.SubjectSubject != nil {
+		out.SubjectSubject = *r.SubjectSubject
+	}
+	if r.EndReason != nil {
+		out.EndReason = *r.EndReason
+	}
+	return out, json.Unmarshal(r.ActorChain, &out.ActorChain)
+}
+
+// Service serves the run use cases.
+type Service struct {
+	pool *db.Pool
+}
+
+// New returns the run use cases.
+func New(pool *db.Pool) *Service { return &Service{pool: pool} }
+
+// StartInput starts a run.
+type StartInput struct {
+	AgentID    ids.UUID
+	InstanceID *ids.UUID
+	// TaskRef is an UNTRUSTED label (HR-023).
+	TaskRef string
+	// TTL defaults to DefaultTTL.
+	TTL              time.Duration
+	SubjectToken     string
+	SubjectTokenType string
+}
+
+func checkLabel(taskRef string, ttl time.Duration) (int32, error) {
+	if utf8.RuneCountInString(taskRef) > MaxTaskRef || !utf8.ValidString(taskRef) {
+		return 0, ErrTaskRef
+	}
+	if ttl < 0 || ttl > MaxTTL {
+		return 0, ErrTTL
+	}
+	return int32(ttl / time.Minute), nil
+}
+
+// StartRun starts a run whose principal is the launcher (HR-146). The
+// launcher needs run.start where the agent lives; the agent must be usable
+// and the instance, when given, one of its admitted instances. Without an
+// instance, the run binds to the first admitted instance that uses it.
+func (s *Service) StartRun(ctx context.Context, in StartInput) (Run, error) {
+	if in.TTL == 0 {
+		in.TTL = DefaultTTL
+	}
+	minutes, err := checkLabel(in.TaskRef, in.TTL)
+	if err != nil {
+		return Run{}, err
+	}
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return Run{}, err
+	}
+	if c.Principal.Kind != td.KindUser && c.Principal.Kind != td.KindServiceAccount {
+		return Run{}, ErrLauncher
+	}
+	if in.SubjectToken != "" {
+		return Run{}, ErrSubjectToken
+	}
+	var out Run
+	err = s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		a, err := usableAgent(ctx, q, c.Org, in.AgentID)
+		if err != nil {
+			return err
+		}
+		path, err := agents.PathOf(ctx, q, a)
+		if err != nil {
+			return err
+		}
+		if err := c.Require(td.PermRunStart, path); err != nil {
+			return err
+		}
+		if in.InstanceID != nil {
+			if err := admittedInstance(ctx, q, c.Org, a.ID, *in.InstanceID); err != nil {
+				return err
+			}
+		}
+		launcher := Actor{Kind: string(c.Principal.Kind), ID: c.Principal.ID.String()}
+		chain, err := json.Marshal([]Actor{launcher})
+		if err != nil {
+			return err
+		}
+		p := dbq.InsertRunParams{
+			OrgID: c.Org, ID: ids.NewV7(), AgentID: a.ID, InstanceID: in.InstanceID, EnvironmentID: *a.EnvironmentID,
+			PrincipalSource: SourceLauncher, ActorChain: chain, TaskRef: in.TaskRef, TtlMinutes: minutes,
+		}
+		id := c.Principal.ID
+		if c.Principal.Kind == td.KindUser {
+			p.LauncherUserID, p.PrincipalUserID = &id, &id
+		} else {
+			p.LauncherSaID, p.PrincipalSaID = &id, &id
+		}
+		r, err := q.InsertRun(ctx, p)
+		if err != nil {
+			return err
+		}
+		if out, err = view(r, r.State); err != nil {
+			return err
+		}
+		return record(ctx, tx, c.Actor(), "run.started", out)
+	})
+	return out, err
+}
+
+// ChildInput starts a child run for a workload.
+type ChildInput struct {
+	// Caller is the instance proven by the workload token and proof.
+	Caller      pap.Instance
+	ParentRunID ids.UUID
+	AgentID     ids.UUID
+	InstanceID  *ids.UUID
+	TaskRef     string
+	// TTL defaults to, and is capped at, the parent's remaining time.
+	TTL time.Duration
+}
+
+// StartChildRun starts a child of the caller's active run (G0 M3
+// constraint 17). The parent must be bound to the calling instance; the
+// child inherits the parent's principal, records the instance as its
+// launcher, nests at most MaxDepth deep and never outlives the parent. A
+// parent the caller cannot use is run_mismatch, as on Authorize.
+func (s *Service) StartChildRun(ctx context.Context, in ChildInput) (Run, error) {
+	if in.TTL == 0 {
+		in.TTL = MaxTTL
+	}
+	minutes, err := checkLabel(in.TaskRef, in.TTL)
+	if err != nil {
+		return Run{}, err
+	}
+	org := in.Caller.Org
+	var out Run
+	err = s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		inst, err := q.GetInstance(ctx, org, in.Caller.Instance)
+		if err != nil || inst.State != "ADMITTED" || inst.AgentID != in.Caller.Agent {
+			return pap.Err(pap.CodeInstanceNotAdmitted)
+		}
+		pr, err := q.LockRun(ctx, org, in.ParentRunID)
+		parent := pr.PcRun
+		if db.IsNoRows(err) || (err == nil && (pr.EffectiveState != "ACTIVE" || parent.AgentID != in.Caller.Agent ||
+			parent.InstanceID == nil || *parent.InstanceID != in.Caller.Instance)) {
+			return pap.Err(pap.CodeRunMismatch)
+		} else if err != nil {
+			return err
+		}
+		if parent.Depth >= MaxDepth {
+			return ErrDepth
+		}
+		a, err := usableAgent(ctx, q, org, in.AgentID)
+		if err != nil {
+			return err
+		}
+		if in.InstanceID != nil {
+			if err := admittedInstance(ctx, q, org, a.ID, *in.InstanceID); err != nil {
+				return err
+			}
+		}
+		var chain []Actor
+		if err := json.Unmarshal(parent.ActorChain, &chain); err != nil {
+			return err
+		}
+		chainJSON, err := json.Marshal(append(chain, Actor{Kind: "instance", ID: inst.ID.String()}))
+		if err != nil {
+			return err
+		}
+		r, err := q.InsertRun(ctx, dbq.InsertRunParams{
+			OrgID: org, ID: ids.NewV7(), AgentID: a.ID, InstanceID: in.InstanceID, EnvironmentID: *a.EnvironmentID,
+			LauncherInstanceID: &inst.ID, PrincipalUserID: parent.PrincipalUserID, PrincipalSaID: parent.PrincipalSaID,
+			PrincipalSource: SourceParentRun, ActorChain: chainJSON, ParentRunID: &parent.ID, Depth: parent.Depth + 1,
+			TaskRef: in.TaskRef, TtlMinutes: minutes, NotAfter: &parent.ExpiresAt,
+		})
+		if err != nil {
+			return err
+		}
+		if out, err = view(r, r.State); err != nil {
+			return err
+		}
+		return record(ctx, tx, evdomain.Actor{Type: "instance", ID: inst.ID.String()}, "run.started", out)
+	})
+	return out, err
+}
+
+// readable loads a run the caller may act on with p where its agent
+// lives.
+func readable(ctx context.Context, c tenancy.Caller, q *dbq.Queries, id ids.UUID, p td.Permission, lock bool) (dbq.PcRun, string, error) {
+	var r dbq.PcRun
+	var state string
+	if lock {
+		row, err := q.LockRun(ctx, c.Org, id)
+		if db.IsNoRows(err) {
+			return r, "", ErrRunNotFound
+		} else if err != nil {
+			return r, "", err
+		}
+		r, state = row.PcRun, row.EffectiveState
+	} else {
+		row, err := q.GetRun(ctx, c.Org, id)
+		if db.IsNoRows(err) {
+			return r, "", ErrRunNotFound
+		} else if err != nil {
+			return r, "", err
+		}
+		r, state = row.PcRun, row.EffectiveState
+	}
+	a, err := q.GetAgent(ctx, c.Org, r.AgentID)
+	if err != nil {
+		return r, "", err
+	}
+	path, err := agents.PathOf(ctx, q, a)
+	if err != nil {
+		return r, "", err
+	}
+	return r, state, c.Require(p, path)
+}
+
+// GetRun returns one run (run.read where its agent lives).
+func (s *Service) GetRun(ctx context.Context, id ids.UUID) (Run, error) {
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return Run{}, err
+	}
+	var out Run
+	err = s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		r, state, err := readable(ctx, c, dbq.New(tx), id, td.PermRunRead, false)
+		if err != nil {
+			return err
+		}
+		out, err = view(r, state)
+		return err
+	}, db.ReadOnly())
+	return out, err
+}
+
+// Page is one page of runs.
+type Page struct {
+	Items []Run
+	Next  string
+}
+
+// ListRuns lists the runs the caller may read, oldest first.
+func (s *Service) ListRuns(ctx context.Context, pr page.Request, agent *ids.UUID, states []string) (Page, error) {
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return Page{}, err
+	}
+	if states == nil {
+		states = []string{}
+	}
+	var out Page
+	err = s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		rows, err := q.ListRuns(ctx, dbq.ListRunsParams{
+			OrgID: c.Org, After: pr.After, AgentID: agent, States: states, PageLimit: pr.Limit(),
+		})
+		if err != nil {
+			return err
+		}
+		rows, out.Next = page.Finish(pr, rows, func(r dbq.ListRunsRow) ids.UUID { return r.PcRun.ID })
+		allowed := map[ids.UUID]bool{}
+		for _, row := range rows {
+			ok, seen := allowed[row.PcRun.AgentID]
+			if !seen {
+				a, err := q.GetAgent(ctx, c.Org, row.PcRun.AgentID)
+				if err != nil {
+					return err
+				}
+				path, err := agents.PathOf(ctx, q, a)
+				if err != nil {
+					return err
+				}
+				ok = c.Can(td.PermRunRead, path)
+				allowed[row.PcRun.AgentID] = ok
+			}
+			if !ok {
+				continue
+			}
+			r, err := view(row.PcRun, row.EffectiveState)
+			if err != nil {
+				return err
+			}
+			out.Items = append(out.Items, r)
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// EndRun ends an active run (run.manage where its agent lives) and revokes
+// its child runs in the same transaction.
+func (s *Service) EndRun(ctx context.Context, id ids.UUID, reason string) (Run, error) {
+	if reason == "" || utf8.RuneCountInString(reason) > MaxReason || !utf8.ValidString(reason) {
+		return Run{}, ErrReason
+	}
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return Run{}, err
+	}
+	var out Run
+	err = s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		_, state, err := readable(ctx, c, q, id, td.PermRunManage, true)
+		if err != nil {
+			return err
+		}
+		if state != "ACTIVE" {
+			return ErrRunState
+		}
+		rows, err := q.EndRunTree(ctx, dbq.EndRunTreeParams{OrgID: c.Org, ID: id, State: "ENDED", Reason: reason})
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if r.ID == id {
+				if out, err = view(r, r.State); err != nil {
+					return err
+				}
+			}
+		}
+		return recordEnd(ctx, tx, c.Actor(), out, len(rows)-1)
+	})
+	return out, err
+}
+
+func usableAgent(ctx context.Context, q *dbq.Queries, org ids.OrgID, id ids.UUID) (dbq.PcAgent, error) {
+	a, err := q.LockAgent(ctx, org, id)
+	if db.IsNoRows(err) {
+		return a, ErrAgentNotFound
+	} else if err != nil {
+		return a, err
+	}
+	if !adomain.State(a.State).Usable() || a.EnvironmentID == nil {
+		return a, ErrAgentUnusable
+	}
+	return a, nil
+}
+
+func admittedInstance(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent, id ids.UUID) error {
+	in, err := q.GetInstance(ctx, org, id)
+	if db.IsNoRows(err) || (err == nil && (in.AgentID != agent || in.State != "ADMITTED")) {
+		return ErrInstance
+	}
+	return err
+}
+
+func record(ctx context.Context, tx db.TenantTx, actor evdomain.Actor, name string, r Run) error {
+	details := map[string]string{
+		"agent_id": r.AgentID.String(), "principal_source": r.PrincipalSource,
+		"principal": r.Principal.Kind + ":" + r.Principal.ID, "depth": strconv.Itoa(r.Depth),
+	}
+	if r.InstanceID != nil {
+		details["instance_id"] = r.InstanceID.String()
+	}
+	if r.ParentRunID != nil {
+		details["parent_run_id"] = r.ParentRunID.String()
+	}
+	_, err := audit.Record(ctx, tx, audit.Event{
+		Name: name, Actor: actor, Outcome: audit.Success, Object: &audit.Object{Type: "run", ID: r.ID.String()}, Details: details,
+	})
+	return err
+}
+
+func recordEnd(ctx context.Context, tx db.TenantTx, actor evdomain.Actor, r Run, children int) error {
+	_, err := audit.Record(ctx, tx, audit.Event{
+		Name: "run.ended", Actor: actor, Outcome: audit.Success, Object: &audit.Object{Type: "run", ID: r.ID.String()},
+		Details: map[string]string{
+			"agent_id": r.AgentID.String(), "reason": r.EndReason, "children_revoked": strconv.Itoa(children),
+		},
+	})
+	return err
+}
