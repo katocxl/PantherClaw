@@ -170,3 +170,10 @@
 | HR-146 | A run's represented principal is the launcher itself, a user proven by a subject token (HR-145), or for a child run its parent's principal; a principal named by the launcher is refused. A subject token never creates, widens or substitutes for a grant. | T-048, T-001 | M3 |
 | HR-147 | Authority never moves between instances: runs (and, from M4, grants) bind to instance and agent ids, never names; a new enrollment, attestation, ownership transfer or reused name starts with no runs; a re-attestation whose binding claims differ from the instance's is refused. | T-004, T-049 | M3 |
 | HR-148 | Unknown workloads hold no authority: requests from keys that are not admitted instances are refused (`CANNOT_AUTHORIZE`) and become discoveries deduplicated by key thumbprint, rate-limited per gateway and capped per org; observed attributes are stored and shown as untrusted. | T-050 | M3 |
+
+## Grants and facts (G0 M4 part 2)
+
+| ID | Rule | Threats | MS |
+|---|---|---|---|
+| HR-150 | Facts are accepted only from the provider registered for that fact name, authenticated as that provider; values a workload sends are never facts. A fact's observation time may be neither later than the database clock nor earlier than the provider's maximum lag allows, and an older observation never replaces a newer one. A required fact that is missing or older than its maximum age ⇒ `CANNOT_AUTHORIZE`. | T-051 | M4 |
+| HR-151 | Grants and guardrails are created, widened or changed only with a user's or service account's credential holding the permission, never with workload credentials. A workload can only delegate a subset of its own run's grant to a child run, and only when that grant allows delegation and depth remains. | T-001, T-008 | M4 |
