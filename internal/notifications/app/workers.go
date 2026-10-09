@@ -29,7 +29,7 @@ type deliverWorker struct {
 }
 
 // Work makes one attempt. A destination's Retry-After snoozes the job; any
-// other failure is retried on the Standard Webhooks schedule.
+// other failure is retried on the delivery schedule (domain.RetryDelay).
 func (w *deliverWorker) Work(ctx context.Context, job *river.Job[DeliverArgs]) error {
 	err := w.svc.Deliver(ctx, job.Args.Org, job.Args.Delivery.UUID())
 	var wait RetryAfterError
@@ -39,7 +39,7 @@ func (w *deliverWorker) Work(ctx context.Context, job *river.Job[DeliverArgs]) e
 	return err
 }
 
-// NextRetry follows the Standard Webhooks schedule (HR-159).
+// NextRetry follows the delivery schedule (domain.RetryDelay, HR-159).
 func (w *deliverWorker) NextRetry(job *river.Job[DeliverArgs]) time.Time {
 	return time.Now().Add(domain.RetryDelay(job.Attempt))
 }

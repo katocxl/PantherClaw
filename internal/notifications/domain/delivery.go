@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// retrySchedule is the Standard Webhooks schedule after each failed attempt:
+// retrySchedule follows the Standard Webhooks example (which recommends
+// exponential backoff; its last gap is 14 h) after each failed attempt:
 // at once, then 5 s, 5 min, 30 min, 2 h, 5 h, 10 h and 10 h (8 attempts,
 // about 27 hours in all).
 var retrySchedule = []time.Duration{
