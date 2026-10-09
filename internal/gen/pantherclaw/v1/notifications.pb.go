@@ -262,7 +262,7 @@ const (
 	// Not sent: the channel's queue was full.
 	DeliveryState_DELIVERY_STATE_DROPPED DeliveryState = 6
 	// Not sent: the channel was deleted.
-	DeliveryState_DELIVERY_STATE_CANCELLED DeliveryState = 7
+	DeliveryState_DELIVERY_STATE_CANCELED DeliveryState = 7
 )
 
 // Enum value maps for DeliveryState.
@@ -275,7 +275,7 @@ var (
 		4: "DELIVERY_STATE_EXPIRED",
 		5: "DELIVERY_STATE_SKIPPED",
 		6: "DELIVERY_STATE_DROPPED",
-		7: "DELIVERY_STATE_CANCELLED",
+		7: "DELIVERY_STATE_CANCELED",
 	}
 	DeliveryState_value = map[string]int32{
 		"DELIVERY_STATE_UNSPECIFIED": 0,
@@ -285,7 +285,7 @@ var (
 		"DELIVERY_STATE_EXPIRED":     4,
 		"DELIVERY_STATE_SKIPPED":     5,
 		"DELIVERY_STATE_DROPPED":     6,
-		"DELIVERY_STATE_CANCELLED":   7,
+		"DELIVERY_STATE_CANCELED":    7,
 	}
 )
 
@@ -1680,7 +1680,7 @@ const file_pantherclaw_v1_notifications_proto_rawDesc = "" +
 	"\x1aCHANNEL_HEALTH_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16CHANNEL_HEALTH_HEALTHY\x10\x01\x12\x1b\n" +
 	"\x17CHANNEL_HEALTH_DEGRADED\x10\x02\x12\x1a\n" +
-	"\x16CHANNEL_HEALTH_FAILING\x10\x03*\xf6\x01\n" +
+	"\x16CHANNEL_HEALTH_FAILING\x10\x03*\xf5\x01\n" +
 	"\rDeliveryState\x12\x1e\n" +
 	"\x1aDELIVERY_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16DELIVERY_STATE_PENDING\x10\x01\x12\x1c\n" +
@@ -1688,8 +1688,8 @@ const file_pantherclaw_v1_notifications_proto_rawDesc = "" +
 	"\x15DELIVERY_STATE_FAILED\x10\x03\x12\x1a\n" +
 	"\x16DELIVERY_STATE_EXPIRED\x10\x04\x12\x1a\n" +
 	"\x16DELIVERY_STATE_SKIPPED\x10\x05\x12\x1a\n" +
-	"\x16DELIVERY_STATE_DROPPED\x10\x06\x12\x1c\n" +
-	"\x18DELIVERY_STATE_CANCELLED\x10\a2\x97\x06\n" +
+	"\x16DELIVERY_STATE_DROPPED\x10\x06\x12\x1b\n" +
+	"\x17DELIVERY_STATE_CANCELED\x10\a2\x97\x06\n" +
 	"\x13NotificationService\x12\\\n" +
 	"\rCreateChannel\x12$.pantherclaw.v1.CreateChannelRequest\x1a%.pantherclaw.v1.CreateChannelResponse\x12X\n" +
 	"\n" +
