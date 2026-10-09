@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -93,6 +94,8 @@ type Service struct {
 	// webhooks through the egress guards.
 	mailer Mailer
 	http   *http.Client
+	// editions sets the channel limit (nil: Community).
+	editions Editions
 }
 
 // New returns the service. jc may be an insert-only client (API role).
@@ -133,6 +136,9 @@ type Message struct {
 	DedupeKey string
 	// TTL defaults to DefaultTTL; deliveries stop at expiry.
 	TTL time.Duration
+	// OnlyChannel delivers to that channel alone, whatever its
+	// subscription (channel tests).
+	OnlyChannel *ids.UUID
 }
 
 // Enqueued reports what Enqueue created.
@@ -193,7 +199,12 @@ func (s *Service) Enqueue(ctx context.Context, tx db.TenantTx, m Message) (Enque
 		return Enqueued{}, err
 	}
 	for _, c := range channels {
-		if !domain.Matches(c.EventTypes, r.Type) || !r.Severity.AtLeast(domain.Severity(c.MinSeverity)) {
+		switch {
+		case m.OnlyChannel != nil:
+			if c.ID != *m.OnlyChannel {
+				continue
+			}
+		case !domain.Matches(c.EventTypes, r.Type) || !r.Severity.AtLeast(domain.Severity(c.MinSeverity)):
 			continue
 		}
 		added, err := s.route(ctx, tx, q, m.Org, out.Notification, c, emailed)
@@ -293,14 +304,19 @@ func (s *Service) SecurityNotice(ctx context.Context, tx db.TenantTx, n authnapp
 	if !domain.PlainValue(who) {
 		who = "user " + u.ID.String()
 	}
-	name := td.SanitizeClaim(n.Name, 64)
-	if !domain.PlainValue(name) {
-		name = "(unnamed key)"
+	m := Message{Org: n.Org, Type: n.Type, Personal: []ids.UUID{n.User}}
+	if n.Type == "security.sessions_revoked" {
+		m.Params = map[string]string{"user": who, "count": strconv.Itoa(n.Count)}
+		m.Subject = &Subject{Type: "user", ID: n.User}
+	} else {
+		name := td.SanitizeClaim(n.Name, 64)
+		if !domain.PlainValue(name) {
+			name = "(unnamed key)"
+		}
+		m.Params = map[string]string{"user": who, "key_name": name}
+		m.Subject = &Subject{Type: "webauthn_credential", ID: n.Credential}
 	}
-	_, err = s.Enqueue(ctx, tx, Message{
-		Org: n.Org, Type: n.Type, Params: map[string]string{"user": who, "key_name": name},
-		Subject: &Subject{Type: "webauthn_credential", ID: n.Credential}, Personal: []ids.UUID{n.User},
-	})
+	_, err = s.Enqueue(ctx, tx, m)
 	if err != nil {
 		return fmt.Errorf("notifications: security notice: %w", err)
 	}

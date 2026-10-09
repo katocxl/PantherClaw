@@ -119,3 +119,69 @@ UPDATE pc.deliveries d SET state = 'EXPIRED', last_error = 'notification_expired
 FROM pc.notifications n
 WHERE d.org_id = sqlc.arg(org_id) AND n.org_id = d.org_id AND n.id = d.notification_id AND d.state = 'PENDING'
   AND n.expires_at < now() - interval '1 hour';
+
+-- Channel administration (NotificationService). DISABLED channels are
+-- deleted ones: they are kept for their deliveries' history but never
+-- listed or changed again.
+
+-- name: ListChannels :many
+SELECT * FROM pc.notification_channels
+WHERE org_id = sqlc.arg(org_id) AND state <> 'DISABLED'
+  AND id > coalesce(sqlc.narg(after)::uuid, '00000000-0000-0000-0000-000000000000')
+ORDER BY id
+LIMIT sqlc.arg(page_limit);
+
+-- name: GetChannel :one
+SELECT * FROM pc.notification_channels WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state <> 'DISABLED';
+
+-- name: CountLiveChannels :one
+SELECT count(*)::int FROM pc.notification_channels WHERE org_id = sqlc.arg(org_id) AND state <> 'DISABLED';
+
+-- name: UpdateChannel :execrows
+UPDATE pc.notification_channels
+SET name = coalesce(sqlc.narg(name), name), event_types = coalesce(sqlc.narg(event_types)::text[], event_types),
+    min_severity = coalesce(sqlc.narg(min_severity), min_severity), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state <> 'DISABLED';
+
+-- name: SetChannelPaused :execrows
+-- Pauses (MANUAL) or resumes a channel; resuming clears its failure count.
+UPDATE pc.notification_channels
+SET state = CASE WHEN sqlc.arg(paused)::bool THEN 'PAUSED' ELSE 'ACTIVE' END,
+    pause_reason = CASE WHEN sqlc.arg(paused)::bool THEN 'MANUAL' END,
+    consecutive_failures = CASE WHEN sqlc.arg(paused)::bool THEN consecutive_failures ELSE 0 END,
+    failing_since = CASE WHEN sqlc.arg(paused)::bool THEN failing_since END,
+    updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state <> 'DISABLED';
+
+-- name: DisableChannel :execrows
+UPDATE pc.notification_channels SET state = 'DISABLED', pause_reason = NULL, updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state <> 'DISABLED';
+
+-- name: CancelPendingDeliveries :execrows
+UPDATE pc.deliveries SET state = 'CANCELLED', last_error = 'channel_deleted', finished_at = now()
+WHERE org_id = sqlc.arg(org_id) AND channel_id = sqlc.arg(channel_id) AND state = 'PENDING';
+
+-- name: LockChannelSecret :one
+SELECT kind, secret FROM pc.notification_channels
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state <> 'DISABLED'
+FOR UPDATE;
+
+-- name: RotateChannelSecret :one
+UPDATE pc.notification_channels
+SET secret = sqlc.arg(secret), prev_secret = sqlc.arg(prev_secret),
+    prev_secret_expires_at = now() + make_interval(secs => sqlc.arg(overlap_seconds)::int), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND kind = 'webhook' AND state <> 'DISABLED'
+RETURNING prev_secret_expires_at;
+
+-- name: ListDeliveries :many
+-- Newest first: the cursor is the last id of the previous page.
+SELECT d.id, d.notification_id, n.type AS notification_type, d.channel_id, d.recipient_user_id, d.kind, d.state,
+       d.attempts, d.last_status, d.last_error, d.created_at, d.next_attempt_at, d.finished_at
+FROM pc.deliveries d
+JOIN pc.notifications n ON n.org_id = d.org_id AND n.id = d.notification_id
+WHERE d.org_id = sqlc.arg(org_id)
+  AND (sqlc.narg(channel_id)::uuid IS NULL OR d.channel_id = sqlc.narg(channel_id)::uuid)
+  AND (sqlc.narg(state)::text IS NULL OR d.state = sqlc.narg(state)::text)
+  AND d.id < coalesce(sqlc.narg(before)::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff')
+ORDER BY d.id DESC
+LIMIT sqlc.arg(page_limit);

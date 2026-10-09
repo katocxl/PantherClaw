@@ -91,7 +91,9 @@ type SecurityNotice struct {
 	Type       string // security.credential_registered, ..._removed, ..._suspended
 	Credential ids.UUID
 	Name       string // the key's name, as the user set it
-	Actor      evdomain.Actor
+	// Count is set for security.sessions_revoked.
+	Count int
+	Actor evdomain.Actor
 }
 
 // SecurityNotifier enqueues security notices (internal/notifications).
@@ -467,7 +469,7 @@ func (w *WebAuthn) FinishRegistration(ctx context.Context, s BrowserSession, cer
 		if err != nil {
 			return err
 		}
-		return w.changed(ctx, tx, s, "security.credential_registered", "authn.webauthn_registered", out.ID, name, s.Actor())
+		return w.changed(ctx, tx, s.Org, s.User(), "security.credential_registered", "authn.webauthn_registered", out.ID, name, s.Actor())
 	})
 	return out, err
 }
@@ -490,18 +492,18 @@ func (w *WebAuthn) verifyFailed(ctx context.Context, s BrowserSession, reason st
 	return ErrWebAuthnFailed
 }
 
-// changed audits a key change and notifies the user.
-func (w *WebAuthn) changed(ctx context.Context, tx db.TenantTx, s BrowserSession, notice, event string, id ids.UUID, name string, actor evdomain.Actor) error {
+// changed audits a change to a user's key and notifies the user.
+func (w *WebAuthn) changed(ctx context.Context, tx db.TenantTx, org ids.OrgID, user ids.UUID, notice, event string, id ids.UUID, name string, actor evdomain.Actor) error {
 	if _, err := audit.Record(ctx, tx, audit.Event{
 		Name: event, Actor: actor, Outcome: audit.Success,
-		Object: &audit.Object{Type: "webauthn_credential", ID: id.String()}, Details: map[string]string{"user": s.User().String()},
+		Object: &audit.Object{Type: "webauthn_credential", ID: id.String()}, Details: map[string]string{"user": user.String()},
 	}); err != nil {
 		return err
 	}
 	if w.notify == nil {
 		return nil
 	}
-	return w.notify.SecurityNotice(ctx, tx, SecurityNotice{Org: s.Org, User: s.User(), Type: notice, Credential: id, Name: name, Actor: actor})
+	return w.notify.SecurityNotice(ctx, tx, SecurityNotice{Org: org, User: user, Type: notice, Credential: id, Name: name, Actor: actor})
 }
 
 // BeginStepUp starts a step-up with one of the user's active keys.
@@ -614,7 +616,7 @@ func (w *WebAuthn) suspend(ctx context.Context, tx db.TenantTx, q *dbq.Queries, 
 	w.log.WarnContext(ctx, "authn.webauthn_clone_suspected", slog.String("org", s.Org.String()), slog.String("webauthn_key", id.String()),
 		slog.Uint64("stored", uint64(stored)), slog.Uint64("received", uint64(received)))
 	*done = true
-	return w.changed(ctx, tx, s, "security.credential_suspended", "authn.webauthn_suspended", id, "",
+	return w.changed(ctx, tx, s.Org, s.User(), "security.credential_suspended", "authn.webauthn_suspended", id, "",
 		evdomain.Actor{Type: "system", ID: "counter-check"})
 }
 
@@ -680,22 +682,22 @@ func (w *WebAuthn) RemoveCredential(ctx context.Context, s BrowserSession, id id
 		if !recentlyProven(s, u.rowIDs) {
 			return ErrRecentAuthRequired
 		}
-		return w.remove(ctx, tx, q, s, id, "USER_REMOVED", s.Actor())
+		return w.remove(ctx, tx, q, s.Org, s.User(), id, "USER_REMOVED", s.Actor())
 	})
 }
 
-func (w *WebAuthn) remove(ctx context.Context, tx db.TenantTx, q *dbq.Queries, s BrowserSession, id ids.UUID, reason string, actor evdomain.Actor) error {
-	cur, err := q.CredentialOfUser(ctx, s.Org, id, s.User())
+func (w *WebAuthn) remove(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, user, id ids.UUID, reason string, actor evdomain.Actor) error {
+	cur, err := q.CredentialOfUser(ctx, org, id, user)
 	if err != nil {
 		return notFoundAs(err, ErrCredentialNotFound)
 	}
 	by := actor.Type + ":" + actor.ID
-	n, err := q.RemoveCredential(ctx, dbq.RemoveCredentialParams{Reason: &reason, ChangedBy: &by, OrgID: s.Org, ID: id, UserID: s.User()})
+	n, err := q.RemoveCredential(ctx, dbq.RemoveCredentialParams{Reason: &reason, ChangedBy: &by, OrgID: org, ID: id, UserID: user})
 	if err != nil {
 		return err
 	}
 	if n == 0 {
 		return ErrCredentialNotFound // already removed
 	}
-	return w.changed(ctx, tx, s, "security.credential_removed", "authn.webauthn_removed", id, cur.Name, actor)
+	return w.changed(ctx, tx, org, user, "security.credential_removed", "authn.webauthn_removed", id, cur.Name, actor)
 }
