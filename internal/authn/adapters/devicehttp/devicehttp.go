@@ -53,6 +53,9 @@ type Handler struct {
 	secure  bool
 	limiter *httpx.Limiter
 	log     *slog.Logger
+	// browser completes browser sign-ins (pcl_ states) on the shared
+	// callback URL; nil refuses them.
+	browser http.HandlerFunc
 }
 
 // New returns the handler. issuer is the server's public URL: its origin is
@@ -190,8 +193,20 @@ func (h *Handler) confirm(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, red.URL, http.StatusSeeOther)
 }
 
+// WithBrowserCallback hands callbacks of browser sign-ins (pcl_ states) to
+// f: the device and browser flows share one callback URL per provider (G0
+// M5 design decision 6).
+func (h *Handler) WithBrowserCallback(f http.HandlerFunc) *Handler {
+	h.browser = f
+	return h
+}
+
 // callback finishes the provider login and shows the result.
 func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
+	if authnapp.IsBrowserState(r.URL.Query()) && h.browser != nil {
+		h.browser(w, r)
+		return
+	}
 	binding := ""
 	if c, err := r.Cookie(h.cookieName()); err == nil {
 		binding = c.Value

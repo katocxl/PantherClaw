@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
+	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
@@ -47,7 +48,7 @@ func TestIntKeycloakDevRealm(t *testing.T) {
 	}
 	const redirect = "http://127.0.0.1:8080/oauth2/callback/keycloak" // registered in the realm
 	nonce, verifier, state := rand.Text(), rand.Text()+rand.Text(), rand.Text()
-	authURL, err := p.AuthCodeURL(ctx, state, nonce, verifier, redirect)
+	authURL, err := p.AuthCodeURL(ctx, authnapp.AuthRequest{State: state, Nonce: nonce, Verifier: verifier, RedirectURI: redirect})
 	if err != nil {
 		t.Fatal(err)
 	}
