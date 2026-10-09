@@ -29,14 +29,14 @@ var (
 type KubernetesBinding struct {
 	// Cluster names a cluster from the server configuration (founder
 	// decision 3); it is never a tenant-supplied address.
-	Cluster            string
-	Namespace          string
-	ServiceAccountName string
-	ServiceAccountUID  string
+	Cluster            string `json:"cluster"`
+	Namespace          string `json:"namespace"`
+	ServiceAccountName string `json:"service_account_name"`
+	ServiceAccountUID  string `json:"service_account_uid"`
 	// ImageRepositories and ImageDigests optionally restrict the pod's
 	// image; empty accepts any image (whose digest is still recorded).
-	ImageRepositories []string
-	ImageDigests      []string
+	ImageRepositories []string `json:"image_repositories,omitzero"`
+	ImageDigests      []string `json:"image_digests,omitzero"`
 }
 
 // Issuer is the issuer name recorded for this binding's tokens.

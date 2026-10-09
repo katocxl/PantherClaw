@@ -187,8 +187,10 @@ func (inv *Inventory) checkLimit(ctx context.Context, q *dbq.Queries, org ids.Or
 	return nil
 }
 
-// change appends one entry to an agent's history.
-func change(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent ids.UUID, ch domain.Change) error {
+// RecordChange appends one entry to an agent's history, in the caller's
+// transaction. Other modules (identity, runs) use it for the agent events
+// they cause.
+func RecordChange(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent ids.UUID, ch domain.Change) error {
 	if err := ch.Validate(); err != nil {
 		return err
 	}
