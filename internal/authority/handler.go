@@ -59,6 +59,11 @@ var checklistStatus = map[pipeline.Status]pantherclawv1.ChecklistStatus{
 	pipeline.StatusNotApplicable: pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_APPLICABLE,
 }
 
+// modeToProto maps a route mode; an empty mode (an M5 caller) is unspecified.
+var modeToProto = map[string]pantherclawv1.DispatchMode{
+	pipeline.ModeEnforce: pantherclawv1.DispatchMode_DISPATCH_MODE_ENFORCE, pipeline.ModeMonitor: pantherclawv1.DispatchMode_DISPATCH_MODE_MONITOR,
+}
+
 var decisionToProto = map[domain.Decision]pantherclawv1.Decision{
 	domain.Allow:                pantherclawv1.Decision_DECISION_ALLOW,
 	domain.AllowWithObligations: pantherclawv1.Decision_DECISION_ALLOW_WITH_OBLIGATIONS,
@@ -93,6 +98,7 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 		out.Reasons = append(out.Reasons, &pantherclawv1.Reason{Code: r.Code, Check: r.Check, Detail: r.Detail, Decisive: r.Decisive})
 	}
 	out.DecisionBasisDigest, out.Evaluation, out.Repeat = res.BasisDigest, int32(res.Evaluation), res.Repeat //nolint:gosec // at most 32
+	out.Mode, out.AccessMode = modeToProto[res.Mode], res.AccessMode
 	if res.EffectiveHash != "" && res.EffectiveHash != res.ActionHash {
 		out.EffectiveActionHash = res.EffectiveHash
 	}
@@ -120,16 +126,20 @@ func (h *Handler) BeginDispatch(ctx context.Context, req *pantherclawv1.BeginDis
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid permit id")
 	}
-	if err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch()); err != nil {
+	token, err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch(), Outbound{
+		Method: req.GetOutboundMethod(), URL: req.GetOutboundUrl(), BodySHA256: req.GetOutboundBodySha256(),
+	})
+	if err != nil {
 		return nil, err
 	}
-	return &pantherclawv1.BeginDispatchResponse{}, nil
+	return &pantherclawv1.BeginDispatchResponse{ActionToken: token}, nil
 }
 
 var outcomeFromProto = map[pantherclawv1.Outcome]Outcome{
-	pantherclawv1.Outcome_OUTCOME_ACCEPTED: Accepted,
-	pantherclawv1.Outcome_OUTCOME_FAILED:   Failed,
-	pantherclawv1.Outcome_OUTCOME_UNKNOWN:  Unknown,
+	pantherclawv1.Outcome_OUTCOME_ACCEPTED:  Accepted,
+	pantherclawv1.Outcome_OUTCOME_FAILED:    Failed,
+	pantherclawv1.Outcome_OUTCOME_UNKNOWN:   Unknown,
+	pantherclawv1.Outcome_OUTCOME_DELEGATED: Delegated,
 }
 
 // RecordExecution implements AuthorityServiceHandler.

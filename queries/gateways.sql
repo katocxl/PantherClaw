@@ -18,7 +18,7 @@ SELECT * FROM pc.gateways WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) 
 -- name: ListGateways :many
 SELECT * FROM pc.gateways
 WHERE org_id = sqlc.arg(org_id) AND (sqlc.arg(include_revoked)::boolean OR state = 'ACTIVE')
-  AND id > sqlc.arg(after_id)
+  AND id > coalesce(sqlc.arg(after_id)::uuid, '00000000-0000-0000-0000-000000000000')
 ORDER BY id
 LIMIT sqlc.arg(max_rows);
 

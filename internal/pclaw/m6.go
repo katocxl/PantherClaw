@@ -89,4 +89,5 @@ func killSwitchStatus(ctx context.Context, a *app, args []string) error {
 type m6Clients struct {
 	gateways    pantherclawv1connect.GatewayAdminServiceClient
 	containment pantherclawv1connect.ContainmentServiceClient
+	connections pantherclawv1connect.ConnectionServiceClient
 }
