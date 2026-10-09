@@ -11,17 +11,19 @@ type RoleName string
 
 // Default roles.
 const (
-	RoleOrgAdmin        RoleName = "org_admin"
-	RoleSecurityAdmin   RoleName = "security_admin"
-	RoleAgentOwner      RoleName = "agent_owner"
-	RolePolicyAuthor    RoleName = "policy_author"
-	RolePolicyPublisher RoleName = "policy_publisher"
-	RoleApprover        RoleName = "approver"
-	RoleResponder       RoleName = "responder"
-	RoleAuditor         RoleName = "auditor"
-	RoleDeveloper       RoleName = "developer"
-	RoleViewer          RoleName = "viewer"
-	RoleRunLauncher     RoleName = "run_launcher"
+	RoleOrgAdmin          RoleName = "org_admin"
+	RoleSecurityAdmin     RoleName = "security_admin"
+	RoleAgentOwner        RoleName = "agent_owner"
+	RolePolicyAuthor      RoleName = "policy_author"
+	RolePolicyPublisher   RoleName = "policy_publisher"
+	RoleApprover          RoleName = "approver"
+	RoleResponder         RoleName = "responder"
+	RoleAuditor           RoleName = "auditor"
+	RoleDeveloper         RoleName = "developer"
+	RoleViewer            RoleName = "viewer"
+	RoleRunLauncher       RoleName = "run_launcher"
+	RoleAgentAdmitter     RoleName = "agent_admitter"
+	RoleIdentityPublisher RoleName = "identity_publisher"
 )
 
 // Role is a named set of permissions and the scope types it may be bound at.
@@ -73,7 +75,7 @@ var roles = []Role{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
-			PermWaitlistRead,
+			PermWaitlistRead, PermIssuerRead, PermIssuerManage,
 		}),
 	},
 	{
@@ -82,14 +84,14 @@ var roles = []Role{
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermUserManage, PermRoleRead, PermInvitationRead, PermServiceAccountRead,
 			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
-			PermWaitlistRead,
+			PermWaitlistRead, PermIssuerRead,
 		}),
 	},
 	{
 		Name: RoleAgentOwner, Title: "Agent Owner", Scopes: anyScope,
 		Description: "Owns agents in scope and is accountable for them.",
 		Permissions: with(basicReads, []Permission{
-			PermAgentRead, PermAgentManage, PermRunRead, PermRunStart, PermRunManage, PermWaitlistRead,
+			PermAgentRead, PermAgentManage, PermRunRead, PermRunStart, PermRunManage, PermWaitlistRead, PermAgentEnroll,
 		}),
 	},
 	{
@@ -117,7 +119,7 @@ var roles = []Role{
 		Description: "Reads configuration, audit and restricted evidence (human only); changes nothing.",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
-			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead,
+			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead,
 		}),
 	},
 	{
@@ -134,6 +136,16 @@ var roles = []Role{
 		Name: RoleRunLauncher, Title: "Run Launcher", Scopes: anyScope,
 		Description: "Starts runs in scope for users who present a fresh token from the identity provider (for example a service acting for a signed-in user). The token proves who is represented and grants nothing.",
 		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart, PermRunRepresent}),
+	},
+	{
+		Name: RoleAgentAdmitter, Title: "Agent Admitter", Scopes: anyScope,
+		Description: "Confirms the key fingerprints of new instances of agents in scope that they own or back up (human only). Holding the role alone admits nothing: the admitter must be the agent's owner or backup owner.",
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermWaitlistRead, PermAgentAdmit}),
+	},
+	{
+		Name: RoleIdentityPublisher, Title: "Identity Publisher", Scopes: anyScope,
+		Description: "Activates proposed or widened trusted-issuer entries in scope after reviewing what they widen (human only). Cannot propose them.",
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermIssuerRead, PermIssuerActivate}),
 	},
 }
 

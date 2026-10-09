@@ -6,6 +6,7 @@ syntax = "proto3";
 package pantherclaw.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
 
 // AuthorityService is the Transaction Authority's gateway-facing API
 // (PAP-1 §7). Only authenticated gateways may call it; the org always comes
@@ -22,6 +23,16 @@ service AuthorityService {
   // RecordExecution records the outcome of one dispatched permit.
   // permission: gateway.dispatch
   rpc RecordExecution(RecordExecutionRequest) returns (RecordExecutionResponse);
+  // GetNonce returns the org's current PAP/1 nonce, which the gateway
+  // serves to workloads in PAP-Nonce headers (HR-091).
+  // permission: gateway.authorize
+  rpc GetNonce(GetNonceRequest) returns (GetNonceResponse);
+  // ReportUnknownWorkload reports a request whose key-only proof verified
+  // but whose key is not an admitted instance (PAP-1 §4). The Authority
+  // re-verifies the proof and records a capped, deduplicated discovery
+  // (HR-148). The request itself is refused.
+  // permission: gateway.observe
+  rpc ReportUnknownWorkload(ReportUnknownWorkloadRequest) returns (ReportUnknownWorkloadResponse);
 }
 
 // Decision is an authorization decision (PAP-1 §7.1).
@@ -55,6 +66,9 @@ message AuthorizeRequest {
     min_len: 2
     max_len: 1048576
   }];
+  // The workload's PAP/1 credentials as the gateway received them; the
+  // Authority re-verifies them itself (PAP-1 §7.1, HR-021).
+  WorkloadCredentials workload = 2;
 }
 
 // AuthorizeResponse is the decision.
@@ -75,6 +89,8 @@ message AuthorizeResponse {
   int64 epoch = 7;
   // Signed decision receipt JWS.
   string receipt = 8;
+  // The org's current PAP/1 nonce, for the PAP-Nonce response header.
+  string nonce = 9;
 }
 
 // BeginDispatchRequest moves a permit to DISPATCHING.
@@ -125,4 +141,60 @@ message RecordExecutionRequest {
 message RecordExecutionResponse {
   // Signed execution receipt JWS.
   string receipt = 1;
+}
+
+// WorkloadCredentials are a workload's PAP/1 request credentials as the
+// gateway received them (PAP-1 §4). The gateway hashes the raw body before
+// parsing it; the Authority verifies everything again.
+message WorkloadCredentials {
+  // Workload token from "Authorization: PAP <token>"; empty for a key-only
+  // proof.
+  string workload_token = 1 [(buf.validate.field).string.max_len = 8192];
+  // PAP-Proof header value.
+  string proof = 2 [(buf.validate.field).string = {
+    min_len: 16
+    max_len: 8192
+  }];
+  // SHA-256 of the raw request body, computed before any parsing.
+  bytes body_sha256 = 3 [(buf.validate.field).bytes.len = 32];
+  // HTTP method of the workload's request.
+  string htm = 4 [(buf.validate.field).string.pattern = "^[A-Z]{3,7}$"];
+  // Target URI of the workload's request (scheme, host, path), from the
+  // gateway's configured public URL, never from the Host header.
+  string htu = 5 [(buf.validate.field).string = {
+    max_len: 2048
+    uri: true
+  }];
+  // UNTRUSTED client address as the gateway saw it (HR-092 network alert).
+  string client_address = 6 [(buf.validate.field).string.max_len = 64];
+}
+
+// GetNonceRequest asks for the current nonce.
+message GetNonceRequest {}
+
+// GetNonceResponse returns it.
+message GetNonceResponse {
+  // Current nonce.
+  string nonce = 1;
+  // When it stops being accepted.
+  google.protobuf.Timestamp expire_time = 2;
+}
+
+// ReportUnknownWorkloadRequest reports an unidentified request.
+message ReportUnknownWorkloadRequest {
+  // The request's key-only PAP/1 credentials (no workload token).
+  WorkloadCredentials workload = 1 [(buf.validate.field).required = true];
+  // UNTRUSTED user agent, truncated by the gateway.
+  string user_agent = 2 [(buf.validate.field).string.max_len = 256];
+  // Route the request was addressed to.
+  string route = 3 [(buf.validate.field).string.max_len = 128];
+}
+
+// ReportUnknownWorkloadResponse says what was recorded.
+message ReportUnknownWorkloadResponse {
+  // Discovery id; empty when the sighting was only counted (rate or cap
+  // reached).
+  string discovery_id = 1;
+  // Current nonce, for the PAP-Nonce response header.
+  string nonce = 2;
 }

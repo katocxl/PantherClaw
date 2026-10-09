@@ -13,6 +13,7 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -218,7 +219,10 @@ func (x *Reason) GetDecisive() bool {
 type AuthorizeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// RFC 8785 canonical ActionIR v1.
-	ActionIr      []byte `protobuf:"bytes,1,opt,name=action_ir,json=actionIr,proto3" json:"action_ir,omitempty"`
+	ActionIr []byte `protobuf:"bytes,1,opt,name=action_ir,json=actionIr,proto3" json:"action_ir,omitempty"`
+	// The workload's PAP/1 credentials as the gateway received them; the
+	// Authority re-verifies them itself (PAP-1 §7.1, HR-021).
+	Workload      *WorkloadCredentials `protobuf:"bytes,2,opt,name=workload,proto3" json:"workload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -260,6 +264,13 @@ func (x *AuthorizeRequest) GetActionIr() []byte {
 	return nil
 }
 
+func (x *AuthorizeRequest) GetWorkload() *WorkloadCredentials {
+	if x != nil {
+		return x.Workload
+	}
+	return nil
+}
+
 // AuthorizeResponse is the decision.
 type AuthorizeResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -278,7 +289,9 @@ type AuthorizeResponse struct {
 	// Containment epoch the permit was issued under.
 	Epoch int64 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// Signed decision receipt JWS.
-	Receipt       string `protobuf:"bytes,8,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	Receipt string `protobuf:"bytes,8,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	// The org's current PAP/1 nonce, for the PAP-Nonce response header.
+	Nonce         string `protobuf:"bytes,9,opt,name=nonce,proto3" json:"nonce,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -365,6 +378,13 @@ func (x *AuthorizeResponse) GetEpoch() int64 {
 func (x *AuthorizeResponse) GetReceipt() string {
 	if x != nil {
 		return x.Receipt
+	}
+	return ""
+}
+
+func (x *AuthorizeResponse) GetNonce() string {
+	if x != nil {
+		return x.Nonce
 	}
 	return ""
 }
@@ -589,18 +609,326 @@ func (x *RecordExecutionResponse) GetReceipt() string {
 	return ""
 }
 
+// WorkloadCredentials are a workload's PAP/1 request credentials as the
+// gateway received them (PAP-1 §4). The gateway hashes the raw body before
+// parsing it; the Authority verifies everything again.
+type WorkloadCredentials struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workload token from "Authorization: PAP <token>"; empty for a key-only
+	// proof.
+	WorkloadToken string `protobuf:"bytes,1,opt,name=workload_token,json=workloadToken,proto3" json:"workload_token,omitempty"`
+	// PAP-Proof header value.
+	Proof string `protobuf:"bytes,2,opt,name=proof,proto3" json:"proof,omitempty"`
+	// SHA-256 of the raw request body, computed before any parsing.
+	BodySha256 []byte `protobuf:"bytes,3,opt,name=body_sha256,json=bodySha256,proto3" json:"body_sha256,omitempty"`
+	// HTTP method of the workload's request.
+	Htm string `protobuf:"bytes,4,opt,name=htm,proto3" json:"htm,omitempty"`
+	// Target URI of the workload's request (scheme, host, path), from the
+	// gateway's configured public URL, never from the Host header.
+	Htu string `protobuf:"bytes,5,opt,name=htu,proto3" json:"htu,omitempty"`
+	// UNTRUSTED client address as the gateway saw it (HR-092 network alert).
+	ClientAddress string `protobuf:"bytes,6,opt,name=client_address,json=clientAddress,proto3" json:"client_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkloadCredentials) Reset() {
+	*x = WorkloadCredentials{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkloadCredentials) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkloadCredentials) ProtoMessage() {}
+
+func (x *WorkloadCredentials) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkloadCredentials.ProtoReflect.Descriptor instead.
+func (*WorkloadCredentials) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *WorkloadCredentials) GetWorkloadToken() string {
+	if x != nil {
+		return x.WorkloadToken
+	}
+	return ""
+}
+
+func (x *WorkloadCredentials) GetProof() string {
+	if x != nil {
+		return x.Proof
+	}
+	return ""
+}
+
+func (x *WorkloadCredentials) GetBodySha256() []byte {
+	if x != nil {
+		return x.BodySha256
+	}
+	return nil
+}
+
+func (x *WorkloadCredentials) GetHtm() string {
+	if x != nil {
+		return x.Htm
+	}
+	return ""
+}
+
+func (x *WorkloadCredentials) GetHtu() string {
+	if x != nil {
+		return x.Htu
+	}
+	return ""
+}
+
+func (x *WorkloadCredentials) GetClientAddress() string {
+	if x != nil {
+		return x.ClientAddress
+	}
+	return ""
+}
+
+// GetNonceRequest asks for the current nonce.
+type GetNonceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNonceRequest) Reset() {
+	*x = GetNonceRequest{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNonceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNonceRequest) ProtoMessage() {}
+
+func (x *GetNonceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNonceRequest.ProtoReflect.Descriptor instead.
+func (*GetNonceRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{8}
+}
+
+// GetNonceResponse returns it.
+type GetNonceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current nonce.
+	Nonce string `protobuf:"bytes,1,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	// When it stops being accepted.
+	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNonceResponse) Reset() {
+	*x = GetNonceResponse{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNonceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNonceResponse) ProtoMessage() {}
+
+func (x *GetNonceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNonceResponse.ProtoReflect.Descriptor instead.
+func (*GetNonceResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetNonceResponse) GetNonce() string {
+	if x != nil {
+		return x.Nonce
+	}
+	return ""
+}
+
+func (x *GetNonceResponse) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+// ReportUnknownWorkloadRequest reports an unidentified request.
+type ReportUnknownWorkloadRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The request's key-only PAP/1 credentials (no workload token).
+	Workload *WorkloadCredentials `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
+	// UNTRUSTED user agent, truncated by the gateway.
+	UserAgent string `protobuf:"bytes,2,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`
+	// Route the request was addressed to.
+	Route         string `protobuf:"bytes,3,opt,name=route,proto3" json:"route,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportUnknownWorkloadRequest) Reset() {
+	*x = ReportUnknownWorkloadRequest{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportUnknownWorkloadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportUnknownWorkloadRequest) ProtoMessage() {}
+
+func (x *ReportUnknownWorkloadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportUnknownWorkloadRequest.ProtoReflect.Descriptor instead.
+func (*ReportUnknownWorkloadRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReportUnknownWorkloadRequest) GetWorkload() *WorkloadCredentials {
+	if x != nil {
+		return x.Workload
+	}
+	return nil
+}
+
+func (x *ReportUnknownWorkloadRequest) GetUserAgent() string {
+	if x != nil {
+		return x.UserAgent
+	}
+	return ""
+}
+
+func (x *ReportUnknownWorkloadRequest) GetRoute() string {
+	if x != nil {
+		return x.Route
+	}
+	return ""
+}
+
+// ReportUnknownWorkloadResponse says what was recorded.
+type ReportUnknownWorkloadResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Discovery id; empty when the sighting was only counted (rate or cap
+	// reached).
+	DiscoveryId string `protobuf:"bytes,1,opt,name=discovery_id,json=discoveryId,proto3" json:"discovery_id,omitempty"`
+	// Current nonce, for the PAP-Nonce response header.
+	Nonce         string `protobuf:"bytes,2,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportUnknownWorkloadResponse) Reset() {
+	*x = ReportUnknownWorkloadResponse{}
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportUnknownWorkloadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportUnknownWorkloadResponse) ProtoMessage() {}
+
+func (x *ReportUnknownWorkloadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_authority_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportUnknownWorkloadResponse.ProtoReflect.Descriptor instead.
+func (*ReportUnknownWorkloadResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_authority_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReportUnknownWorkloadResponse) GetDiscoveryId() string {
+	if x != nil {
+		return x.DiscoveryId
+	}
+	return ""
+}
+
+func (x *ReportUnknownWorkloadResponse) GetNonce() string {
+	if x != nil {
+		return x.Nonce
+	}
+	return ""
+}
+
 var File_pantherclaw_v1_authority_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\n" +
-	"\x1epantherclaw/v1/authority.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\"f\n" +
+	"\x1epantherclaw/v1/authority.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"f\n" +
 	"\x06Reason\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x14\n" +
 	"\x05check\x18\x02 \x01(\tR\x05check\x12\x16\n" +
 	"\x06detail\x18\x03 \x01(\tR\x06detail\x12\x1a\n" +
-	"\bdecisive\x18\x04 \x01(\bR\bdecisive\"<\n" +
+	"\bdecisive\x18\x04 \x01(\bR\bdecisive\"}\n" +
 	"\x10AuthorizeRequest\x12(\n" +
-	"\taction_ir\x18\x01 \x01(\fB\v\xbaH\bz\x06\x10\x02\x18\x80\x80@R\bactionIr\"\xa8\x02\n" +
+	"\taction_ir\x18\x01 \x01(\fB\v\xbaH\bz\x06\x10\x02\x18\x80\x80@R\bactionIr\x12?\n" +
+	"\bworkload\x18\x02 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsR\bworkload\"\xbe\x02\n" +
 	"\x11AuthorizeResponse\x124\n" +
 	"\bdecision\x18\x01 \x01(\x0e2\x18.pantherclaw.v1.DecisionR\bdecision\x12%\n" +
 	"\x0etransaction_id\x18\x02 \x01(\tR\rtransactionId\x12\x1f\n" +
@@ -610,7 +938,8 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\x06permit\x18\x05 \x01(\tR\x06permit\x12\x1b\n" +
 	"\tpermit_id\x18\x06 \x01(\tR\bpermitId\x12\x14\n" +
 	"\x05epoch\x18\a \x01(\x03R\x05epoch\x12\x18\n" +
-	"\areceipt\x18\b \x01(\tR\areceipt\"\\\n" +
+	"\areceipt\x18\b \x01(\tR\areceipt\x12\x14\n" +
+	"\x05nonce\x18\t \x01(\tR\x05nonce\"\\\n" +
 	"\x14BeginDispatchRequest\x12%\n" +
 	"\tpermit_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\bpermitId\x12\x1d\n" +
 	"\x05epoch\x18\x02 \x01(\x03B\a\xbaH\x04\"\x02 \x00R\x05epoch\"\x17\n" +
@@ -625,7 +954,29 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\vdispatch_ms\x18\x05 \x01(\x05B\v\xbaH\b\x1a\x06\x18\xc0\xcf$(\x00R\n" +
 	"dispatchMs\"3\n" +
 	"\x17RecordExecutionResponse\x12\x18\n" +
-	"\areceipt\x18\x01 \x01(\tR\areceipt*\xcc\x01\n" +
+	"\areceipt\x18\x01 \x01(\tR\areceipt\"\x88\x02\n" +
+	"\x13WorkloadCredentials\x12/\n" +
+	"\x0eworkload_token\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80@R\rworkloadToken\x12 \n" +
+	"\x05proof\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x10\x18\x80@R\x05proof\x12(\n" +
+	"\vbody_sha256\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\n" +
+	"bodySha256\x12%\n" +
+	"\x03htm\x18\x04 \x01(\tB\x13\xbaH\x10r\x0e2\f^[A-Z]{3,7}$R\x03htm\x12\x1d\n" +
+	"\x03htu\x18\x05 \x01(\tB\v\xbaH\br\x06\x18\x80\x10\x88\x01\x01R\x03htu\x12.\n" +
+	"\x0eclient_address\x18\x06 \x01(\tB\a\xbaH\x04r\x02\x18@R\rclientAddress\"\x11\n" +
+	"\x0fGetNonceRequest\"e\n" +
+	"\x10GetNonceResponse\x12\x14\n" +
+	"\x05nonce\x18\x01 \x01(\tR\x05nonce\x12;\n" +
+	"\vexpire_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\"\xb0\x01\n" +
+	"\x1cReportUnknownWorkloadRequest\x12G\n" +
+	"\bworkload\x18\x01 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsB\x06\xbaH\x03\xc8\x01\x01R\bworkload\x12'\n" +
+	"\n" +
+	"user_agent\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tuserAgent\x12\x1e\n" +
+	"\x05route\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x05route\"X\n" +
+	"\x1dReportUnknownWorkloadResponse\x12!\n" +
+	"\fdiscovery_id\x18\x01 \x01(\tR\vdiscoveryId\x12\x14\n" +
+	"\x05nonce\x18\x02 \x01(\tR\x05nonce*\xcc\x01\n" +
 	"\bDecision\x12\x18\n" +
 	"\x14DECISION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDECISION_ALLOW\x10\x01\x12#\n" +
@@ -638,11 +989,13 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10OUTCOME_ACCEPTED\x10\x01\x12\x12\n" +
 	"\x0eOUTCOME_FAILED\x10\x02\x12\x13\n" +
-	"\x0fOUTCOME_UNKNOWN\x10\x032\xa6\x02\n" +
+	"\x0fOUTCOME_UNKNOWN\x10\x032\xeb\x03\n" +
 	"\x10AuthorityService\x12P\n" +
 	"\tAuthorize\x12 .pantherclaw.v1.AuthorizeRequest\x1a!.pantherclaw.v1.AuthorizeResponse\x12\\\n" +
 	"\rBeginDispatch\x12$.pantherclaw.v1.BeginDispatchRequest\x1a%.pantherclaw.v1.BeginDispatchResponse\x12b\n" +
-	"\x0fRecordExecution\x12&.pantherclaw.v1.RecordExecutionRequest\x1a'.pantherclaw.v1.RecordExecutionResponseB\xc7\x01\n" +
+	"\x0fRecordExecution\x12&.pantherclaw.v1.RecordExecutionRequest\x1a'.pantherclaw.v1.RecordExecutionResponse\x12M\n" +
+	"\bGetNonce\x12\x1f.pantherclaw.v1.GetNonceRequest\x1a .pantherclaw.v1.GetNonceResponse\x12t\n" +
+	"\x15ReportUnknownWorkload\x12,.pantherclaw.v1.ReportUnknownWorkloadRequest\x1a-.pantherclaw.v1.ReportUnknownWorkloadResponseB\xc7\x01\n" +
 	"\x12com.pantherclaw.v1B\x0eAuthorityProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -658,33 +1011,46 @@ func file_pantherclaw_v1_authority_proto_rawDescGZIP() []byte {
 }
 
 var file_pantherclaw_v1_authority_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pantherclaw_v1_authority_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_pantherclaw_v1_authority_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_pantherclaw_v1_authority_proto_goTypes = []any{
-	(Decision)(0),                   // 0: pantherclaw.v1.Decision
-	(Outcome)(0),                    // 1: pantherclaw.v1.Outcome
-	(*Reason)(nil),                  // 2: pantherclaw.v1.Reason
-	(*AuthorizeRequest)(nil),        // 3: pantherclaw.v1.AuthorizeRequest
-	(*AuthorizeResponse)(nil),       // 4: pantherclaw.v1.AuthorizeResponse
-	(*BeginDispatchRequest)(nil),    // 5: pantherclaw.v1.BeginDispatchRequest
-	(*BeginDispatchResponse)(nil),   // 6: pantherclaw.v1.BeginDispatchResponse
-	(*RecordExecutionRequest)(nil),  // 7: pantherclaw.v1.RecordExecutionRequest
-	(*RecordExecutionResponse)(nil), // 8: pantherclaw.v1.RecordExecutionResponse
+	(Decision)(0),                         // 0: pantherclaw.v1.Decision
+	(Outcome)(0),                          // 1: pantherclaw.v1.Outcome
+	(*Reason)(nil),                        // 2: pantherclaw.v1.Reason
+	(*AuthorizeRequest)(nil),              // 3: pantherclaw.v1.AuthorizeRequest
+	(*AuthorizeResponse)(nil),             // 4: pantherclaw.v1.AuthorizeResponse
+	(*BeginDispatchRequest)(nil),          // 5: pantherclaw.v1.BeginDispatchRequest
+	(*BeginDispatchResponse)(nil),         // 6: pantherclaw.v1.BeginDispatchResponse
+	(*RecordExecutionRequest)(nil),        // 7: pantherclaw.v1.RecordExecutionRequest
+	(*RecordExecutionResponse)(nil),       // 8: pantherclaw.v1.RecordExecutionResponse
+	(*WorkloadCredentials)(nil),           // 9: pantherclaw.v1.WorkloadCredentials
+	(*GetNonceRequest)(nil),               // 10: pantherclaw.v1.GetNonceRequest
+	(*GetNonceResponse)(nil),              // 11: pantherclaw.v1.GetNonceResponse
+	(*ReportUnknownWorkloadRequest)(nil),  // 12: pantherclaw.v1.ReportUnknownWorkloadRequest
+	(*ReportUnknownWorkloadResponse)(nil), // 13: pantherclaw.v1.ReportUnknownWorkloadResponse
+	(*timestamppb.Timestamp)(nil),         // 14: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_authority_proto_depIdxs = []int32{
-	0, // 0: pantherclaw.v1.AuthorizeResponse.decision:type_name -> pantherclaw.v1.Decision
-	2, // 1: pantherclaw.v1.AuthorizeResponse.reasons:type_name -> pantherclaw.v1.Reason
-	1, // 2: pantherclaw.v1.RecordExecutionRequest.outcome:type_name -> pantherclaw.v1.Outcome
-	3, // 3: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
-	5, // 4: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
-	7, // 5: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
-	4, // 6: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
-	6, // 7: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
-	8, // 8: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
-	6, // [6:9] is the sub-list for method output_type
-	3, // [3:6] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	9,  // 0: pantherclaw.v1.AuthorizeRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
+	0,  // 1: pantherclaw.v1.AuthorizeResponse.decision:type_name -> pantherclaw.v1.Decision
+	2,  // 2: pantherclaw.v1.AuthorizeResponse.reasons:type_name -> pantherclaw.v1.Reason
+	1,  // 3: pantherclaw.v1.RecordExecutionRequest.outcome:type_name -> pantherclaw.v1.Outcome
+	14, // 4: pantherclaw.v1.GetNonceResponse.expire_time:type_name -> google.protobuf.Timestamp
+	9,  // 5: pantherclaw.v1.ReportUnknownWorkloadRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
+	3,  // 6: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
+	5,  // 7: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
+	7,  // 8: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
+	10, // 9: pantherclaw.v1.AuthorityService.GetNonce:input_type -> pantherclaw.v1.GetNonceRequest
+	12, // 10: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:input_type -> pantherclaw.v1.ReportUnknownWorkloadRequest
+	4,  // 11: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
+	6,  // 12: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
+	8,  // 13: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
+	11, // 14: pantherclaw.v1.AuthorityService.GetNonce:output_type -> pantherclaw.v1.GetNonceResponse
+	13, // 15: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:output_type -> pantherclaw.v1.ReportUnknownWorkloadResponse
+	11, // [11:16] is the sub-list for method output_type
+	6,  // [6:11] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_authority_proto_init() }
@@ -698,7 +1064,7 @@ func file_pantherclaw_v1_authority_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_authority_proto_rawDesc), len(file_pantherclaw_v1_authority_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

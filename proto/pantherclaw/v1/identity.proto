@@ -1,0 +1,532 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// IdentityService administers PAP/1 workload identity (Badge; PAP-1 §3,
+// ADR-0013, ADR-0018, G0 M3): enrollment tokens, agent instances and their
+// admission, and trusted-issuer entries for L2 attestation. Workloads
+// themselves use WorkloadService.
+service IdentityService {
+  // CreateEnrollmentToken creates a single-use pce_ enrollment token for an
+  // agent (valid at most 15 minutes). Only the agent's owner or backup owner
+  // may create one. The secret is returned once.
+  // permission: agent.enroll
+  rpc CreateEnrollmentToken(CreateEnrollmentTokenRequest) returns (CreateEnrollmentTokenResponse);
+  // ListInstances lists an agent's instances.
+  // permission: agent.read
+  rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetInstance returns one instance and its verification metadata (F031).
+  // permission: agent.read
+  rpc GetInstance(GetInstanceRequest) returns (GetInstanceResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // AdmitInstance admits a pending instance. The caller must be the agent's
+  // owner or backup owner and must give the full key fingerprint the
+  // workload displayed (HR-094). Never from a service account or API key.
+  // permission: agent.admit
+  rpc AdmitInstance(AdmitInstanceRequest) returns (AdmitInstanceResponse);
+  // RejectInstance rejects a pending instance.
+  // permission: agent.admit
+  rpc RejectInstance(RejectInstanceRequest) returns (RejectInstanceResponse);
+  // RevokeInstance revokes an instance: it gets no new workload tokens, its
+  // runs are denied and outstanding permits fail BeginDispatch.
+  // permission: agent.manage
+  rpc RevokeInstance(RevokeInstanceRequest) returns (RevokeInstanceResponse);
+
+  // ProposeIssuerEntry creates a trusted-issuer entry or a new revision of
+  // one. A revision that only narrows takes effect at once; anything that
+  // adds or widens stays PROPOSED until activated (HR-141).
+  // permission: identity.issuer.manage
+  rpc ProposeIssuerEntry(ProposeIssuerEntryRequest) returns (ProposeIssuerEntryResponse);
+  // ActivateIssuerEntry activates a proposed revision; the response shows
+  // what it widens. Never from a service account or API key.
+  // permission: identity.issuer.activate
+  rpc ActivateIssuerEntry(ActivateIssuerEntryRequest) returns (ActivateIssuerEntryResponse);
+  // WithdrawIssuerProposal withdraws a proposed revision.
+  // permission: identity.issuer.manage
+  rpc WithdrawIssuerProposal(WithdrawIssuerProposalRequest) returns (WithdrawIssuerProposalResponse);
+  // DisableIssuerEntry disables an entry at once: no auto-admission through
+  // it, and its instances lose L2 at their next token refresh.
+  // permission: identity.issuer.manage
+  rpc DisableIssuerEntry(DisableIssuerEntryRequest) returns (DisableIssuerEntryResponse);
+  // ListIssuerEntries lists entries with their current revision.
+  // permission: identity.issuer.read
+  rpc ListIssuerEntries(ListIssuerEntriesRequest) returns (ListIssuerEntriesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetIssuerEntry returns every revision of one entry.
+  // permission: identity.issuer.read
+  rpc GetIssuerEntry(GetIssuerEntryRequest) returns (GetIssuerEntryResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// InstanceState is an agent instance's state.
+enum InstanceState {
+  INSTANCE_STATE_UNSPECIFIED = 0;
+  // Enrolled; waiting for the owner to confirm the fingerprint.
+  INSTANCE_STATE_PENDING_ADMISSION = 1;
+  INSTANCE_STATE_ADMITTED = 2;
+  INSTANCE_STATE_REJECTED = 3;
+  INSTANCE_STATE_REVOKED = 4;
+  // The admission deadline or the attestation lapsed.
+  INSTANCE_STATE_EXPIRED = 5;
+}
+
+// EnrollmentPath is how an instance enrolled.
+enum EnrollmentPath {
+  ENROLLMENT_PATH_UNSPECIFIED = 0;
+  // With an owner's enrollment token.
+  ENROLLMENT_PATH_ENROLLMENT_TOKEN = 1;
+  // With an attestation matching an auto-admitting issuer entry.
+  ENROLLMENT_PATH_ATTESTATION = 2;
+  // From a key first seen at a gateway and claimed.
+  ENROLLMENT_PATH_DISCOVERY = 3;
+}
+
+// IssuerKind is a preset; only presets can be configured (HR-140).
+enum IssuerKind {
+  ISSUER_KIND_UNSPECIFIED = 0;
+  // GitHub Actions OIDC tokens (HR-093).
+  ISSUER_KIND_GITHUB_ACTIONS = 1;
+  // Kubernetes projected service-account tokens via TokenReview (HR-144).
+  ISSUER_KIND_KUBERNETES = 2;
+}
+
+// IssuerEntryState is the state of one revision.
+enum IssuerEntryState {
+  ISSUER_ENTRY_STATE_UNSPECIFIED = 0;
+  // Waiting for activation (adds or widens).
+  ISSUER_ENTRY_STATE_PROPOSED = 1;
+  ISSUER_ENTRY_STATE_ACTIVE = 2;
+  // Replaced by a later active revision.
+  ISSUER_ENTRY_STATE_SUPERSEDED = 3;
+  ISSUER_ENTRY_STATE_DISABLED = 4;
+  // A proposal that was withdrawn.
+  ISSUER_ENTRY_STATE_WITHDRAWN = 5;
+}
+
+// GithubJobType is which workflow claim an entry binds on.
+enum GithubJobType {
+  GITHUB_JOB_TYPE_UNSPECIFIED = 0;
+  // An ordinary job: binds on workflow_ref.
+  GITHUB_JOB_TYPE_WORKFLOW = 1;
+  // A job that calls a reusable workflow: binds on job_workflow_ref.
+  GITHUB_JOB_TYPE_REUSABLE_WORKFLOW = 2;
+}
+
+// Verification is an instance's verification metadata (F031).
+message Verification {
+  // Attestation level now in force (1 or 2).
+  int32 level = 1;
+  // How it was verified: "fingerprint", "github_actions" or "kubernetes".
+  string method = 2;
+  // When L2 lapses unless renewed.
+  google.protobuf.Timestamp attested_until = 3;
+  // Last successful verification.
+  google.protobuf.Timestamp last_verify_time = 4;
+  // Issuer entry the instance enrolled through, if any.
+  string issuer_entry_id = 5;
+  // Binding claims fixed at enrollment (HR-147).
+  map<string, string> binding = 6;
+  // "declared" or "attested" (PAP-1 §3.3).
+  string release_state = 7;
+  // Release digest (sha256:…).
+  string release_digest = 8;
+  // Flagged after drift until reviewed (F033).
+  bool needs_review = 9;
+}
+
+// Instance is one workload key of an agent.
+message Instance {
+  // Instance id.
+  string id = 1;
+  // Agent id.
+  string agent_id = 2;
+  // PAP/1 identifier: pc:org/<org>/agent/<agent>/inst/<instance>.
+  string identifier = 3;
+  // RFC 7638 thumbprint of the key (the fingerprint).
+  string thumbprint = 4;
+  // State.
+  InstanceState state = 5;
+  // How it enrolled.
+  EnrollmentPath enrolled_via = 6;
+  // Verification metadata.
+  Verification verification = 7;
+  // Last network seen (an IPv4 /24 or IPv6 /56).
+  string last_network = 8;
+  // Last request.
+  google.protobuf.Timestamp last_seen_time = 9;
+  // Who admitted, rejected or revoked it.
+  string decided_by = 10;
+  // When.
+  google.protobuf.Timestamp decide_time = 11;
+  // Revocation reason.
+  string revoke_reason = 12;
+  // Enrollment time.
+  google.protobuf.Timestamp create_time = 13;
+  // Admission deadline (pending instances).
+  google.protobuf.Timestamp expire_time = 14;
+}
+
+// GithubBinding binds GitHub Actions tokens to one agent (HR-093).
+message GithubBinding {
+  // Numeric repository id (names can be reused; ids cannot).
+  string repository_id = 1 [(buf.validate.field).string.pattern = "^[1-9][0-9]{0,19}$"];
+  // Numeric repository owner id.
+  string repository_owner_id = 2 [(buf.validate.field).string.pattern = "^[1-9][0-9]{0,19}$"];
+  // Which workflow claim the entry binds on.
+  GithubJobType job_type = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Accepted workflow refs, each "owner/repo/path@refs/heads/…" or
+  // "…@refs/tags/…".
+  repeated string workflow_refs = 4 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 20
+    unique: true
+    items: {
+      string: {
+        max_len: 512
+        pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[^@\\s]+@refs/(heads|tags)/[^\\s]+$"
+      }
+    }
+  }];
+  // Optional exact revisions (workflow_sha or job_workflow_sha).
+  repeated string workflow_shas = 5 [(buf.validate.field).repeated = {
+    max_items: 20
+    unique: true
+    items: {
+      string: {pattern: "^[0-9a-f]{40}$"}
+    }
+  }];
+  // Optional deployment environment.
+  string environment = 6 [(buf.validate.field).string.max_len = 255];
+  // Optional runner environment ("github-hosted" or "self-hosted").
+  string runner_environment = 7 [(buf.validate.field).string = {
+    in: [
+      "",
+      "github-hosted",
+      "self-hosted"
+    ]
+  }];
+}
+
+// KubernetesBinding binds Kubernetes service-account tokens to one agent
+// (HR-144).
+message KubernetesBinding {
+  // Cluster name from the server configuration (identity.kubernetes_clusters).
+  string cluster = 1 [(buf.validate.field).string.pattern = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"];
+  // Namespace.
+  string namespace = 2 [(buf.validate.field).string.pattern = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"];
+  // Service account name.
+  string service_account_name = 3 [(buf.validate.field).string.pattern = "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"];
+  // Service account UID (a recreated account with the same name has a new
+  // UID and does not match).
+  string service_account_uid = 4 [(buf.validate.field).string.uuid = true];
+  // Optional allowed image repositories (for example ghcr.io/acme/agent).
+  repeated string image_repositories = 5 [(buf.validate.field).repeated = {
+    max_items: 20
+    unique: true
+    items: {
+      string: {
+        max_len: 255
+        pattern: "^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+$"
+      }
+    }
+  }];
+  // Optional allowed image digests.
+  repeated string image_digests = 6 [(buf.validate.field).repeated = {
+    max_items: 50
+    unique: true
+    items: {
+      string: {pattern: "^sha256:[0-9a-f]{64}$"}
+    }
+  }];
+}
+
+// IssuerRevision is one revision of a trusted-issuer entry.
+message IssuerRevision {
+  // Revision row id.
+  string id = 1;
+  // Stable entry id.
+  string entry_id = 2;
+  // Revision number.
+  int32 revision = 3;
+  // Agent the entry binds tokens to.
+  string agent_id = 4;
+  // Preset.
+  IssuerKind kind = 5;
+  // Issuer (GitHub's issuer URL, or "cluster:<name>").
+  string issuer = 6;
+  // Expected audience: pantherclaw:<org>.
+  string audience = 7;
+  // Allowed algorithms.
+  repeated string algorithms = 8;
+  // Binding claims.
+  oneof binding {
+    GithubBinding github = 9;
+    KubernetesBinding kubernetes = 10;
+  }
+  // Admits matching instances without an owner.
+  bool auto_admit = 11;
+  // What this revision adds or widens compared with the active one.
+  repeated string widening = 12;
+  // State.
+  IssuerEntryState state = 13;
+  // Who proposed it.
+  string proposed_by = 14;
+  // When.
+  google.protobuf.Timestamp propose_time = 15;
+  // Who activated it.
+  string activated_by = 16;
+  // When.
+  google.protobuf.Timestamp activate_time = 17;
+  // Who disabled, superseded or withdrew it.
+  string closed_by = 18;
+  // When.
+  google.protobuf.Timestamp close_time = 19;
+}
+
+// CreateEnrollmentTokenRequest creates an enrollment token.
+message CreateEnrollmentTokenRequest {
+  // Agent id.
+  string agent_id = 1 [(buf.validate.field).string.uuid = true];
+  // Validity in minutes (default 15, at most 15).
+  int32 ttl_minutes = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 15
+  }];
+}
+
+// CreateEnrollmentTokenResponse returns the secret once.
+message CreateEnrollmentTokenResponse {
+  // Token id.
+  string id = 1;
+  // The pce_ token; shown once, stored only as a hash.
+  string token = 2;
+  // Expiry time.
+  google.protobuf.Timestamp expire_time = 3;
+}
+
+// ListInstancesRequest pages through an agent's instances.
+message ListInstancesRequest {
+  // Agent id.
+  string agent_id = 1 [(buf.validate.field).string.uuid = true];
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 3 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only instances in these states (all when empty).
+  repeated InstanceState states = 4 [(buf.validate.field).repeated = {
+    max_items: 5
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+}
+
+// ListInstancesResponse is one page.
+message ListInstancesResponse {
+  // Instances, oldest first.
+  repeated Instance instances = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// GetInstanceRequest names an instance.
+message GetInstanceRequest {
+  // Instance id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetInstanceResponse returns it.
+message GetInstanceResponse {
+  // The instance.
+  Instance instance = 1;
+}
+
+// AdmitInstanceRequest confirms a pending instance's fingerprint.
+message AdmitInstanceRequest {
+  // Instance id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The full fingerprint (RFC 7638 thumbprint) the workload displayed.
+  string fingerprint = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9_-]{43}$"];
+}
+
+// AdmitInstanceResponse returns the instance.
+message AdmitInstanceResponse {
+  // The instance.
+  Instance instance = 1;
+}
+
+// RejectInstanceRequest rejects a pending instance.
+message RejectInstanceRequest {
+  // Instance id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// RejectInstanceResponse returns the instance.
+message RejectInstanceResponse {
+  // The instance.
+  Instance instance = 1;
+}
+
+// RevokeInstanceRequest revokes an instance.
+message RevokeInstanceRequest {
+  // Instance id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// RevokeInstanceResponse returns the instance.
+message RevokeInstanceResponse {
+  // The instance.
+  Instance instance = 1;
+}
+
+// ProposeIssuerEntryRequest proposes a new entry or a new revision.
+message ProposeIssuerEntryRequest {
+  // Existing entry to revise; empty for a new entry.
+  string entry_id = 1 [(buf.validate.field).string = {
+    max_len: 36
+    pattern: "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$"
+  }];
+  // Agent the tokens bind to (fixed for an existing entry).
+  string agent_id = 2 [(buf.validate.field).string.uuid = true];
+  // Binding claims; the preset follows from the kind of binding.
+  oneof binding {
+    option (buf.validate.oneof).required = true;
+    // GitHub Actions.
+    GithubBinding github = 3;
+    // Kubernetes.
+    KubernetesBinding kubernetes = 4;
+  }
+  // Admit matching instances without an owner (a widening when turned on).
+  bool auto_admit = 5;
+  // Reason, recorded with the revision.
+  string reason = 6 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// ProposeIssuerEntryResponse returns the new revision: ACTIVE when it only
+// narrows, PROPOSED otherwise.
+message ProposeIssuerEntryResponse {
+  // The revision.
+  IssuerRevision revision = 1;
+}
+
+// ActivateIssuerEntryRequest activates a proposed revision.
+message ActivateIssuerEntryRequest {
+  // Entry id.
+  string entry_id = 1 [(buf.validate.field).string.uuid = true];
+  // Revision number being activated (must be the proposed one).
+  int32 revision = 2 [(buf.validate.field).int32.gte = 1];
+  // For a GitHub reusable-workflow binding: the activator confirms that
+  // every workflow ref is a protected branch or tag of its repository.
+  bool confirm_reusable_refs_protected = 3;
+}
+
+// ActivateIssuerEntryResponse returns the activated revision.
+message ActivateIssuerEntryResponse {
+  // The revision.
+  IssuerRevision revision = 1;
+}
+
+// WithdrawIssuerProposalRequest withdraws a proposal.
+message WithdrawIssuerProposalRequest {
+  // Entry id.
+  string entry_id = 1 [(buf.validate.field).string.uuid = true];
+  // Revision number of the proposal.
+  int32 revision = 2 [(buf.validate.field).int32.gte = 1];
+}
+
+// WithdrawIssuerProposalResponse returns the withdrawn revision.
+message WithdrawIssuerProposalResponse {
+  // The revision.
+  IssuerRevision revision = 1;
+}
+
+// DisableIssuerEntryRequest disables an entry.
+message DisableIssuerEntryRequest {
+  // Entry id.
+  string entry_id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// DisableIssuerEntryResponse returns the disabled revision.
+message DisableIssuerEntryResponse {
+  // The revision.
+  IssuerRevision revision = 1;
+}
+
+// ListIssuerEntriesRequest pages through entries.
+message ListIssuerEntriesRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only entries for this agent.
+  optional string agent_id = 3 [(buf.validate.field).string.uuid = true];
+}
+
+// ListIssuerEntriesResponse is one page of current revisions (the active
+// one, or the proposal for an entry that was never activated).
+message ListIssuerEntriesResponse {
+  // Current revisions.
+  repeated IssuerRevision entries = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// GetIssuerEntryRequest names an entry.
+message GetIssuerEntryRequest {
+  // Entry id.
+  string entry_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetIssuerEntryResponse returns every revision, newest first.
+message GetIssuerEntryResponse {
+  // Revisions.
+  repeated IssuerRevision revisions = 1;
+}

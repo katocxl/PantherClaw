@@ -213,6 +213,7 @@ func TestRoleCatalogIsWellFormed(t *testing.T) {
 		domain.RoleOrgAdmin, domain.RoleSecurityAdmin, domain.RoleAgentOwner,
 		domain.RolePolicyAuthor, domain.RolePolicyPublisher, domain.RoleApprover, domain.RoleResponder,
 		domain.RoleAuditor, domain.RoleDeveloper, domain.RoleViewer, domain.RoleRunLauncher,
+		domain.RoleAgentAdmitter, domain.RoleIdentityPublisher,
 	} {
 		if !seen[n] {
 			t.Errorf("default role %s missing (SB-2)", n)
@@ -295,5 +296,60 @@ func TestHR146_OnlyTheRunLauncherRoleMayRepresentUsers(t *testing.T) {
 	}
 	if !domain.PermRunRepresent.APIKeyScopable() {
 		t.Error("run.represent must be usable by service launchers")
+	}
+}
+
+// TestHR094_AdmissionIsHumanOnly: confirming an instance's fingerprint is
+// never available to a service account or API key, and no administrator or
+// owner role contains it implicitly.
+func TestHR094_AdmissionIsHumanOnly(t *testing.T) {
+	if !domain.PermAgentAdmit.HumanOnly() || domain.PermAgentAdmit.APIKeyScopable() {
+		t.Fatal("agent.admit must be human only")
+	}
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermAgentAdmit) != (r.Name == domain.RoleAgentAdmitter) {
+			t.Errorf("role %s: agent.admit = %v", r.Name, r.Has(domain.PermAgentAdmit))
+		}
+	}
+	if _, err := domain.CheckBindable(domain.RoleAgentAdmitter, domain.KindServiceAccount, domain.ScopeTeam); !errors.Is(err, domain.ErrHumanOnlyRole) {
+		t.Errorf("agent_admitter bound to a service account: %v", err)
+	}
+	// Service accounts keep being able to own and enroll agents.
+	if _, err := domain.CheckBindable(domain.RoleAgentOwner, domain.KindServiceAccount, domain.ScopeTeam); err != nil {
+		t.Errorf("agent_owner for a service account: %v", err)
+	}
+}
+
+// TestHR141_IssuerActivationIsHumanOnlyAndSeparate: switching on a trusted
+// issuer is a protected change (F582): human only, outside Org Admin, and no
+// default role both proposes and activates.
+func TestHR141_IssuerActivationIsHumanOnlyAndSeparate(t *testing.T) {
+	if !domain.PermIssuerActivate.HumanOnly() || domain.PermIssuerActivate.APIKeyScopable() {
+		t.Fatal("identity.issuer.activate must be human only")
+	}
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermIssuerActivate) != (r.Name == domain.RoleIdentityPublisher) {
+			t.Errorf("role %s: identity.issuer.activate = %v", r.Name, r.Has(domain.PermIssuerActivate))
+		}
+		if r.Has(domain.PermIssuerActivate) && r.Has(domain.PermIssuerManage) {
+			t.Errorf("role %s both proposes and activates issuer entries", r.Name)
+		}
+	}
+	tr := newTree()
+	admin := user(tr.org, bind(domain.RoleOrgAdmin, domain.ScopeOrg, tr.org.UUID()))
+	if admin.CanAnywhere(domain.PermIssuerActivate) || !admin.CanAnywhere(domain.PermIssuerManage) {
+		t.Error("Org Admin must propose but not activate issuer entries")
+	}
+}
+
+// TestWorkloadAndGatewayPermissionsAreNeverGrantable: only authenticated
+// workloads and gateways exercise them; no role, binding or API key can.
+func TestWorkloadAndGatewayPermissionsAreNeverGrantable(t *testing.T) {
+	for _, p := range []domain.Permission{
+		domain.PermWorkloadEnroll, domain.PermWorkloadToken, domain.PermWorkloadRun, domain.PermGatewayObserve,
+	} {
+		if p.Known() || !p.Declarable() || p.APIKeyScopable() {
+			t.Errorf("%s: known=%v declarable=%v scopable=%v", p, p.Known(), p.Declarable(), p.APIKeyScopable())
+		}
 	}
 }

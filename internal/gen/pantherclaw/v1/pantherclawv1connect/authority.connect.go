@@ -35,6 +35,11 @@ const (
 	// AuthorityServiceRecordExecutionProcedure is the procedure name of the AuthorityService's
 	// RecordExecution RPC.
 	AuthorityServiceRecordExecutionProcedure = "/pantherclaw.v1.AuthorityService/RecordExecution"
+	// AuthorityServiceGetNonceProcedure is the procedure name of the AuthorityService's GetNonce RPC.
+	AuthorityServiceGetNonceProcedure = "/pantherclaw.v1.AuthorityService/GetNonce"
+	// AuthorityServiceReportUnknownWorkloadProcedure is the procedure name of the AuthorityService's
+	// ReportUnknownWorkload RPC.
+	AuthorityServiceReportUnknownWorkloadProcedure = "/pantherclaw.v1.AuthorityService/ReportUnknownWorkload"
 )
 
 var (
@@ -59,6 +64,20 @@ var (
 			Procedure:  AuthorityServiceRecordExecutionProcedure,
 		}
 	})
+	authorityServiceGetNonceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_authority_proto.Services().ByName("AuthorityService").Methods().ByName("GetNonce"),
+			Procedure:  AuthorityServiceGetNonceProcedure,
+		}
+	})
+	authorityServiceReportUnknownWorkloadSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_authority_proto.Services().ByName("AuthorityService").Methods().ByName("ReportUnknownWorkload"),
+			Procedure:  AuthorityServiceReportUnknownWorkloadProcedure,
+		}
+	})
 )
 
 // AuthorityServiceClient is a client for the pantherclaw.v1.AuthorityService service.
@@ -74,6 +93,16 @@ type AuthorityServiceClient interface {
 	// RecordExecution records the outcome of one dispatched permit.
 	// permission: gateway.dispatch
 	RecordExecution(context.Context, *v1.RecordExecutionRequest) (*v1.RecordExecutionResponse, error)
+	// GetNonce returns the org's current PAP/1 nonce, which the gateway
+	// serves to workloads in PAP-Nonce headers (HR-091).
+	// permission: gateway.authorize
+	GetNonce(context.Context, *v1.GetNonceRequest) (*v1.GetNonceResponse, error)
+	// ReportUnknownWorkload reports a request whose key-only proof verified
+	// but whose key is not an admitted instance (PAP-1 §4). The Authority
+	// re-verifies the proof and records a capped, deduplicated discovery
+	// (HR-148). The request itself is refused.
+	// permission: gateway.observe
+	ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error)
 }
 
 // NewAuthorityServiceClient constructs a client for the pantherclaw.v1.AuthorityService service.
@@ -95,6 +124,16 @@ type AuthorityServiceHandler interface {
 	// RecordExecution records the outcome of one dispatched permit.
 	// permission: gateway.dispatch
 	RecordExecution(context.Context, *v1.RecordExecutionRequest) (*v1.RecordExecutionResponse, error)
+	// GetNonce returns the org's current PAP/1 nonce, which the gateway
+	// serves to workloads in PAP-Nonce headers (HR-091).
+	// permission: gateway.authorize
+	GetNonce(context.Context, *v1.GetNonceRequest) (*v1.GetNonceResponse, error)
+	// ReportUnknownWorkload reports a request whose key-only proof verified
+	// but whose key is not an admitted instance (PAP-1 §4). The Authority
+	// re-verifies the proof and records a capped, deduplicated discovery
+	// (HR-148). The request itself is refused.
+	// permission: gateway.observe
+	ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error)
 }
 
 // RegisterAuthorityServiceHandler registers svc as the pantherclaw.v1.AuthorityService
@@ -105,6 +144,8 @@ func RegisterAuthorityServiceHandler(server *connect.Server, svc AuthorityServic
 		connect.Method{Spec: authorityServiceAuthorizeSpec(), Handler: adapter.authorize},
 		connect.Method{Spec: authorityServiceBeginDispatchSpec(), Handler: adapter.beginDispatch},
 		connect.Method{Spec: authorityServiceRecordExecutionSpec(), Handler: adapter.recordExecution},
+		connect.Method{Spec: authorityServiceGetNonceSpec(), Handler: adapter.getNonce},
+		connect.Method{Spec: authorityServiceReportUnknownWorkloadSpec(), Handler: adapter.reportUnknownWorkload},
 	)
 }
 
@@ -121,6 +162,14 @@ func (UnimplementedAuthorityServiceHandler) BeginDispatch(context.Context, *v1.B
 
 func (UnimplementedAuthorityServiceHandler) RecordExecution(context.Context, *v1.RecordExecutionRequest) (*v1.RecordExecutionResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AuthorityService.RecordExecution is not implemented")
+}
+
+func (UnimplementedAuthorityServiceHandler) GetNonce(context.Context, *v1.GetNonceRequest) (*v1.GetNonceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AuthorityService.GetNonce is not implemented")
+}
+
+func (UnimplementedAuthorityServiceHandler) ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AuthorityService.ReportUnknownWorkload is not implemented")
 }
 
 type authorityServiceClient struct {
@@ -146,6 +195,22 @@ func (c *authorityServiceClient) BeginDispatch(ctx context.Context, req *v1.Begi
 func (c *authorityServiceClient) RecordExecution(ctx context.Context, req *v1.RecordExecutionRequest) (*v1.RecordExecutionResponse, error) {
 	var res v1.RecordExecutionResponse
 	if err := c.client.CallUnary(ctx, authorityServiceRecordExecutionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *authorityServiceClient) GetNonce(ctx context.Context, req *v1.GetNonceRequest) (*v1.GetNonceResponse, error) {
+	var res v1.GetNonceResponse
+	if err := c.client.CallUnary(ctx, authorityServiceGetNonceSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *authorityServiceClient) ReportUnknownWorkload(ctx context.Context, req *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error) {
+	var res v1.ReportUnknownWorkloadResponse
+	if err := c.client.CallUnary(ctx, authorityServiceReportUnknownWorkloadSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -183,6 +248,30 @@ func (h authorityServiceHandler) recordExecution(ctx context.Context, _ connect.
 		return err
 	}
 	res, err := h.svc.RecordExecution(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h authorityServiceHandler) getNonce(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetNonceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetNonce(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h authorityServiceHandler) reportUnknownWorkload(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReportUnknownWorkloadRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReportUnknownWorkload(ctx, &req)
 	if err != nil {
 		return err
 	}
