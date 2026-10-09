@@ -136,15 +136,14 @@ func (p Permission) Gateway() bool { return strings.HasPrefix(string(p), "gatewa
 // Workload reports whether p belongs to PAP/1-authenticated workloads.
 func (p Permission) Workload() bool { return strings.HasPrefix(string(p), "workload.") }
 
-// Declarable reports whether an RPC may declare p as its requirement.
-func (p Permission) Declarable() bool {
-	switch p {
-	case PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve,
-		PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun:
-		return true
-	}
-	return p.Known()
+// declarableOnly are requirements an RPC may declare that no role grants.
+var declarableOnly = []Permission{
+	PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve,
+	PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun,
 }
+
+// Declarable reports whether an RPC may declare p as its requirement.
+func (p Permission) Declarable() bool { return slices.Contains(declarableOnly, p) || p.Known() }
 
 // APIKeyScopable reports whether p may appear in an API key's scopes.
 func (p Permission) APIKeyScopable() bool { return p.Known() && !p.HumanOnly() }
