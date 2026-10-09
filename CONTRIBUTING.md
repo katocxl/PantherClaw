@@ -9,16 +9,15 @@ PantherClaw is being built in the open under a source-available license. **Outsi
 All changes follow [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) and the gates in [docs/security/GATES_AND_REVIEW.md](docs/security/GATES_AND_REVIEW.md):
 
 1. **G0 brief** exists for the milestone (scope, threat slice, constraints, tests).
-2. Branch from `main` (`feat/…`, `fix/…`, `docs/…`, `chore/…`, `sec/…`).
+2. Work on `main` (or a short-lived local branch that you merge into `main` before pushing).
 3. Every source file carries the SPDX + copyright header (`task license:fix`).
 4. Tests first for security-relevant behavior; reference requirement IDs (`F###`, `PN-###`, `HR-###`, `T-###`) in test names or comments.
-5. `task check` must pass locally (format, lint, unit tests, headers, secrets scan).
-6. Open a PR with a [Conventional Commit](https://www.conventionalcommits.org/) title; complete the PR template security checklist.
-7. CI (`ci-ok`) green + two independent AI reviews (Claude, CodeRabbit) addressed + human review (G1) → squash merge.
+5. `task check` must pass locally (format, lint, unit tests, headers, secrets scan), and so must `task test:integration` (start the cluster with `task up PROFILE=test`) and `task trace`.
+6. Commit with a [Conventional Commit](https://www.conventionalcommits.org/) message and push to `main`. CI, PRs and the G1 review are suspended for development speed ([EX-004](docs/security/GATES_AND_REVIEW.md#4-exceptions)), so the local checks are the only gate.
 
 ## Development setup
 
-Windows, macOS and Linux are supported for development. Requirements: Go (toolchain pinned in `go.mod`) and Docker; [Task](https://taskfile.dev) is optional (a pinned copy runs via `go tool -modfile=tools/pins/task/go.mod task`); and for SDK work `uv` (Python) and `pnpm` via Corepack (TypeScript). Race detector, integration and signal tests run on Linux (`task test:linux` uses a container; CI is canonical).
+Windows, macOS and Linux are supported for development. Requirements: Go (toolchain pinned in `go.mod`) and Docker; [Task](https://taskfile.dev) is optional (a pinned copy runs via `go tool -modfile=tools/pins/task/go.mod task`); and for SDK work `uv` (Python) and `pnpm` via Corepack (TypeScript). Race detector, integration and signal tests run on Linux (`task test:linux` uses a container).
 
 ```bash
 task setup    # configure git hooks (.githooks) and build the pinned dev tools

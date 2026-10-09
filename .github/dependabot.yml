@@ -3,6 +3,9 @@
 #
 # Dependency updates per docs/security/DEPENDENCY_POLICY.md: weekly, grouped,
 # 7-day cooldown on new releases (security updates are not delayed).
+#
+# Version-update PRs are switched off (open-pull-requests-limit: 0) while
+# EX-004 is active; raise the limits again to turn them back on.
 version: 2
 
 updates:
@@ -22,7 +25,7 @@ updates:
         update-types: [minor, patch]
     commit-message:
       prefix: "build(deps)"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -36,6 +39,7 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci(deps)"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: docker-compose
     directory: "/deploy/compose"
@@ -46,6 +50,7 @@ updates:
       default-days: 7
     commit-message:
       prefix: "build(deps)"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: devcontainers
     directory: "/"
@@ -55,3 +60,4 @@ updates:
       default-days: 7
     commit-message:
       prefix: "build(deps)"
+    open-pull-requests-limit: 0

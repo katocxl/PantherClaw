@@ -28,15 +28,17 @@ Also: [THREAT_MODEL.md](security/THREAT_MODEL.md) (`T-###`), [GATES_AND_REVIEW.m
 
 ```
 G0 brief (GATES_AND_REVIEW §5) → protos/migrations/contracts first → tests named by ID first
-→ implement (domain → app → adapters → cmd) → task check → PR → ci-ok + 2 AI reviews → founder G1 → squash merge
+→ implement (domain → app → adapters → cmd) → task check + task test:integration + task trace → commit and push to main
 → update traceability (FEATURES status, HR/T test links) → next slice
 ```
+
+While EX-004 is active there are no PRs and no CI: local checks are the only gate, so never push to `main` with a failing or skipped check. Before pushing, `git pull --rebase` to pick up other sessions' work, and run the checks again if anything came in.
 
 Rules for the AI implementer:
 - Implement only what the current G0 brief covers; surface missing security decisions instead of guessing.
 - Never weaken an `HR-###` rule, an invariant, or a test to make something pass. If a rule seems wrong, stop and propose an ADR.
 - Never add a dependency that is not in DEPENDENCY_POLICY §3 without adding the justification row in the same PR.
-- Keep PRs small (≤ ~600 lines of non-generated diff) and single-purpose.
+- Keep commits small (≤ ~600 lines of non-generated diff) and single-purpose.
 
 ---
 
