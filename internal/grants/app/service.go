@@ -198,7 +198,7 @@ func (s *Service) Revise(ctx context.Context, req ReviseRequest) (domain.Grant, 
 	ev := grantEvent(c.Actor(), "grant.revised", next, map[string]string{
 		"revision": strconv.Itoa(next.Revision), "widens": strconv.FormatBool(rev.Widens), "change": rev.Detail,
 	})
-	if err := s.Repo.Revise(ctx, c.Org, next, ev); err != nil {
+	if err := s.Repo.Revise(ctx, c.Org, next, rev.Widens, ev); err != nil {
 		return domain.Grant{}, domain.Revision{}, apiError(err)
 	}
 	return next, rev, nil

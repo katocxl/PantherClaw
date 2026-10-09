@@ -274,6 +274,34 @@ type PcEnrollmentToken struct {
 	RevokedAt     *time.Time
 }
 
+type PcEnvelope struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	ScopeKind       string
+	ScopeKey        string
+	CurrentRevision int32
+	CreatedAt       time.Time
+}
+
+type PcEnvelopeRevision struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	EnvelopeID       ids.UUID
+	Revision         int32
+	Name             string
+	Bounds           []byte
+	Requirements     []byte
+	Limits           []byte
+	MaxDepth         pgtype.Int2
+	MaxChildren      pgtype.Int2
+	MaxRootLifetimeS pgtype.Int8
+	RepeatWindowS    pgtype.Int8
+	MinAttestation   int16
+	Widens           bool
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
 type PcEnvironment struct {
 	OrgID       ids.OrgID
 	ID          ids.UUID
@@ -297,6 +325,53 @@ type PcExecutionAttempt struct {
 	ResponseDigest []byte
 	DispatchMs     *int32
 	RecordedAt     time.Time
+}
+
+type PcGrant struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	AgentID         ids.UUID
+	InstanceID      *ids.UUID
+	PrincipalUserID *ids.UUID
+	PrincipalSaID   *ids.UUID
+	EnvironmentID   ids.UUID
+	ParentID        *ids.UUID
+	Depth           int16
+	State           string
+	CurrentRevision int32
+	GrantorKind     string
+	GrantorID       ids.UUID
+	Basis           string
+	ChildrenTotal   int32
+	CreatedAt       time.Time
+	RevokedAt       *time.Time
+	RevokeReason    *string
+}
+
+type PcGrantLineage struct {
+	OrgID      ids.OrgID
+	GrantID    ids.UUID
+	AncestorID ids.UUID
+	Distance   int16
+}
+
+type PcGrantRevision struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	GrantID         ids.UUID
+	Revision        int32
+	TaskRef         string
+	NotBefore       time.Time
+	ExpiresAt       time.Time
+	Bounds          []byte
+	Requirements    []byte
+	Limits          []byte
+	DelegationDepth int16
+	MaxChildren     int16
+	MinAttestation  int16
+	Widens          bool
+	CreatedBy       string
+	CreatedAt       time.Time
 }
 
 type PcInvitation struct {
