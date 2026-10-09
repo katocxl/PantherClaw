@@ -169,7 +169,9 @@ type Grant struct {
 	Bounds    Bounds
 	// Requirements add approvals or step-ups (F043).
 	Requirements []Requirement
-	Delegation   Delegation
+	// Limits are the grant's task budgets and counters (F110, F111).
+	Limits     Limits
+	Delegation Delegation
 	// MinAttestation is the lowest workload attestation level (0, 1, 2)
 	// that may use the grant.
 	MinAttestation int
@@ -259,5 +261,5 @@ func (g Grant) validate(lookup func(op string) *defs.Definition) error {
 			return err
 		}
 	}
-	return nil
+	return g.Limits.validate(true)
 }

@@ -32,6 +32,7 @@ type DelegateRequest struct {
 	ExpiresAt      time.Time // zero: as long as allowed
 	Bounds         domain.Bounds
 	Requirements   []domain.Requirement
+	Limits         domain.Limits
 	Delegation     domain.Delegation
 	MinAttestation int
 }
@@ -73,7 +74,7 @@ func (s *Service) Delegate(ctx context.Context, w Workload, req DelegateRequest)
 		ID: domain.NewGrantID(), Org: w.Org, Revision: 1, State: domain.StateActive,
 		AgentID: childRun.AgentID, Principal: parent.Principal, EnvironmentID: parent.EnvironmentID,
 		TaskRef: req.TaskRef, NotBefore: maxTime(now, parent.NotBefore), ExpiresAt: expires,
-		Bounds: req.Bounds.Inherit(parent.Bounds), Requirements: req.Requirements,
+		Bounds: req.Bounds.Inherit(parent.Bounds), Requirements: req.Requirements, Limits: req.Limits,
 		Delegation: req.Delegation, MinAttestation: max(req.MinAttestation, parent.MinAttestation),
 		Parent: parent.ID, Depth: parent.Depth + 1,
 		Grantor: domain.Principal{Kind: domain.PrincipalInstance, ID: w.InstanceID},

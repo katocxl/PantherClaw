@@ -56,6 +56,9 @@ type LevelFinding struct {
 
 // Reason returns the stable reason code of the finding.
 func (lf LevelFinding) Reason() string {
+	if lf.Finding.Code != "" {
+		return lf.Finding.Code
+	}
 	if lf.Finding.Outcome == Unknown {
 		return ReasonBoundUnchecked
 	}

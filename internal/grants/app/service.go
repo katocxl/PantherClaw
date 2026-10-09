@@ -72,6 +72,7 @@ type IssueRequest struct {
 	ExpiresAt      time.Time
 	Bounds         domain.Bounds
 	Requirements   []domain.Requirement
+	Limits         domain.Limits
 	Delegation     domain.Delegation
 	MinAttestation int
 }
@@ -102,7 +103,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (domain.Grant, er
 		ID: domain.NewGrantID(), Org: c.Org, Revision: 1, State: domain.StateActive,
 		AgentID: agent.ID, InstanceID: req.InstanceID, Principal: req.Principal, EnvironmentID: agent.EnvironmentID,
 		TaskRef: req.TaskRef, NotBefore: req.NotBefore, ExpiresAt: req.ExpiresAt,
-		Bounds: req.Bounds, Requirements: req.Requirements, Delegation: req.Delegation, MinAttestation: req.MinAttestation,
+		Bounds: req.Bounds, Requirements: req.Requirements, Limits: req.Limits, Delegation: req.Delegation, MinAttestation: req.MinAttestation,
 		Grantor: domain.Principal{Kind: domain.PrincipalUser, ID: c.Principal.ID},
 		Basis:   fmt.Sprintf("%s on team %s", PermGrantIssue, agent.TeamID),
 	}
@@ -138,6 +139,7 @@ type ReviseRequest struct {
 	ExpiresAt      time.Time
 	Bounds         domain.Bounds
 	Requirements   []domain.Requirement
+	Limits         domain.Limits
 	Delegation     domain.Delegation
 	MinAttestation int
 }
@@ -167,7 +169,7 @@ func (s *Service) Revise(ctx context.Context, req ReviseRequest) (domain.Grant, 
 	}
 	next := cur
 	next.Revision++
-	next.TaskRef, next.Bounds, next.Requirements = req.TaskRef, req.Bounds, req.Requirements
+	next.TaskRef, next.Bounds, next.Requirements, next.Limits = req.TaskRef, req.Bounds, req.Requirements, req.Limits
 	next.Delegation, next.MinAttestation = req.Delegation, req.MinAttestation
 	if !req.ExpiresAt.IsZero() {
 		next.ExpiresAt = req.ExpiresAt
@@ -196,7 +198,7 @@ func (s *Service) Revise(ctx context.Context, req ReviseRequest) (domain.Grant, 
 	ev := grantEvent(c.Actor(), "grant.revised", next, map[string]string{
 		"revision": strconv.Itoa(next.Revision), "widens": strconv.FormatBool(rev.Widens), "change": rev.Detail,
 	})
-	if err := s.Repo.Revise(ctx, c.Org, next, ev); err != nil {
+	if err := s.Repo.Revise(ctx, c.Org, next, rev.Widens, ev); err != nil {
 		return domain.Grant{}, domain.Revision{}, apiError(err)
 	}
 	return next, rev, nil
