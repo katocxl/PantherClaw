@@ -278,7 +278,7 @@ func (s *Store) Delegate(_ context.Context, org ids.OrgID, child domain.Grant, p
 }
 
 // Revise implements app.Repository.
-func (s *Store) Revise(_ context.Context, org ids.OrgID, next domain.Grant, ev audit.Event) error {
+func (s *Store) Revise(_ context.Context, org ids.OrgID, next domain.Grant, _ bool, ev audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.checkOrg(org); err != nil {
@@ -326,7 +326,7 @@ func (s *Store) Revoke(_ context.Context, org ids.OrgID, id domain.GrantID, ev a
 }
 
 // PutEnvelope implements app.Repository.
-func (s *Store) PutEnvelope(_ context.Context, org ids.OrgID, e domain.Envelope, ev audit.Event) error {
+func (s *Store) PutEnvelope(_ context.Context, org ids.OrgID, e domain.Envelope, _ bool, ev audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.checkOrg(org); err != nil {

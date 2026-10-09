@@ -76,7 +76,7 @@ func (s *Service) PutEnvelope(ctx context.Context, req EnvelopeRequest) (domain.
 			"widens": strconv.FormatBool(change.Widens), "change": change.Detail,
 		},
 	}
-	if err := s.Repo.PutEnvelope(ctx, c.Org, next, ev); err != nil {
+	if err := s.Repo.PutEnvelope(ctx, c.Org, next, change.Widens, ev); err != nil {
 		return domain.Envelope{}, domain.Change{}, apiError(err)
 	}
 	return next, change, nil
