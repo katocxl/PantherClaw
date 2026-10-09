@@ -298,7 +298,7 @@ func TestIntWhoAmI(t *testing.T) {
 		id.Bindings[0].Role != td.RoleOrgAdmin || id.Principal != userRef(u) {
 		t.Fatalf("whoami = %+v", id)
 	}
-	if roles := must(a.ListRoles(ctx)); len(roles) != 10 {
+	if roles := must(a.ListRoles(ctx)); len(roles) != len(td.Roles()) {
 		t.Fatalf("roles = %d", len(roles))
 	}
 }
