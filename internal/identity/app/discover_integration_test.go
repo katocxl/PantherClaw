@@ -114,11 +114,22 @@ func TestT050_DiscoveryFloodsAreCapped(t *testing.T) {
 func TestHR090_JanitorEmptiesExpiredReplaySlots(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
+	// The sweep compares nonce minutes with the database clock, so the test
+	// starts early in a minute: a minute boundary between reading the clock
+	// and sweeping would expire one more nonce than expected.
 	var minute int64
-	if err := w.pool.InTenantTx(ctx, w.org, func(ctx context.Context, tx db.TenantTx) error {
-		return tx.QueryRow(ctx, "SELECT floor(extract(epoch FROM now()) / 60)::bigint").Scan(&minute)
-	}); err != nil {
-		t.Fatal(err)
+	var second float64
+	for {
+		if err := w.pool.InTenantTx(ctx, w.org, func(ctx context.Context, tx db.TenantTx) error {
+			return tx.QueryRow(ctx, `SELECT floor(extract(epoch FROM clock_timestamp()) / 60)::bigint,
+				extract(second FROM clock_timestamp())::float8`).Scan(&minute, &second)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if second < 40 {
+			break
+		}
+		time.Sleep(time.Duration((61 - second) * float64(time.Second)))
 	}
 	for _, m := range []int64{minute - 20, minute - 7, minute - 6, minute} {
 		w.exec(t, "INSERT INTO pc.dpop_nonces (org_id, minute, nonce) VALUES ($1, $2, $3)", w.org, m, strings.Repeat("n", 22)+string(rune('a'+m%26)))
