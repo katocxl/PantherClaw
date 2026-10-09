@@ -390,6 +390,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		runs.WithSubjects(d.subjects)
 	}
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
+	d.authority.WithWorkloads(identity, runs)
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)

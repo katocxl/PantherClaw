@@ -47,6 +47,8 @@ func newAuthority(cfg *Config, pool *db.Pool, reg *keys.Registry, log *slog.Logg
 		},
 		PermitTTL: cfg.Authority.PermitTTL.D(),
 		Logger:    log,
+		// Until the development gateway forwards PAP/1 credentials (M3 slice 13).
+		LegacyDevWorkloads: true,
 	}), nil
 }
 

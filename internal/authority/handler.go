@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/authority/domain"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
@@ -84,13 +85,20 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 	if err != nil {
 		return nil, err
 	}
-	res, err := h.svc.Authorize(ctx, gw, req.GetActionIr())
+	var creds *Credentials
+	if w := req.GetWorkload(); w != nil {
+		creds = &Credentials{
+			Token: w.GetWorkloadToken(), Proof: w.GetProof(), Method: w.GetHtm(), URL: w.GetHtu(), ClientAddress: w.GetClientAddress(),
+		}
+		copy(creds.BodySHA256[:], w.GetBodySha256())
+	}
+	res, err := h.svc.Authorize(ctx, gw, req.GetActionIr(), creds)
 	if err != nil {
 		return nil, err
 	}
 	out := &pantherclawv1.AuthorizeResponse{
 		Decision: decisionToProto[res.Decision], ActionHash: res.ActionHash,
-		Permit: res.Permit, Epoch: res.Epoch, Receipt: res.Receipt,
+		Permit: res.Permit, Epoch: res.Epoch, Receipt: res.Receipt, Nonce: res.Nonce,
 	}
 	if !res.TransactionID.IsZero() {
 		out.TransactionId = res.TransactionID.String()
@@ -148,4 +156,20 @@ func (h *Handler) RecordExecution(ctx context.Context, req *pantherclawv1.Record
 		return nil, err
 	}
 	return &pantherclawv1.RecordExecutionResponse{Receipt: receipt}, nil
+}
+
+// GetNonce implements AuthorityServiceHandler.
+func (h *Handler) GetNonce(ctx context.Context, _ *pantherclawv1.GetNonceRequest) (*pantherclawv1.GetNonceResponse, error) {
+	gw, err := gateway(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, exp, err := h.svc.Nonce(ctx, gw)
+	if err != nil {
+		return nil, err
+	}
+	if n == "" {
+		return nil, connect.NewError(connect.CodeUnavailable, "workload identity is not configured")
+	}
+	return &pantherclawv1.GetNonceResponse{Nonce: n, ExpireTime: timestamppb.New(exp)}, nil
 }

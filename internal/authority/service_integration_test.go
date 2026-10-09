@@ -64,16 +64,22 @@ func setup(t *testing.T, limit string, maxCount *int32, ttl time.Duration) fixtu
 	maxPer, _ := money.ParseMoney("100", "USD")
 	svc := authority.New(p, reg, authority.Config{
 		Grant:     domain.DevGrant{Name: "dev-refunds", Operation: actionir.OpRefundCreate, MaxPerAction: maxPer, BudgetName: "dev-refunds"},
-		PermitTTL: ttl, Logger: pclog.Discard(),
+		PermitTTL: ttl, Logger: pclog.Discard(), LegacyDevWorkloads: true,
 	})
 	return fixture{pool: p, svc: svc, reg: reg, gw: authority.Gateway{ID: "gw-dev-1", Org: org}, budget: budget}
 }
 
 func (f fixture) action(t *testing.T, amount string, run, act ids.UUID) []byte {
 	t.Helper()
+	return f.actionAs(t, amount, run, act, "01920000-0000-7000-8000-00000000000e", "01920000-0000-7000-8000-0000000000c1")
+}
+
+// actionAs is an action of instance in env.
+func (f fixture) actionAs(t *testing.T, amount string, run, act ids.UUID, env, instance string) []byte {
+	t.Helper()
 	p, err := actionir.Encode(actionir.ActionIR{
-		V: 1, Org: f.gw.Org.String(), Env: "01920000-0000-7000-8000-00000000000e", RunID: run.String(), ActionID: act.String(),
-		AgentInstance: "01920000-0000-7000-8000-0000000000c1", Operation: actionir.OpRefundCreate,
+		V: 1, Org: f.gw.Org.String(), Env: env, RunID: run.String(), ActionID: act.String(),
+		AgentInstance: instance, Operation: actionir.OpRefundCreate,
 		Definition: actionir.Definition{
 			Package: "pc.mock-payments", Version: "1.0.0",
 			Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
@@ -103,7 +109,7 @@ func (f fixture) budgetRow(t *testing.T) dbq.GetBudgetRow {
 
 func (f fixture) authorize(t *testing.T, amount string) authority.Result {
 	t.Helper()
-	res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, amount, ids.NewV7(), ids.NewV7()))
+	res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, amount, ids.NewV7(), ids.NewV7()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,15 +229,15 @@ func TestT012_SameActionDifferentHashIsTampered(t *testing.T) {
 	f := setup(t, "1000", nil, 5*time.Second)
 	ctx := context.Background()
 	run, act := ids.NewV7(), ids.NewV7()
-	first, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act))
+	first, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act), nil)
 	if err != nil || first.Decision != domain.Allow {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
-	again, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act))
+	again, err := f.svc.Authorize(ctx, f.gw, f.action(t, "30.00", run, act), nil)
 	if err != nil || again.Decision != domain.Allow || again.Permit != "" || again.TransactionID != first.TransactionID {
 		t.Fatalf("retry returned %+v, %v; want the stored ALLOW without a second permit (HR-005)", again, err)
 	}
-	tampered, err := f.svc.Authorize(ctx, f.gw, f.action(t, "90.00", run, act))
+	tampered, err := f.svc.Authorize(ctx, f.gw, f.action(t, "90.00", run, act), nil)
 	if err != nil || tampered.Decision != domain.Deny || tampered.Reasons[0].Code != domain.ReasonActionTampered || tampered.Permit != "" {
 		t.Fatalf("changed amount under the same action id: %+v, %v", tampered, err)
 	}
@@ -246,11 +252,11 @@ func TestIntDenialsReserveNothing(t *testing.T) {
 		t.Fatalf("$125 = %+v", res)
 	}
 	other := authority.Gateway{ID: f.gw.ID, Org: ids.New[ids.Org]()}
-	res, err := f.svc.Authorize(context.Background(), other, f.action(t, "10.00", ids.NewV7(), ids.NewV7()))
+	res, err := f.svc.Authorize(context.Background(), other, f.action(t, "10.00", ids.NewV7(), ids.NewV7()), nil)
 	if err != nil || res.Decision != domain.Deny || res.Reasons[0].Code != domain.ReasonOrgMismatch {
 		t.Fatalf("org mismatch = %+v, %v", res, err)
 	}
-	if res, _ := f.svc.Authorize(context.Background(), f.gw, []byte(`{"v":1}`)); res.Decision != domain.CannotAuthorize {
+	if res, _ := f.svc.Authorize(context.Background(), f.gw, []byte(`{"v":1}`), nil); res.Decision != domain.CannotAuthorize {
 		t.Fatalf("garbage = %+v", res)
 	}
 	if b := f.budgetRow(t); !b.Reserved.IsZero() {
@@ -274,7 +280,7 @@ func TestT011_NoOverspendUnder1000ConcurrentReservations(t *testing.T) {
 			counts := map[domain.Decision]int{}
 			for range 1000 {
 				wg.Go(func() {
-					res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, "30.00", ids.NewV7(), ids.NewV7()))
+					res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, "30.00", ids.NewV7(), ids.NewV7()), nil)
 					if err != nil {
 						t.Error(err)
 						return
