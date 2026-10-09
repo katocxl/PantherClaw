@@ -103,7 +103,7 @@ A label (`pull_request` with `types: [labeled]` cannot be used: it runs the PR's
    roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: pantherclaw-pod-reader}
    subjects: [{kind: ServiceAccount, name: pantherclaw-reviewer, namespace: pantherclaw}]
    ```
-   Create the reviewer token with `kubectl -n pantherclaw create token pantherclaw-reviewer --duration 24h` and rotate it like any secret.
+   Create the reviewer token with `kubectl -n pantherclaw create token pantherclaw-reviewer --duration 24h` and replace the file before the token expires. The server reads `token_file` again every minute, so a new token needs no restart. Replace the file in one step (write a new file and rename it over the old one): while the file is empty or unreadable, the server keeps using the token it read last.
 3. Propose and activate an entry that pins the namespace, the service account **name and UID** (`kubectl -n agents get sa coder -o jsonpath='{.metadata.uid}'`), and optionally image repositories or digests:
    ```bash
    pclaw issuer propose-kubernetes --agent <agent> --cluster prod --namespace agents --service-account coder \

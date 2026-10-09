@@ -18,9 +18,8 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/identity/issuers"
-	"github.com/katocxl/pantherclaw/internal/platform/config"
+	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
-	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
 // MaxResponse caps an API server response (a pod object is a few KiB).
@@ -33,7 +32,7 @@ var ErrUnavailable = errors.New("kube: cluster unavailable")
 type cluster struct {
 	cfg    ClusterConfig
 	client *http.Client
-	token  pclog.Secret[[]byte]
+	token  *tokenFile
 }
 
 // Client calls TokenReview and reads pods in configured clusters, each
@@ -43,8 +42,14 @@ type Client struct {
 	clusters map[string]cluster
 }
 
-// NewClient reads each cluster's CA and credential files.
+// NewClient reads each cluster's CA and credential files. The credential
+// file is read again while the server runs, so a rotated token needs no
+// restart.
 func NewClient(dir *Directory, timeout time.Duration) (*Client, error) {
+	return newClient(dir, timeout, clock.System{})
+}
+
+func newClient(dir *Directory, timeout time.Duration, clk clock.Clock) (*Client, error) {
 	c := &Client{clusters: map[string]cluster{}}
 	if dir == nil {
 		return c, nil
@@ -58,7 +63,7 @@ func NewClient(dir *Directory, timeout time.Duration) (*Client, error) {
 		if !pool.AppendCertsFromPEM(pem) {
 			return nil, fmt.Errorf("kubernetes cluster %q: ca_file holds no certificate", name)
 		}
-		tok, err := config.ReadSecretFile(cfg.TokenFile)
+		tok, err := readTokenFile(cfg.TokenFile, clk)
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes cluster %q: %w", name, err)
 		}
@@ -90,7 +95,7 @@ func (cl cluster) do(ctx context.Context, method, path string, body, out any) er
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+string(cl.token.Reveal()))
+	req.Header.Set("Authorization", "Bearer "+string(cl.token.get().Reveal()))
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

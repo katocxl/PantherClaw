@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
+	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -99,6 +100,64 @@ func TestHR144_TokenReviewAndPodComeFromTheCluster(t *testing.T) {
 	}
 	if _, err := c.Review(ctx, "staging", "t", "a"); err == nil {
 		t.Error("asked an unconfigured cluster")
+	}
+}
+
+// TestHR144_ReviewerTokenRotationNeedsNoRestart: a reviewer token replaced
+// in token_file is used within a minute, without a restart (THREAT_MODEL
+// R-15). A file that cannot be read keeps the last token in use until a read
+// succeeds, and a wall clock that steps back reads the file again.
+func TestHR144_ReviewerTokenRotationNeedsNoRestart(t *testing.T) {
+	srv, seen := fakeAPIServer(t)
+	cfg := clusterFor(t, srv, []string{"127.0.0.0/8"})
+	dir, err := kube.NewDirectory([]kube.ClusterConfig{cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk := clock.NewFake(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	c, err := kube.NewClientWithClock(dir, 5*time.Second, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer := func() string {
+		t.Helper()
+		if _, err := c.Review(context.Background(), "prod", "projected-token", "pantherclaw:org"); err != nil {
+			t.Fatal(err)
+		}
+		tok, _, _ := strings.Cut(strings.TrimPrefix(*seen, "Bearer "), " ")
+		return tok
+	}
+	rotate := func(tok string) {
+		t.Helper()
+		if err := os.WriteFile(cfg.TokenFile, []byte(tok), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rotate("rotated-1")
+	clk.Advance(kube.TokenRefresh - time.Second)
+	if got := bearer(); got != "pantherclaw-reviewer-token" {
+		t.Fatalf("read the file again before %v: %q", kube.TokenRefresh, got)
+	}
+	clk.Advance(time.Second)
+	if got := bearer(); got != "rotated-1" {
+		t.Fatalf("a rotated token was not picked up: %q", got)
+	}
+
+	rotate("") // half-written, as while an operator replaces the file
+	clk.Advance(kube.TokenRefresh)
+	if got := bearer(); got != "rotated-1" {
+		t.Fatalf("an unreadable file must keep the last token: %q", got)
+	}
+	rotate("rotated-2")
+	if got := bearer(); got != "rotated-2" {
+		t.Fatalf("a failed read must be retried on the next call: %q", got)
+	}
+
+	rotate("rotated-3")
+	clk.Set(clk.Now().Add(-time.Hour))
+	if got := bearer(); got != "rotated-3" {
+		t.Fatalf("a clock that stepped back pinned the old token: %q", got)
 	}
 }
 
