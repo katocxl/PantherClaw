@@ -24,8 +24,8 @@ func TestHR159_StandardWebhooksSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := domain.Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", 1614265330, []byte(`{"test": 2432232314}`))
-	if want := "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="; got != want { // gitleaks:allow -- the public Standard Webhooks test vector, not a secret
+	got := domain.Sign(secret, "msg_p5jXN8AQM9LWM0D4loKWxJek", 1614265330, []byte(`{"test": 2432232314}`)) // gitleaks:allow -- the public Standard Webhooks test vector, not a secret
+	if want := "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="; got != want {
 		t.Fatalf("signature %s, want %s", got, want)
 	}
 	if s := domain.FormatSecret(secret); s != "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw" {
