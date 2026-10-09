@@ -14,7 +14,11 @@
 // (rollback) or different content under the same version (equivocation).
 //
 // Until the founder commits the offline public key (Day-0 item 6), roots.json
-// is empty and no package verifies.
+// is empty and no package root verifies.
+//
+// An org's own packages are signed with an org package-signing key instead
+// (HR-162, orgkeys.go): the same format, verified only against the keys
+// that org registered.
 package trust
 
 import (
@@ -152,13 +156,17 @@ func (t Targets) validate() (time.Time, error) {
 	return exp, nil
 }
 
-// Sign produces a targets document. It runs only in pclaw-admin, offline.
+// Sign produces a targets document. It runs offline: in pclaw-admin with
+// the package root, or in pclaw with an org package-signing key.
 func Sign(t Targets, signer *jws.Signer) (string, error) {
-	if !strings.HasPrefix(signer.KeyID(), KIDPrefix) || signer.KeyID() != RootKID(signer.Public()) {
-		return "", fmt.Errorf("trust: signing key %q is not a package root", signer.KeyID())
+	if err := checkSigner(signer.KeyID(), signer.Public()); err != nil {
+		return "", err
 	}
 	t.Type, t.Spec = "targets", Spec
 	if _, err := t.validate(); err != nil {
+		return "", err
+	}
+	if err := t.checkNamespace(signer.KeyID()); err != nil {
 		return "", err
 	}
 	payload, err := json.Marshal(t, json.Deterministic(true))
@@ -169,6 +177,8 @@ func Sign(t Targets, signer *jws.Signer) (string, error) {
 }
 
 // Verify checks a targets document against roots and its expiry at now.
+// roots are either package roots or one org's registered package-signing
+// keys; a document signed by an org key must not list a reserved name.
 func Verify(doc string, roots Roots, now time.Time) (Verified, error) {
 	if len(roots) == 0 {
 		return Verified{}, untrusted("no package root keys are embedded in this build")
@@ -187,6 +197,9 @@ func Verify(doc string, roots Roots, now time.Time) (Verified, error) {
 	}
 	exp, err := t.validate()
 	if err != nil {
+		return Verified{}, err
+	}
+	if err := t.checkNamespace(kid); err != nil {
 		return Verified{}, err
 	}
 	if !now.Before(exp) {

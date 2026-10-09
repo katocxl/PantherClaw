@@ -81,6 +81,11 @@ func (s *Store) CurrentPin(ctx context.Context, org ids.OrgID, pkg string) (*dom
 // Import implements app.Repository: one transaction, conditional on the
 // trust state and pin that were read (HR-004, HR-123).
 func (s *Store) Import(ctx context.Context, org ids.OrgID, rec app.Record) error {
+	if rec.SigningKey != nil {
+		// Org package-signing keys need their own trust state (HR-162),
+		// which this store does not have yet.
+		return fmt.Errorf("%w: org package-signing keys are not stored here", trust.ErrUntrusted)
+	}
 	canon, err := manifest.DefinitionsCanonical(rec.Raw)
 	if err != nil || len(canon) != len(rec.Package.Definitions) {
 		return fmt.Errorf("definitions: canonical definitions: %w", err)

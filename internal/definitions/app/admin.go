@@ -13,6 +13,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
 	"github.com/katocxl/pantherclaw/internal/definitions/trust"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
+	"github.com/katocxl/pantherclaw/internal/platform/crypto/jws"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/statemachine"
@@ -78,6 +79,9 @@ type Admin struct {
 	Importer *Importer
 	Reads    Reads
 	Authz    Authorizer
+	// Ents decides whether the org may use its own package-signing keys
+	// (HR-162); without it, org-signed packages are refused.
+	Ents Entitlements
 }
 
 // apiError maps import and lifecycle errors to API errors. The messages
@@ -94,6 +98,8 @@ func apiError(err error) error {
 		{trust.ErrUntrusted, pcerr.FailedPrecondition, "PACKAGE_UNTRUSTED"},
 		{domain.ErrPinRollback, pcerr.FailedPrecondition, "PACKAGE_PIN_ROLLBACK"},
 		{domain.ErrPinConflict, pcerr.FailedPrecondition, "PACKAGE_PIN_CONFLICT"},
+		{ErrOperationTaken, pcerr.FailedPrecondition, "PACKAGE_OPERATION_TAKEN"},
+		{ErrKeyCompromised, pcerr.FailedPrecondition, "PACKAGE_KEY_COMPROMISED"},
 		{manifest.ErrInvalid, pcerr.InvalidArgument, "PACKAGE_INVALID"},
 		{domain.ErrInvalid, pcerr.InvalidArgument, "PACKAGE_INVALID"},
 	} {
@@ -124,6 +130,13 @@ func (a *Admin) Import(ctx context.Context, name, version, targets string, raw [
 	c, err := a.caller(ctx, PermPackageImport)
 	if err != nil {
 		return VersionInfo{}, false, err
+	}
+	// Only routing: the importer verifies an org kid against the org's
+	// keys alone, so a forged kid cannot skip this check.
+	if kid, _, err := jws.Unverified(strings.TrimSpace(targets)); err == nil && trust.IsOrgKID(kid) {
+		if err := a.entitled(ctx); err != nil {
+			return VersionInfo{}, false, err
+		}
 	}
 	ev := &audit.Event{
 		Name: "package.imported", Actor: c.Actor(), Outcome: audit.Success,
