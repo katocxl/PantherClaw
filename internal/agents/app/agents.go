@@ -132,7 +132,7 @@ func (inv *Inventory) Create(ctx context.Context, d domain.Details) (Agent, erro
 			return err
 		}
 		out = agentView(r)
-		if err := change(ctx, q, c.Org, r.ID, domain.Change{
+		if err := RecordChange(ctx, q, c.Org, r.ID, domain.Change{
 			Kind: domain.ChangeCreated, Actor: actor(c),
 			Details: map[string]string{"owner_user_id": d.OwnerUserID.String(), "execution_context": string(d.Context)},
 		}); err != nil {
@@ -229,7 +229,7 @@ func (inv *Inventory) List(ctx context.Context, pr page.Request, states []domain
 		}
 		rows, out.Next = page.Finish(pr, rows, func(r dbq.PcAgent) ids.UUID { return r.ID })
 		for _, r := range rows {
-			path, err := pathOf(ctx, q, r)
+			path, err := PathOf(ctx, q, r)
 			if err != nil {
 				return err
 			}
@@ -280,7 +280,7 @@ func (inv *Inventory) Update(ctx context.Context, id ids.UUID, name, purpose *st
 		if purpose != nil {
 			fields["purpose"] = "changed"
 		}
-		if err := change(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeUpdated, Actor: actor(c), Details: fields}); err != nil {
+		if err := RecordChange(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeUpdated, Actor: actor(c), Details: fields}); err != nil {
 			return err
 		}
 		return record(ctx, tx, c, "agents.agent_updated", r.ID, fields)
@@ -315,7 +315,7 @@ func (inv *Inventory) TransferOwnership(ctx context.Context, id, owner, backup i
 		}
 		out = agentView(r)
 		details := map[string]string{"from_owner": prev.OwnerUserID.String(), "to_owner": owner.String()}
-		if err := change(ctx, q, c.Org, r.ID, domain.Change{
+		if err := RecordChange(ctx, q, c.Org, r.ID, domain.Change{
 			Kind: domain.ChangeOwnershipTransferred, Actor: actor(c), Reason: reason, Details: details,
 		}); err != nil {
 			return err

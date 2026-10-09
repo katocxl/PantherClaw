@@ -113,7 +113,7 @@ func (inv *Inventory) claimAsNew(ctx context.Context, c tenancy.Caller, q *dbq.Q
 	if err := q.SetAgentDiscoveryState(ctx, "CLAIMED", c.Org, r.ID); err != nil {
 		return Agent{}, err
 	}
-	return agentView(claimed), change(ctx, q, c.Org, r.ID, domain.Change{
+	return agentView(claimed), RecordChange(ctx, q, c.Org, r.ID, domain.Change{
 		Kind: domain.ChangeClaimed, Actor: actor(c), Reason: reason,
 		Details: map[string]string{"owner_user_id": d.OwnerUserID.String(), "execution_context": string(d.Context)},
 	})
@@ -141,7 +141,7 @@ func mergeDiscovered(ctx context.Context, c tenancy.Caller, q *dbq.Queries, r db
 	}
 	details := map[string]string{"discovered_agent_id": r.ID.String(), "into_agent_id": target.ID.String()}
 	for _, a := range []ids.UUID{r.ID, target.ID} {
-		if err := change(ctx, q, c.Org, a, domain.Change{Kind: domain.ChangeMerged, Actor: actor(c), Reason: reason, Details: details}); err != nil {
+		if err := RecordChange(ctx, q, c.Org, a, domain.Change{Kind: domain.ChangeMerged, Actor: actor(c), Reason: reason, Details: details}); err != nil {
 			return Agent{}, err
 		}
 	}
@@ -182,7 +182,7 @@ func (inv *Inventory) Suspend(ctx context.Context, id ids.UUID, reason string) (
 			return err
 		}
 		out = agentView(r)
-		if err := change(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeSuspended, Actor: actor(c), Reason: reason}); err != nil {
+		if err := RecordChange(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeSuspended, Actor: actor(c), Reason: reason}); err != nil {
 			return err
 		}
 		return record(ctx, tx, c, "agents.agent_suspended", r.ID, nil)
@@ -244,7 +244,7 @@ func (inv *Inventory) Retire(ctx context.Context, id ids.UUID, reason string) (A
 		counts["enrollments_revoked"] = itoa(tokens)
 		counts["runs_ended"] = itoa(runs)
 		out = agentView(r)
-		if err := change(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeRetired, Actor: actor(c), Reason: reason, Details: counts}); err != nil {
+		if err := RecordChange(ctx, q, c.Org, r.ID, domain.Change{Kind: domain.ChangeRetired, Actor: actor(c), Reason: reason, Details: counts}); err != nil {
 			return err
 		}
 		return record(ctx, tx, c, "agents.agent_retired", r.ID, counts)
@@ -260,4 +260,19 @@ func bumpEpoch(ctx context.Context, q *dbq.Queries, org ids.OrgID) error {
 	}
 	_, err := q.BumpEpoch(ctx, org)
 	return err
+}
+
+// MarkVerified moves a claimed agent to VERIFIED when its first instance is
+// admitted (F020), in the caller's transaction. Any other state is left
+// alone: the agent may already be verified, or be suspended.
+func MarkVerified(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent ids.UUID, by domain.Actor) error {
+	_, err := q.SetAgentState(ctx, dbq.SetAgentStateParams{
+		OrgID: org, ID: agent, FromState: string(domain.StateClaimed), ToState: string(domain.StateVerified),
+	})
+	if db.IsNoRows(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return RecordChange(ctx, q, org, agent, domain.Change{Kind: domain.ChangeVerified, Actor: by})
 }
