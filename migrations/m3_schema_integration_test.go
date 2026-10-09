@@ -210,6 +210,12 @@ func TestIntAgentsSchemaInvariants(t *testing.T) {
 		f.org, newID(), none, f.owner, "DISCOVERED", none)
 	f.wantState(t, checkViolation, "suspended without a previous state", insert,
 		f.org, newID(), none, none, "SUSPENDED", none)
+	f.wantState(t, checkViolation, "protected without an owner", insert,
+		f.org, newID(), none, none, "PROTECTED", none)
+	const suspended = `INSERT INTO pc.agents (org_id, id, name, state, suspended_from, created_by)
+		VALUES ($1, $2, 'x', 'SUSPENDED', $3, 'test')`
+	f.mustExec(t, suspended, f.org, newID(), "DISCOVERED")
+	f.wantState(t, checkViolation, "suspended after a claim without an owner", suspended, f.org, newID(), "VERIFIED")
 	const entry = `INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, deadline_at)
 		VALUES ($1, $2, $3, 'agent', $4, $4, now() + interval '7 days')`
 	f.mustExec(t, entry, f.org, newID(), "ADMISSION", f.agent)

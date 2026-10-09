@@ -41,7 +41,13 @@ CREATE TABLE pc.agents (
             AND backup_owner_user_id IS NULL AND execution_context IS NULL)
         OR (claimed_at IS NOT NULL AND team_id IS NOT NULL AND environment_id IS NOT NULL
             AND owner_user_id IS NOT NULL AND execution_context IS NOT NULL)),
-    CONSTRAINT agents_discovered_is_unclaimed CHECK (state <> 'DISCOVERED' OR claimed_at IS NULL),
+    CONSTRAINT agents_discovered_is_unclaimed CHECK (
+        (state <> 'DISCOVERED' AND suspended_from IS DISTINCT FROM 'DISCOVERED') OR claimed_at IS NULL),
+    -- Every state after a claim needs the claim (F016): only a discovered
+    -- agent, one suspended while discovered, or a retired one has no owner.
+    CONSTRAINT agents_owned_after_claim CHECK (
+        claimed_at IS NOT NULL OR state IN ('DISCOVERED', 'RETIRED')
+        OR (state = 'SUSPENDED' AND suspended_from = 'DISCOVERED')),
     CONSTRAINT agents_owner_differs_from_backup CHECK (backup_owner_user_id IS NULL OR backup_owner_user_id <> owner_user_id),
     CONSTRAINT agents_suspension_remembers_state CHECK ((state = 'SUSPENDED') = (suspended_from IS NOT NULL)),
     CONSTRAINT agents_retired_at CHECK ((state = 'RETIRED') = (retired_at IS NOT NULL))
