@@ -29,11 +29,16 @@ const (
 	PurposeWorkloadTokens Purpose = "workload_tokens" // PAP/1 workload tokens
 	PurposeCheckpoints    Purpose = "checkpoints"     // ledger checkpoints
 	PurposeAccessTokens   Purpose = "access_tokens"   // control-plane access tokens (ADR-0016); never published
+	PurposeGatewayCA      Purpose = "gateway_ca"      // the internal CA for gateway mTLS (G0 M6); in its certificate, never in the JWKS
+	PurposeActionTokens   Purpose = "action_tokens"   // PAP-Action tokens for target-enforced connections (PAP-1 §10)
 )
 
 // Purposes lists every signing purpose.
 func Purposes() []Purpose {
-	return []Purpose{PurposeReceipts, PurposePermits, PurposeWorkloadTokens, PurposeCheckpoints, PurposeAccessTokens}
+	return []Purpose{
+		PurposeReceipts, PurposePermits, PurposeWorkloadTokens, PurposeCheckpoints, PurposeAccessTokens,
+		PurposeGatewayCA, PurposeActionTokens,
+	}
 }
 
 // Valid reports whether p is a known purpose.
@@ -154,9 +159,35 @@ func (r *Registry) Verifier(purpose Purpose, typ string) (*jws.Verifier, error) 
 	return jws.NewVerifier(typ, pubs)
 }
 
+// Keys returns the non-revoked keys of purpose, the active one first, then
+// by kid. Only the active key carries its private half. The internal CA
+// signs certificates with it (a JWS signer cannot), and trusts every
+// non-revoked CA key during a rotation.
+func (r *Registry) Keys(purpose Purpose) []SigningKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []SigningKey
+	for _, k := range r.keys {
+		if k.Purpose == purpose && k.State != StateRevoked {
+			out = append(out, k)
+		}
+	}
+	slices.SortFunc(out, func(a, b SigningKey) int {
+		if (a.State == StateActive) != (b.State == StateActive) {
+			if a.State == StateActive {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.KID, b.KID)
+	})
+	return out
+}
+
 // published lists the purposes whose public keys appear in the JWKS
-// (PAP-1 §11). Checkpoint keys are verified through `pclaw verify` bundles.
-var published = []Purpose{PurposeReceipts, PurposePermits, PurposeWorkloadTokens}
+// (PAP-1 §11). Checkpoint keys are verified through `pclaw verify` bundles;
+// the gateway CA is published as its certificate.
+var published = []Purpose{PurposeReceipts, PurposePermits, PurposeWorkloadTokens, PurposeActionTokens}
 
 // JWKS returns the public JWKS document for /.well-known/pantherclaw/jwks.json:
 // active and retiring keys of published purposes, sorted by kid.
