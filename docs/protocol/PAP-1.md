@@ -86,11 +86,24 @@ Every request from a workload MUST carry `Authorization: PAP <workload token>` a
 
 Verification order (MUST): (1) verify workload token signature, `iss`, `aud`, `exp/nbf`; (2) verify proof signature with the embedded `jwk`; (3) check `jkt(jwk) == cnf.jkt`; (4) check `htm/htu/ath/bh`; (5) check `nonce` is current (server-issued, ≤ 5 min); (6) **then** insert `(jkt, jti)` into the replay store (unique, retained ≥ nonce lifetime + 60 s). Failure at any step: HTTP 401 with `PAP-Error` code (§12) and, where applicable, a fresh `PAP-Nonce`.
 
-A nonce MAY be shared by all workloads of an org (RFC 9449 permits shared nonces). Verifiers compare `htu` with their own configured public URL, never with the request's `Host` header. A request with a valid proof but no workload token, or with a key that is not an admitted instance, carries no identity: it is refused and MAY be recorded as a discovery.
+A nonce MAY be shared by all workloads of an org (RFC 9449 permits shared nonces). Verifiers compare `htu` with their own configured public URL, never with the request's `Host` header.
+
+**Key-only proofs.** Some requests carry `PAP-Proof` without `Authorization` and without `ath`:
+- enrollment (§3.2);
+- workload-token issuance and refresh (§3.4);
+- requests from workloads that hold no workload token.
+
+Verification order (MUST): (1) verify the proof signature with the embedded `jwk` (EdDSA only); (2) check `htm/htu/bh`; (3) check `nonce` is current; (4) **then** insert `(jkt, jti)` into the same replay store as above. A proof that fails any step is not recorded.
+
+A key-only proof shows possession of a key, never an identity:
+- enrollment binds the key through an enrollment token or an attestation token;
+- token issuance requires `jkt` to equal the registered key of the named admitted instance.
+
+Any other request with a key-only proof, or with a key that is not an admitted instance, carries no identity. It is refused and MAY be recorded as a discovery.
 
 ## 5. Runs
 
-A **run** is created by the Authority (never by the workload) via `StartRun{agent_id, instance_id?, launcher, represented_principal, grant_id | task template, task_ref}` called by an authenticated launcher (human session, service account, or automation identity). The Authority returns a server-minted `run_id` bound to: instance (or instance set), launcher, represented principal and grant. Workloads reference `run_id`; any mismatch with the bound instance ⇒ `DENY` (tamper). The represented principal is the launcher itself, a user proven by a subject token (below), or for a child run the parent run's principal; a principal merely named by the launcher MUST be rejected. A workload in an active run MAY start a **child run**: it inherits the represented principal, records the parent instance as its launcher, and MUST NOT outlive its parent.
+A **run** is created by the Authority (never by the workload) via `StartRun{agent_id, instance_id?, launcher, represented_principal, grant_id | task template, task_ref}` called by an authenticated launcher (human session, service account, or automation identity). The Authority returns a server-minted `run_id` bound to: instance (or instance set), launcher, represented principal and grant. Workloads reference `run_id`; any mismatch with the bound instance ⇒ `DENY` (tamper). The represented principal is the launcher itself, a user proven by a subject token (below), or for a child run the parent run's principal; a principal merely named by the launcher MUST be rejected. A workload in an active run MAY start a **child run**: it inherits the represented principal, records the parent instance as its launcher, and MUST NOT outlive its parent. An Authority that does not yet issue grants creates runs without one and MUST reject a `StartRun` that names a grant or task template. A run never selects its own grant.
 
 **Represented principal from the customer's identity provider.** When the launcher is not the represented principal (for example a service that starts a run for a signed-in user), `StartRun` MAY carry `subject_token` and `subject_token_type` with RFC 8693 semantics, issued to that user by an OIDC provider configured for the org: either an OIDC ID token or an access token that is a signed JWT (RFC 9068 profile) carrying `iss`, `sub`, `aud`, `exp` and `iat`. Opaque access tokens MUST be rejected; PAP/1 defines no introspection path. The launcher is the actor. The Authority MUST verify the signature, issuer, audience (MUST name the Authority), expiry and freshness (`iat` ≤ 5 minutes old), MUST reject a replayed token (keyed on `jti`, or on the token's SHA-256 when it has none), and MUST link `(iss, sub)` to a user of the org. The run records the provider identity and the actor chain. A subject token proves who is represented; it MUST NOT create, widen or substitute for a grant.
 
