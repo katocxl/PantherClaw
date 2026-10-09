@@ -49,7 +49,10 @@ func LoadSigningKeys(ctx context.Context, pool *db.Pool, kp keys.KeyProvider, re
 		active := map[keys.Purpose]bool{}
 		for _, r := range rows {
 			k := keys.SigningKey{KID: r.Kid, Purpose: keys.Purpose(r.Purpose), State: keys.State(r.State), Public: ed25519.PublicKey(r.PublicKey)}
-			if k.State == keys.StateActive {
+			// The gateway CA's retiring keys keep their private half, so that
+			// their (deterministic) CA certificates stay trusted during a
+			// rotation (G0 M6); only the active key ever issues.
+			if k.State == keys.StateActive || (k.State == keys.StateRetiring && k.Purpose == keys.PurposeGatewayCA) {
 				seed, err := kp.Unwrap(ctx, r.WrappedPrivateKey, signingAAD(org, k.Purpose, k.KID))
 				if err != nil {
 					return fmt.Errorf("keystore: unwrap signing key %s: %w", k.KID, err)
@@ -58,7 +61,9 @@ func LoadSigningKeys(ctx context.Context, pool *db.Pool, kp keys.KeyProvider, re
 					return fmt.Errorf("keystore: signing key %s has a malformed seed", k.KID)
 				}
 				k.Private = pclog.NewSecret(ed25519.NewKeyFromSeed(seed))
-				active[k.Purpose] = true
+				if k.State == keys.StateActive {
+					active[k.Purpose] = true
+				}
 			}
 			if err := reg.Put(k); err != nil {
 				return fmt.Errorf("keystore: %w", err)

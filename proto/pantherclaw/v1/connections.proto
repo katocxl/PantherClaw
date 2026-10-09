@@ -1,0 +1,544 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// ConnectionService manages connections: one target (an HTTP API, a remote
+// MCP server, or the agent's own machine for hooks) served by one gateway
+// through one tool package (G0 M6). Each package route of a connection runs
+// in monitor or enforce mode (PN-013). Credentials are sealed on the
+// caller's machine to the gateway's broker key; the server stores only the
+// sealed bytes and never returns them (HR-060, HR-061, HR-182). Changes that
+// weaken enforcement need a person and are audited; changes that strengthen
+// it apply at once (HR-183).
+service ConnectionService {
+  // CreateConnection registers a connection. Its routes start in its
+  // default mode, monitor unless enforce is asked for.
+  // permission: connection.manage
+  rpc CreateConnection(CreateConnectionRequest) returns (CreateConnectionResponse);
+  // GetConnection returns a connection with its route modes and its active
+  // credential's metadata.
+  // permission: connection.read
+  rpc GetConnection(GetConnectionRequest) returns (GetConnectionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListConnections lists the org's connections.
+  // permission: connection.read
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // UpdateConnection changes the fields that are set, at the revision the
+  // caller read. Changing the target, hosts, gateway, package or access
+  // mode, or lowering the default mode to monitor, is a weakening change.
+  // permission: connection.manage
+  rpc UpdateConnection(UpdateConnectionRequest) returns (UpdateConnectionResponse);
+  // SetRouteMode sets one route's mode; enforce to monitor is a weakening
+  // change.
+  // permission: connection.manage
+  rpc SetRouteMode(SetRouteModeRequest) returns (SetRouteModeResponse);
+  // QuarantineConnection stops every action through a connection at once.
+  // permission: connection.manage
+  rpc QuarantineConnection(QuarantineConnectionRequest) returns (QuarantineConnectionResponse);
+  // RestoreConnection lifts a quarantine (a weakening change).
+  // permission: connection.manage
+  rpc RestoreConnection(RestoreConnectionRequest) returns (RestoreConnectionResponse);
+  // RetireConnection ends a connection for good and revokes its credential.
+  // permission: connection.manage
+  rpc RetireConnection(RetireConnectionRequest) returns (RetireConnectionResponse);
+  // GetSealingKey returns what `pclaw seal` needs: the active broker key of
+  // the connection's gateway and the values a seal must bind.
+  // permission: credential.seal
+  rpc GetSealingKey(GetSealingKeyRequest) returns (GetSealingKeyResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // PutCredential stores a sealed credential as the connection's next
+  // version; the previous version is superseded.
+  // permission: credential.seal
+  rpc PutCredential(PutCredentialRequest) returns (PutCredentialResponse);
+  // ListCredentials lists a connection's credentials (metadata only).
+  // permission: connection.read
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeCredential revokes the active credential at once.
+  // permission: connection.manage
+  rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
+}
+
+// ConnectionKind is what a connection reaches.
+enum ConnectionKind {
+  CONNECTION_KIND_UNSPECIFIED = 0;
+  // An HTTP API; the gateway dispatches re-serialized requests.
+  CONNECTION_KIND_HTTP = 1;
+  // A remote MCP server over Streamable HTTP (opaque: PARTIAL, HR-086).
+  CONNECTION_KIND_MCP = 2;
+  // The agent's own machine (hooks); the gateway never dispatches.
+  CONNECTION_KIND_LOCAL = 3;
+}
+
+// ConnectionState is whether actions may use a connection.
+enum ConnectionState {
+  CONNECTION_STATE_UNSPECIFIED = 0;
+  CONNECTION_STATE_ACTIVE = 1;
+  // Stopped by a person, the circuit breaker or the kill switch's scope;
+  // see quarantine_reason.
+  CONNECTION_STATE_QUARANTINED = 2;
+  CONNECTION_STATE_RETIRED = 3;
+}
+
+// RouteMode is how a route treats decisions (PN-013).
+enum RouteMode {
+  ROUTE_MODE_UNSPECIFIED = 0;
+  // Observe and record a hypothetical decision; never block on policy and
+  // never claim prevention.
+  ROUTE_MODE_MONITOR = 1;
+  // Enforce every decision.
+  ROUTE_MODE_ENFORCE = 2;
+}
+
+// AccessMode is how the target's credential is held (F416).
+enum AccessMode {
+  ACCESS_MODE_UNSPECIFIED = 0;
+  // The gateway holds a sealed credential and injects it.
+  ACCESS_MODE_PANTHERCLAW_HELD = 1;
+  // The agent holds its own credential (PARTIAL).
+  ACCESS_MODE_AGENT_HELD = 2;
+  // The target verifies PAP action tokens (PN-002.6).
+  ACCESS_MODE_TARGET_ENFORCED = 3;
+  // No credential (local connections, open APIs).
+  ACCESS_MODE_NONE = 4;
+}
+
+// DestinationClass classifies a connection's target (HR-079).
+enum DestinationClass {
+  DESTINATION_CLASS_UNSPECIFIED = 0;
+  DESTINATION_CLASS_PUBLIC = 1;
+  DESTINATION_CLASS_INTERNAL = 2;
+}
+
+// SealedCredentialState is whether a credential version is used.
+enum SealedCredentialState {
+  SEALED_CREDENTIAL_STATE_UNSPECIFIED = 0;
+  SEALED_CREDENTIAL_STATE_ACTIVE = 1;
+  SEALED_CREDENTIAL_STATE_SUPERSEDED = 2;
+  SEALED_CREDENTIAL_STATE_REVOKED = 3;
+}
+
+// Connection is one connection.
+message Connection {
+  // Connection id.
+  string id = 1;
+  // Name, unique among live connections; agents use it in gateway paths.
+  string name = 2;
+  // Kind.
+  ConnectionKind kind = 3;
+  // Gateway that serves it.
+  string gateway_id = 4;
+  // Tool package; the org's pinned version applies.
+  string package = 5;
+  // Base URL (scheme, host and port), empty for local connections.
+  string base_url = 6;
+  // Hosts a credential may be sent to.
+  repeated string allowed_hosts = 7;
+  // Destination class.
+  DestinationClass destination_class = 8;
+  // Access mode.
+  AccessMode access_mode = 9;
+  // Header a credential goes in, and its optional scheme.
+  string credential_header = 10;
+  // Credential scheme, for example "Bearer".
+  string credential_scheme = 11;
+  // Mode of routes without an explicit mode.
+  RouteMode default_mode = 12;
+  // Explicit route modes.
+  repeated ConnectionRoute routes = 13;
+  // Response cap in bytes.
+  int32 max_response_bytes = 14;
+  // Dispatch timeout in milliseconds.
+  int32 timeout_ms = 15;
+  // State.
+  ConnectionState state = 16;
+  // Why it is quarantined (a reason code).
+  string quarantine_reason = 17;
+  // Revision; UpdateConnection must name the current one.
+  int32 revision = 18;
+  // Who created it and when.
+  string created_by = 19;
+  // When it was created.
+  google.protobuf.Timestamp create_time = 20;
+  // Who changed it last and when.
+  string updated_by = 21;
+  // When it was changed last.
+  google.protobuf.Timestamp update_time = 22;
+}
+
+// ConnectionRoute is one route's explicit mode.
+message ConnectionRoute {
+  // Route id from the package.
+  string route = 1;
+  // Mode.
+  RouteMode mode = 2;
+  // Who set it and when.
+  string changed_by = 3;
+  // When it was set.
+  google.protobuf.Timestamp change_time = 4;
+}
+
+// ConnectionCredential is a credential version's metadata; the sealed bytes are never
+// returned.
+message ConnectionCredential {
+  // Credential id.
+  string id = 1;
+  // Connection id.
+  string connection_id = 2;
+  // Version.
+  int32 version = 3;
+  // Broker key it was sealed to, and that key's fingerprint.
+  string broker_key_id = 4;
+  // Broker key fingerprint.
+  string broker_key_fingerprint = 5;
+  // Hosts it may be sent to.
+  repeated string allowed_hosts = 6;
+  // Header and scheme.
+  string header = 7;
+  // Scheme.
+  string scheme = 8;
+  // State.
+  SealedCredentialState state = 9;
+  // Who stored it and when.
+  string created_by = 10;
+  // When it was stored.
+  google.protobuf.Timestamp create_time = 11;
+}
+
+// CreateConnectionRequest registers a connection.
+message CreateConnectionRequest {
+  // Lower-case name.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  }];
+  // Kind.
+  ConnectionKind kind = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Gateway id.
+  string gateway_id = 3 [(buf.validate.field).string.uuid = true];
+  // Tool package name; the org must have pinned a version of it.
+  string package = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[a-z0-9][a-z0-9.-]{0,127}$"
+  }];
+  // Base URL: https://host[:port], or http:// for a private address the
+  // gateway's operator allows. Empty for local connections.
+  string base_url = 5 [(buf.validate.field).string.max_len = 2048];
+  // Hosts a credential may be sent to (default: the base URL's host).
+  repeated string allowed_hosts = 6 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: {
+      string: {
+        min_len: 1
+        max_len: 253
+      }
+    }
+  }];
+  // Destination class (default public).
+  DestinationClass destination_class = 7 [(buf.validate.field).enum.defined_only = true];
+  // Access mode.
+  AccessMode access_mode = 8 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Header a credential goes in (for pantherclaw_held).
+  string credential_header = 9 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^([A-Za-z0-9-]{1,64})?$"
+  }];
+  // Scheme before the credential, for example "Bearer".
+  string credential_scheme = 10 [(buf.validate.field).string = {
+    max_len: 32
+    pattern: "^([A-Za-z0-9._-]{1,32})?$"
+  }];
+  // Mode of routes without an explicit mode (default monitor).
+  RouteMode default_mode = 11 [(buf.validate.field).enum.defined_only = true];
+  // Response cap in bytes (default 1 MiB, at most 8 MiB).
+  int32 max_response_bytes = 12 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 8388608
+  }];
+  // Dispatch timeout in milliseconds (default 10,000, at most 60,000).
+  int32 timeout_ms = 13 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 60000
+  }];
+}
+
+// CreateConnectionResponse returns the connection.
+message CreateConnectionResponse {
+  // The connection.
+  Connection connection = 1;
+}
+
+// GetConnectionRequest names a connection.
+message GetConnectionRequest {
+  // Connection id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetConnectionResponse returns it.
+message GetConnectionResponse {
+  // The connection.
+  Connection connection = 1;
+  // Its active credential, if any.
+  ConnectionCredential active_credential = 2;
+}
+
+// ListConnectionsRequest pages through connections.
+message ListConnectionsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only this gateway's connections.
+  string gateway_id = 3 [(buf.validate.field).string = {
+    max_len: 36
+    pattern: "^([0-9a-f-]{36})?$"
+  }];
+  // Include retired connections.
+  bool include_retired = 4;
+}
+
+// ListConnectionsResponse is one page.
+message ListConnectionsResponse {
+  // Connections.
+  repeated Connection connections = 1;
+  // Token for the next page; empty at the end.
+  string next_page_token = 2;
+}
+
+// UpdateConnectionRequest changes the fields that are set.
+message UpdateConnectionRequest {
+  // Connection id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The revision the caller read; a stale revision is refused.
+  int32 revision = 2 [(buf.validate.field).int32.gt = 0];
+  // New gateway.
+  optional string gateway_id = 3 [(buf.validate.field).string.uuid = true];
+  // New base URL.
+  optional string base_url = 4 [(buf.validate.field).string.max_len = 2048];
+  // New credential hosts (replaces the list when update_allowed_hosts).
+  repeated string allowed_hosts = 5 [(buf.validate.field).repeated = {
+    max_items: 16
+    items: {
+      string: {
+        min_len: 1
+        max_len: 253
+      }
+    }
+  }];
+  // Whether allowed_hosts is set (an empty list is meaningful).
+  bool update_allowed_hosts = 6;
+  // New destination class.
+  optional DestinationClass destination_class = 7 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // New access mode.
+  optional AccessMode access_mode = 8 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // New default route mode.
+  optional RouteMode default_mode = 9 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // New response cap.
+  optional int32 max_response_bytes = 10 [(buf.validate.field).int32 = {
+    gte: 1024
+    lte: 8388608
+  }];
+  // New timeout.
+  optional int32 timeout_ms = 11 [(buf.validate.field).int32 = {
+    gte: 100
+    lte: 60000
+  }];
+}
+
+// UpdateConnectionResponse returns the connection.
+message UpdateConnectionResponse {
+  // The connection.
+  Connection connection = 1;
+}
+
+// SetRouteModeRequest sets one route's mode.
+message SetRouteModeRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+  // Route id from the package.
+  string route = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+  }];
+  // Mode.
+  RouteMode mode = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// SetRouteModeResponse returns the connection.
+message SetRouteModeResponse {
+  // The connection.
+  Connection connection = 1;
+}
+
+// QuarantineConnectionRequest stops a connection.
+message QuarantineConnectionRequest {
+  // Connection id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Why (stored and shown as untrusted text).
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 500
+  }];
+}
+
+// QuarantineConnectionResponse returns the connection.
+message QuarantineConnectionResponse {
+  // The connection.
+  Connection connection = 1;
+}
+
+// RestoreConnectionRequest lifts a quarantine.
+message RestoreConnectionRequest {
+  // Connection id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RestoreConnectionResponse returns the connection.
+message RestoreConnectionResponse {
+  // The connection.
+  Connection connection = 1;
+}
+
+// RetireConnectionRequest ends a connection.
+message RetireConnectionRequest {
+  // Connection id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RetireConnectionResponse confirms it.
+message RetireConnectionResponse {}
+
+// GetSealingKeyRequest names a connection.
+message GetSealingKeyRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetSealingKeyResponse is everything a seal binds (HR-060, HR-182).
+message GetSealingKeyResponse {
+  // Org id.
+  string org_id = 1;
+  // Connection id.
+  string connection_id = 2;
+  // The version the new credential gets.
+  int32 version = 3;
+  // Broker key id.
+  string broker_key_id = 4;
+  // X-Wing public key.
+  bytes public_key = 5;
+  // Its fingerprint, to show before sealing.
+  string fingerprint = 6;
+  // Gateway that registered it.
+  string gateway_id = 7;
+  // Hosts the credential will be bound to.
+  repeated string allowed_hosts = 8;
+  // Header and scheme it will be placed with.
+  string header = 9;
+  // Scheme.
+  string scheme = 10;
+}
+
+// PutCredentialRequest stores a sealed credential.
+message PutCredentialRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+  // Version (the one GetSealingKey returned).
+  int32 version = 2 [(buf.validate.field).int32.gt = 0];
+  // Broker key id it was sealed to.
+  string broker_key_id = 3 [(buf.validate.field).string.uuid = true];
+  // The sealed blob.
+  bytes sealed = 4 [(buf.validate.field).bytes = {
+    min_len: 1140
+    max_len: 70000
+  }];
+  // The hosts, header and scheme the seal bound; they must equal the
+  // connection's current values, or the upload is refused.
+  repeated string allowed_hosts = 5 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+    items: {
+      string: {
+        min_len: 1
+        max_len: 253
+      }
+    }
+  }];
+  // Header.
+  string header = 6 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9-]{1,64}$"
+  }];
+  // Scheme.
+  string scheme = 7 [(buf.validate.field).string = {
+    max_len: 32
+    pattern: "^([A-Za-z0-9._-]{1,32})?$"
+  }];
+}
+
+// PutCredentialResponse returns the stored metadata.
+message PutCredentialResponse {
+  // The credential.
+  ConnectionCredential credential = 1;
+}
+
+// ListCredentialsRequest names a connection.
+message ListCredentialsRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// ListCredentialsResponse lists its credentials, newest first.
+message ListCredentialsResponse {
+  // Credentials.
+  repeated ConnectionCredential credentials = 1;
+}
+
+// RevokeCredentialRequest revokes the active credential.
+message RevokeCredentialRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+  // Version to revoke.
+  int32 version = 2 [(buf.validate.field).int32.gt = 0];
+}
+
+// RevokeCredentialResponse confirms it.
+message RevokeCredentialResponse {}

@@ -5,10 +5,7 @@ package authority
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
-	"strings"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -19,7 +16,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
-	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 )
 
 type gatewayKey struct{}
@@ -33,27 +29,6 @@ func WithGateway(ctx context.Context, gw Gateway) context.Context {
 func GatewayFrom(ctx context.Context) (Gateway, bool) {
 	gw, ok := ctx.Value(gatewayKey{}).(Gateway)
 	return gw, ok && gw.ID != "" && !gw.Org.IsZero()
-}
-
-// DevGatewayAuthenticator authenticates the single development gateway by a
-// static bearer token (only its SHA-256 is held). DEVELOPMENT ONLY: it is a
-// stand-in for gateway mTLS with org binding (M6, HR-020). The org comes from
-// configuration, never from the request.
-func DevGatewayAuthenticator(tokenSHA256 [sha256.Size]byte, gw Gateway) rpc.Authenticator {
-	return func(ctx context.Context, info *connect.CallInfo, spec connect.Spec) (context.Context, error) {
-		if !strings.HasPrefix(spec.Procedure, "/"+pantherclawv1connect.AuthorityServiceName+"/") {
-			return nil, connect.NewError(connect.CodePermissionDenied, "permission denied")
-		}
-		token, ok := strings.CutPrefix(info.RequestHeader().Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			return nil, connect.NewError(connect.CodeUnauthenticated, "gateway credentials required")
-		}
-		got := sha256.Sum256([]byte(token))
-		if subtle.ConstantTimeCompare(got[:], tokenSHA256[:]) != 1 {
-			return nil, connect.NewError(connect.CodeUnauthenticated, "invalid gateway credentials")
-		}
-		return WithGateway(ctx, gw), nil
-	}
 }
 
 // Handler serves AuthorityService.
@@ -82,6 +57,11 @@ var checklistStatus = map[pipeline.Status]pantherclawv1.ChecklistStatus{
 	pipeline.StatusAnnotated:     pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_ANNOTATED,
 	pipeline.StatusNotEvaluated:  pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_EVALUATED,
 	pipeline.StatusNotApplicable: pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_APPLICABLE,
+}
+
+// modeToProto maps a route mode; an empty mode (an M5 caller) is unspecified.
+var modeToProto = map[string]pantherclawv1.DispatchMode{
+	pipeline.ModeEnforce: pantherclawv1.DispatchMode_DISPATCH_MODE_ENFORCE, pipeline.ModeMonitor: pantherclawv1.DispatchMode_DISPATCH_MODE_MONITOR,
 }
 
 var decisionToProto = map[domain.Decision]pantherclawv1.Decision{
@@ -118,6 +98,7 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 		out.Reasons = append(out.Reasons, &pantherclawv1.Reason{Code: r.Code, Check: r.Check, Detail: r.Detail, Decisive: r.Decisive})
 	}
 	out.DecisionBasisDigest, out.Evaluation, out.Repeat = res.BasisDigest, int32(res.Evaluation), res.Repeat //nolint:gosec // at most 32
+	out.Mode, out.AccessMode = modeToProto[res.Mode], res.AccessMode
 	if res.EffectiveHash != "" && res.EffectiveHash != res.ActionHash {
 		out.EffectiveActionHash = res.EffectiveHash
 	}
@@ -145,16 +126,20 @@ func (h *Handler) BeginDispatch(ctx context.Context, req *pantherclawv1.BeginDis
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid permit id")
 	}
-	if err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch()); err != nil {
+	token, err := h.svc.BeginDispatch(ctx, gw, id, req.GetEpoch(), Outbound{
+		Method: req.GetOutboundMethod(), URL: req.GetOutboundUrl(), BodySHA256: req.GetOutboundBodySha256(),
+	})
+	if err != nil {
 		return nil, err
 	}
-	return &pantherclawv1.BeginDispatchResponse{}, nil
+	return &pantherclawv1.BeginDispatchResponse{ActionToken: token}, nil
 }
 
 var outcomeFromProto = map[pantherclawv1.Outcome]Outcome{
-	pantherclawv1.Outcome_OUTCOME_ACCEPTED: Accepted,
-	pantherclawv1.Outcome_OUTCOME_FAILED:   Failed,
-	pantherclawv1.Outcome_OUTCOME_UNKNOWN:  Unknown,
+	pantherclawv1.Outcome_OUTCOME_ACCEPTED:  Accepted,
+	pantherclawv1.Outcome_OUTCOME_FAILED:    Failed,
+	pantherclawv1.Outcome_OUTCOME_UNKNOWN:   Unknown,
+	pantherclawv1.Outcome_OUTCOME_DELEGATED: Delegated,
 }
 
 // RecordExecution implements AuthorityServiceHandler.

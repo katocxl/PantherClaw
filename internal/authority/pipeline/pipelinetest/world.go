@@ -44,6 +44,7 @@ type World struct {
 	accounts map[bdomain.Ref]bdomain.Account
 	counters map[bdomain.Ref]bdomain.Counter
 	claims   map[string]*pipeline.Claim
+	conns    map[ids.UUID]pipeline.Connection
 	// Fail makes the named Reader method return ErrInjected.
 	Fail  map[string]bool
 	final *finalState
@@ -56,6 +57,7 @@ func New(org ids.OrgID, p *defs.Package, now time.Time) *World {
 		pkg: p, states: map[string]defs.State{}, runs: map[ids.UUID]pipeline.Run{}, agents: map[ids.UUID]pipeline.Agent{},
 		facts: map[string]map[string]fdomain.Fact{}, accounts: map[bdomain.Ref]bdomain.Account{},
 		counters: map[bdomain.Ref]bdomain.Counter{}, claims: map[string]*pipeline.Claim{}, Fail: map[string]bool{},
+		conns: map[ids.UUID]pipeline.Connection{},
 	}
 	for _, d := range p.Definitions {
 		w.states[d.Operation] = defs.StateActive
@@ -282,4 +284,25 @@ func (w *World) Claim(_ context.Context, _ ids.OrgID, key string) (*pipeline.Cla
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.claims[key], nil
+}
+
+// PutConnection adds or replaces a connection.
+func (w *World) PutConnection(c pipeline.Connection) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.conns[c.ID] = c
+}
+
+// Connection implements pipeline.Reader.
+func (w *World) Connection(_ context.Context, _ ids.OrgID, id ids.UUID) (pipeline.Connection, error) {
+	if err := w.fail("Connection"); err != nil {
+		return pipeline.Connection{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c, ok := w.conns[id]
+	if !ok {
+		return pipeline.Connection{}, pipeline.ErrNotFound
+	}
+	return c, nil
 }

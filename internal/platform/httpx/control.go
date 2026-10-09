@@ -18,6 +18,10 @@ type ControlConfig struct {
 	RootCAs *x509.CertPool
 	// Wrap decorates the transport, for example to add credentials.
 	Wrap func(http.RoundTripper) http.RoundTripper
+	// ClientCertificate presents a client certificate (the gateway's mTLS
+	// identity, HR-181). With it the client requires TLS 1.3. Egress
+	// clients never carry one (HR-074).
+	ClientCertificate func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
 }
 
 // NewControlClient returns the client for PantherClaw's own control plane
@@ -34,6 +38,11 @@ func NewControlClient(cfg ControlConfig) *http.Client {
 	tlsConf := &tls.Config{MinVersion: tls.VersionTLS12}
 	if cfg.RootCAs != nil {
 		tlsConf.RootCAs = cfg.RootCAs
+	}
+	if cfg.ClientCertificate != nil {
+		tlsConf.MinVersion = tls.VersionTLS13
+		tlsConf.GetClientCertificate = cfg.ClientCertificate
+		tlsConf.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256}
 	}
 	var rt http.RoundTripper = &http.Transport{
 		Proxy:                 nil, // HR-072

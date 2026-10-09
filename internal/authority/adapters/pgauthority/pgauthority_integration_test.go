@@ -264,7 +264,7 @@ func TestIntAuthorizeThroughPostgres(t *testing.T) {
 	if r := w.authorize(w.request(run, ids.NewV7(), "ch_1", "30.00")); decisive(r) != pipeline.ReasonReconciliation {
 		t.Fatalf("an identical refund while the first is issued (HR-007): %s", decisive(r))
 	}
-	if err := w.auth.BeginDispatch(ctx, w.gw, ok.PermitID, ok.Epoch); err != nil {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, ok.PermitID, ok.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := w.auth.RecordExecution(ctx, w.gw, finalize.Execution{Permit: ok.PermitID, Outcome: finalize.Accepted, DispatchMS: -1}); err != nil {
@@ -294,7 +294,7 @@ func TestIntAuthorizeThroughPostgres(t *testing.T) {
 	if _, err := w.grants.Revoke(w.human, g.ID, "done"); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.auth.BeginDispatch(ctx, w.gw, retried.PermitID, retried.Epoch); err == nil {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, retried.PermitID, retried.Epoch, finalize.Outbound{}); err == nil {
 		t.Fatal("a permit issued before the revocation was dispatched")
 	}
 	if r := w.authorize(w.request(run, ids.NewV7(), "ch_2", "5.00")); decisive(r) != gdomain.ReasonGrantRevoked {
@@ -390,7 +390,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 		if r.Permit == "" {
 			t.Fatalf("no permit: %s %s", r.Decision, decisive(r))
 		}
-		if err := w.auth.BeginDispatch(ctx, w.gw, r.PermitID, r.Epoch); err != nil {
+		if _, err := w.auth.BeginDispatch(ctx, w.gw, r.PermitID, r.Epoch, finalize.Outbound{}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := w.auth.RecordExecution(ctx, w.gw, finalize.Execution{Permit: r.PermitID, Outcome: o, DispatchMS: -1}); err != nil {
@@ -424,7 +424,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	w.auth.PermitTTL = time.Second
 	expiring := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
 	stuck := w.authorize(w.request(run, ids.NewV7(), "ch_3", "5.00"))
-	if err := w.auth.BeginDispatch(ctx, w.gw, stuck.PermitID, stuck.Epoch); err != nil {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, stuck.PermitID, stuck.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(1500 * time.Millisecond)
@@ -432,7 +432,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	if err != nil || released != 1 || unknown != 1 {
 		t.Fatalf("sweep: released %d unknown %d: %v", released, unknown, err)
 	}
-	if err := w.auth.BeginDispatch(ctx, w.gw, expiring.PermitID, expiring.Epoch); err == nil {
+	if _, err := w.auth.BeginDispatch(ctx, w.gw, expiring.PermitID, expiring.Epoch, finalize.Outbound{}); err == nil {
 		t.Fatal("a released permit was dispatched")
 	}
 	if res, sp := w.budget(); res != "35" || sp != "0" {

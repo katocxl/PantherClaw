@@ -778,20 +778,24 @@ type PcPackageVersion struct {
 }
 
 type PcPermit struct {
-	OrgID         ids.OrgID
-	ID            ids.UUID
-	TransactionID ids.UUID
-	GatewayID     string
-	Epoch         int64
-	State         string
-	BudgetID      *ids.UUID
-	Amount        *money.Decimal
-	IssuedAt      time.Time
-	ExpiresAt     time.Time
-	DispatchingAt *time.Time
-	FinishedAt    *time.Time
-	Mode          string
-	ConnectionID  *ids.UUID
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+	TransactionID      ids.UUID
+	GatewayID          string
+	Epoch              int64
+	State              string
+	BudgetID           *ids.UUID
+	Amount             *money.Decimal
+	IssuedAt           time.Time
+	ExpiresAt          time.Time
+	DispatchingAt      *time.Time
+	FinishedAt         *time.Time
+	Mode               string
+	ConnectionID       *ids.UUID
+	OutboundMethod     *string
+	OutboundUrl        *string
+	OutboundBodySha256 []byte
+	ActionTokenJti     *ids.UUID
 }
 
 type PcPolicy struct {
@@ -957,6 +961,9 @@ type PcTransaction struct {
 	DedupeKey     *string
 	Mode          string
 	ConnectionID  *ids.UUID
+	Channel       *string
+	TargetType    *string
+	TargetID      *string
 }
 
 type PcTrustedIssuer struct {

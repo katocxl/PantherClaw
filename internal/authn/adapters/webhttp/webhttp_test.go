@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,6 +52,14 @@ func (f *fakeBrowser) Authenticate(_ context.Context, cookie string) (authnapp.B
 	case "rotate":
 		s.Rotated = "rotated"
 		return s, nil
+	case "responder": // containment_test.go
+		s.Principal.ID = responderID
+		s.Bindings = []td.Binding{{Role: td.RoleEmergency, Scope: td.Scope{Type: td.ScopeOrg, ID: testOrg.UUID()}}}
+		s.StepUpCredential, s.StepUpAt = responderKey, steppedUpAt
+		return s, nil
+	case "reader":
+		s.Bindings = []td.Binding{{Role: td.RoleAuditor, Scope: td.Scope{Type: td.ScopeOrg, ID: testOrg.UUID()}}}
+		return s, nil
 	}
 	return authnapp.BrowserSession{}, authnapp.ErrUnauthenticated
 }
@@ -75,7 +84,7 @@ func newHandler(t *testing.T, publicURL string) (*webhttp.Handler, *fakeBrowser,
 	fb := &fakeBrowser{}
 	h, err := webhttp.New(fb, publicURL, nil, nil)
 	if err == nil {
-		h.WithKeys(&fakeKeys{})
+		h.WithKeys(&fakeKeys{}).WithContainment(&fakeContainment{})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +179,8 @@ func TestHR151_StateChangingRequestsNeedTheCSRFProof(t *testing.T) {
 func TestHR151_RouteTable(t *testing.T) {
 	h, _, mux := newHandler(t, origin)
 	for _, rt := range h.Routes() {
-		private := strings.HasPrefix(rt.Path, authnapp.AccountPath) || rt.Path == authnapp.LogoutPath
+		private := strings.HasPrefix(rt.Path, authnapp.AccountPath) || strings.HasPrefix(rt.Path, authnapp.ContainmentPath) ||
+			rt.Path == authnapp.LogoutPath
 		if private != rt.Session {
 			t.Errorf("%s %s: session=%v, want %v", rt.Method, rt.Path, rt.Session, private)
 		}
@@ -179,6 +189,18 @@ func TestHR151_RouteTable(t *testing.T) {
 		}
 		if rt.Method != http.MethodGet && !rt.Session {
 			t.Errorf("%s %s changes state without a session", rt.Method, rt.Path)
+		}
+	}
+	// The emergency-stop page and its four actions (G0 M6).
+	for _, want := range []webhttp.Route{
+		{Method: http.MethodGet, Path: "/containment", Session: true},
+		{Method: http.MethodPost, Path: "/containment/kill-switch/engage", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/containment/kill-switch/restore", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/containment/kill-switch/restore/{id}/confirm", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/containment/kill-switch/restore/{id}/cancel", Session: true, CSRF: true},
+	} {
+		if !slices.Contains(h.Routes(), want) {
+			t.Errorf("route %+v is not mounted", want)
 		}
 	}
 	// A state-changing method on a GET route is not served.
