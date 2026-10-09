@@ -136,12 +136,32 @@ type Receipt struct {
 // Outcome of a dispatched permit (PAP-1 §7.4).
 type Outcome string
 
-// Outcomes.
+// Outcomes. Delegated: a cooperative channel's agent performs the allowed
+// action itself; it settles like accepted (PAP-1 §7.4, HR-186).
 const (
-	Accepted Outcome = "accepted"
-	Failed   Outcome = "failed"
-	Unknown  Outcome = "unknown"
+	Accepted  Outcome = "accepted"
+	Failed    Outcome = "failed"
+	Unknown   Outcome = "unknown"
+	Delegated Outcome = "delegated"
 )
+
+// Access modes recorded on executions (F416).
+const (
+	AccessPantherClawHeld = "pantherclaw_held"
+	AccessAgentHeld       = "agent_held"
+)
+
+// Executed is what the store established about a recorded attempt, for
+// the execution receipt: the transaction, how the credential reached the
+// target (the connection's access mode; agent_held for delegated;
+// pantherclaw_held for an action without a connection), and whether the
+// permit was a monitor-mode one.
+type Executed struct {
+	Transaction ids.UUID
+	Connection  *ids.UUID
+	AccessMode  string
+	Monitor     bool
+}
 
 // Store is the finalization and settlement port.
 type Store interface {
@@ -159,14 +179,20 @@ type Store interface {
 	// Either way a security.action_tampered audit event is written.
 	Tamper(ctx context.Context, org ids.OrgID, prev Stored, receipt *Receipt, gatewayID string) error
 	// BeginDispatch moves a permit ISSUED → DISPATCHING if it is unexpired
-	// (database clock) and the epoch is current (HR-001).
-	BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error
+	// (database clock) and the epoch is current (HR-001), records out, and
+	// in the same transaction calls mint with what the permit bound; the id
+	// mint returns is recorded as the action token's. A mint error rolls
+	// everything back.
+	BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64, out Outbound,
+		mint func(Dispatching) (*ids.UUID, error)) error
 	// RecordExecution settles every line of the permit's reservation and
-	// its claim: accepted commits (claim SUCCEEDED), failed releases (claim
-	// RELEASED), unknown keeps both held (HR-003, F115). It records the
-	// attempt and, in the same transaction, the execution receipt sign
-	// returns for the permit's transaction at the database time.
-	RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e Execution, sign func(txn ids.UUID, now time.Time) (Receipt, error)) (string, error)
+	// its claim: accepted and delegated commit (claim SUCCEEDED), failed
+	// releases (claim RELEASED), unknown keeps both held (HR-003, F115).
+	// Delegated is refused (ErrNotCooperative) unless the transaction's
+	// channel is hook or sdk. It records the attempt with its access mode
+	// and, in the same transaction, the execution receipt sign returns at
+	// the database time.
+	RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e Execution, sign func(x Executed, now time.Time) (Receipt, error)) (string, error)
 	// Sweep releases expired ISSUED permits (and their claims) and marks
 	// stale DISPATCHING ones UNKNOWN, never releasing them (HR-003).
 	Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Duration) (released, unknown int, err error)
