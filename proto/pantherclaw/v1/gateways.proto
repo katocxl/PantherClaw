@@ -1,0 +1,505 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// GatewayAdminService manages an org's gateways (G0 M6, HR-180): records,
+// single-use enrollment tokens, certificates and broker keys. A gateway's
+// identity is a short-lived certificate from PantherClaw's internal CA,
+// never a token; revoking a gateway or one of its certificates takes effect
+// on its next call (HR-181).
+service GatewayAdminService {
+  // CreateGateway adds a gateway record. It has no identity until it
+  // enrolls with a token from CreateGatewayEnrollmentToken.
+  // permission: gateway.manage
+  rpc CreateGateway(CreateGatewayRequest) returns (CreateGatewayResponse);
+  // CreateGatewayEnrollmentToken returns a single-use `pcg_` token, valid
+  // 15 minutes, once, with the SHA-256 of the CA certificate the gateway
+  // must pin when it enrolls.
+  // permission: gateway.manage
+  rpc CreateGatewayEnrollmentToken(CreateGatewayEnrollmentTokenRequest) returns (CreateGatewayEnrollmentTokenResponse);
+  // ListGateways lists the org's gateways.
+  // permission: gateway.read
+  rpc ListGateways(ListGatewaysRequest) returns (ListGatewaysResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetGateway returns a gateway with its recent certificates and its
+  // broker keys (fingerprints only).
+  // permission: gateway.read
+  rpc GetGateway(GetGatewayRequest) returns (GetGatewayResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // RevokeGateway revokes a gateway and every certificate it holds. Its
+  // connections stop working until they are moved to another gateway.
+  // permission: gateway.manage
+  rpc RevokeGateway(RevokeGatewayRequest) returns (RevokeGatewayResponse);
+  // RevokeGatewayCertificate revokes one certificate (one replica).
+  // permission: gateway.manage
+  rpc RevokeGatewayCertificate(RevokeGatewayCertificateRequest) returns (RevokeGatewayCertificateResponse);
+}
+
+// GatewayService is called by gateways. Enroll is served on the public API
+// and authenticated by its enrollment token; every other RPC is served only
+// on the server's gateway listener, authenticated by the gateway's client
+// certificate, and takes the org from that certificate alone (HR-181).
+service GatewayService {
+  // Enroll exchanges a single-use enrollment token and a certificate
+  // request, signed by a key the gateway generated, for a 24-hour client
+  // certificate (HR-180).
+  // permission: gateway.enroll
+  rpc Enroll(GatewayServiceEnrollRequest) returns (GatewayServiceEnrollResponse);
+  // RenewCertificate issues a new certificate for a new key; the current one
+  // is accepted for 10 more minutes.
+  // permission: gateway.sync
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+  // RegisterBrokerKey registers the gateway's X-Wing broker public key
+  // (HR-182). Registering the active key again changes nothing.
+  // permission: gateway.sync
+  rpc RegisterBrokerKey(RegisterBrokerKeyRequest) returns (RegisterBrokerKeyResponse);
+  // GetConfiguration returns what this gateway serves: its connections and
+  // route modes, the packages they pin, and their sealed credentials.
+  // permission: gateway.sync
+  rpc GetConfiguration(GetConfigurationRequest) returns (GetConfigurationResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // WatchContainment streams the org's containment state: a snapshot first,
+  // then the state again on every change and a heartbeat every 500 ms
+  // (HR-010). A gateway whose last message is older than 2 seconds stops
+  // dispatching.
+  // permission: gateway.sync
+  rpc WatchContainment(WatchContainmentRequest) returns (stream WatchContainmentResponse);
+  // ReportCircuit reports that a connection's circuit breaker opened
+  // (HR-078); the server quarantines the connection.
+  // permission: gateway.observe
+  rpc ReportCircuit(ReportCircuitRequest) returns (ReportCircuitResponse);
+  // ReportDrift reports that an upstream MCP server's tool no longer matches
+  // the reviewed package (HR-081); the server quarantines the org's pin of
+  // that package version.
+  // permission: gateway.observe
+  rpc ReportDrift(ReportDriftRequest) returns (ReportDriftResponse);
+}
+
+// GatewayState is whether a gateway may act.
+enum GatewayState {
+  GATEWAY_STATE_UNSPECIFIED = 0;
+  GATEWAY_STATE_ACTIVE = 1;
+  GATEWAY_STATE_REVOKED = 2;
+}
+
+// GatewayCertificateState is whether a certificate is accepted.
+enum GatewayCertificateState {
+  GATEWAY_CERTIFICATE_STATE_UNSPECIFIED = 0;
+  GATEWAY_CERTIFICATE_STATE_ACTIVE = 1;
+  // Replaced by a renewal; accepted for 10 more minutes.
+  GATEWAY_CERTIFICATE_STATE_SUPERSEDED = 2;
+  GATEWAY_CERTIFICATE_STATE_REVOKED = 3;
+}
+
+// Gateway is one gateway record (one deployment; its replicas enroll
+// separately and share the record).
+message Gateway {
+  // Gateway id.
+  string id = 1;
+  // Name.
+  string name = 2;
+  // State.
+  GatewayState state = 3;
+  // Version of what it serves; moves with every connection, route or
+  // credential change.
+  int64 config_version = 4;
+  // Who created it.
+  string created_by = 5;
+  // When.
+  google.protobuf.Timestamp create_time = 6;
+  // Who revoked it, when and why (UNTRUSTED text).
+  string revoked_by = 7;
+  // When it was revoked.
+  google.protobuf.Timestamp revoke_time = 8;
+  // Why it was revoked.
+  string revoke_reason = 9;
+}
+
+// GatewayCertificate is one certificate the internal CA issued.
+message GatewayCertificate {
+  // Certificate id (in the certificate's URI SAN).
+  string id = 1;
+  // Serial number, hex.
+  string serial = 2;
+  // RFC 7638 thumbprint of the certificate's key.
+  string key_thumbprint = 3;
+  // State.
+  GatewayCertificateState state = 4;
+  // "ENROLL" or "RENEW".
+  string issued_via = 5;
+  // Validity.
+  google.protobuf.Timestamp not_before = 6;
+  // Validity end.
+  google.protobuf.Timestamp not_after = 7;
+  // Revocation reason code.
+  string revoke_reason = 8;
+}
+
+// BrokerKey is a broker public key a gateway registered (HR-182).
+message BrokerKey {
+  // Broker key id.
+  string id = 1;
+  // Version, from 1.
+  int32 version = 2;
+  // "sha256:" and 64 hex digits of the public key.
+  string fingerprint = 3;
+  // Whether it is the key credentials are sealed to.
+  bool active = 4;
+  // When it was registered.
+  google.protobuf.Timestamp register_time = 5;
+  // The certificate that registered it.
+  string certificate_id = 6;
+}
+
+// CreateGatewayRequest names a new gateway.
+message CreateGatewayRequest {
+  // Lower-case name, unique among the org's active gateways.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  }];
+}
+
+// CreateGatewayResponse returns the record.
+message CreateGatewayResponse {
+  // The new gateway.
+  Gateway gateway = 1;
+}
+
+// CreateGatewayEnrollmentTokenRequest asks for a token for one gateway.
+message CreateGatewayEnrollmentTokenRequest {
+  // Gateway id.
+  string gateway_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// CreateGatewayEnrollmentTokenResponse returns the token once.
+message CreateGatewayEnrollmentTokenResponse {
+  // The `pcg_` token. It is never shown again.
+  string token = 1;
+  // When it stops working (15 minutes).
+  google.protobuf.Timestamp expire_time = 2;
+  // "sha256:" and 64 hex digits of the CA certificate the gateway must pin.
+  string ca_sha256 = 3;
+  // The URL of the server's gateway listener.
+  string gateway_api_url = 4;
+}
+
+// ListGatewaysRequest pages through gateways.
+message ListGatewaysRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Include revoked gateways.
+  bool include_revoked = 3;
+}
+
+// ListGatewaysResponse is one page.
+message ListGatewaysResponse {
+  // Gateways.
+  repeated Gateway gateways = 1;
+  // Token for the next page; empty at the end.
+  string next_page_token = 2;
+}
+
+// GetGatewayRequest names a gateway.
+message GetGatewayRequest {
+  // Gateway id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetGatewayResponse returns it.
+message GetGatewayResponse {
+  // The gateway.
+  Gateway gateway = 1;
+  // Its 20 most recent certificates, newest first.
+  repeated GatewayCertificate certificates = 2;
+  // Its broker keys, newest first.
+  repeated BrokerKey broker_keys = 3;
+}
+
+// RevokeGatewayRequest revokes a gateway.
+message RevokeGatewayRequest {
+  // Gateway id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Why (stored and shown as untrusted text).
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 500
+  }];
+}
+
+// RevokeGatewayResponse returns the revoked record.
+message RevokeGatewayResponse {
+  // The gateway.
+  Gateway gateway = 1;
+}
+
+// RevokeGatewayCertificateRequest revokes one certificate.
+message RevokeGatewayCertificateRequest {
+  // Gateway id.
+  string gateway_id = 1 [(buf.validate.field).string.uuid = true];
+  // Certificate id.
+  string certificate_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// RevokeGatewayCertificateResponse confirms it.
+message RevokeGatewayCertificateResponse {}
+
+// GatewayServiceEnrollRequest exchanges a token for a certificate.
+message GatewayServiceEnrollRequest {
+  // The `pcg_` enrollment token.
+  string token = 1 [(buf.validate.field).string = {
+    min_len: 16
+    max_len: 128
+    pattern: "^pcg_[A-Za-z0-9_-]+$"
+  }];
+  // DER PKCS #10 certificate request for an Ed25519 key, signed by that key.
+  bytes csr = 2 [(buf.validate.field).bytes = {
+    min_len: 64
+    max_len: 4096
+  }];
+}
+
+// GatewayServiceEnrollResponse is the gateway's identity.
+message GatewayServiceEnrollResponse {
+  // DER client certificate.
+  bytes certificate = 1;
+  // DER CA certificate; the gateway checks its SHA-256 against its pin.
+  bytes ca_certificate = 2;
+  // Gateway id.
+  string gateway_id = 3;
+  // Org id.
+  string org_id = 4;
+  // The URL of the server's gateway listener.
+  string gateway_api_url = 5;
+}
+
+// RenewCertificateRequest asks for a certificate for a new key.
+message RenewCertificateRequest {
+  // DER PKCS #10 certificate request for a new Ed25519 key.
+  bytes csr = 1 [(buf.validate.field).bytes = {
+    min_len: 64
+    max_len: 4096
+  }];
+}
+
+// RenewCertificateResponse returns it.
+message RenewCertificateResponse {
+  // DER client certificate.
+  bytes certificate = 1;
+  // DER CA certificate.
+  bytes ca_certificate = 2;
+}
+
+// RegisterBrokerKeyRequest registers a broker public key.
+message RegisterBrokerKeyRequest {
+  // X-Wing (MLKEM768-X25519) public key, 1,216 bytes.
+  bytes public_key = 1 [(buf.validate.field).bytes.len = 1216];
+}
+
+// RegisterBrokerKeyResponse returns the registered key.
+message RegisterBrokerKeyResponse {
+  // The key.
+  BrokerKey broker_key = 1;
+}
+
+// GetConfigurationRequest asks for the gateway's configuration.
+message GetConfigurationRequest {
+  // The version the gateway already has; when it is current the response
+  // carries only the version.
+  int64 known_version = 1 [(buf.validate.field).int64.gte = 0];
+}
+
+// GetConfigurationResponse is what the gateway serves.
+message GetConfigurationResponse {
+  // Configuration version.
+  int64 version = 1;
+  // Whether known_version is current (nothing else is set then).
+  bool unchanged = 2;
+  // Org id (the same as the certificate's).
+  string org_id = 3;
+  // Gateway id.
+  string gateway_id = 4;
+  // The connections this gateway serves (active and quarantined).
+  repeated GatewayConnection connections = 5;
+  // The packages those connections pin.
+  repeated GatewayPackage packages = 6;
+  // The active sealed credentials of those connections.
+  repeated SealedCredential credentials = 7;
+}
+
+// GatewayConnection is a connection as its gateway sees it.
+message GatewayConnection {
+  // Connection id (the ActionIR `connection`).
+  string id = 1;
+  // Name (the path segment agents use).
+  string name = 2;
+  // Kind: "http", "mcp" or "local".
+  string kind = 3;
+  // Package name and the org's pinned version.
+  string package = 4;
+  // Pinned package version.
+  string package_version = 5;
+  // Base URL (scheme, host, port), empty for local connections.
+  string base_url = 6;
+  // Hosts a credential may be sent to.
+  repeated string allowed_hosts = 7;
+  // "public" or "internal" (HR-079).
+  string destination_class = 8;
+  // Access mode (F416).
+  string access_mode = 9;
+  // Mode of routes without an explicit mode: "monitor" or "enforce".
+  string default_mode = 10;
+  // Explicit route modes.
+  repeated RouteModeSetting routes = 11;
+  // Response cap in bytes.
+  int32 max_response_bytes = 12;
+  // Dispatch timeout in milliseconds.
+  int32 timeout_ms = 13;
+  // "ACTIVE" or "QUARANTINED".
+  string state = 14;
+  // Revision.
+  int32 revision = 15;
+}
+
+// RouteModeSetting is one route's mode.
+message RouteModeSetting {
+  // Route id from the package.
+  string route = 1;
+  // "monitor" or "enforce".
+  string mode = 2;
+}
+
+// GatewayPackage is the exact signed bytes of a pinned package version.
+message GatewayPackage {
+  // Package name.
+  string name = 1;
+  // Version.
+  string version = 2;
+  // The package file as imported (the gateway decodes it strictly and
+  // derives every definition digest itself).
+  bytes raw = 3;
+}
+
+// SealedCredential is one connection's sealed credential (HR-060). Only
+// the gateway holding the broker key can open it.
+message SealedCredential {
+  // Credential id.
+  string id = 1;
+  // Connection id.
+  string connection_id = 2;
+  // Version.
+  int32 version = 3;
+  // Broker key id.
+  string broker_key_id = 4;
+  // The sealed blob.
+  bytes sealed = 5;
+  // Hosts it may be sent to (bound into the seal).
+  repeated string allowed_hosts = 6;
+  // Header it goes in.
+  string header = 7;
+  // Optional scheme before it, for example "Bearer".
+  string scheme = 8;
+}
+
+// WatchContainmentRequest opens the stream.
+message WatchContainmentRequest {}
+
+// ContainmentStateKind tells snapshots, changes and heartbeats apart.
+enum ContainmentStateKind {
+  CONTAINMENT_STATE_KIND_UNSPECIFIED = 0;
+  // The first message: everything, including connection states.
+  CONTAINMENT_STATE_KIND_SNAPSHOT = 1;
+  // Something changed: everything again.
+  CONTAINMENT_STATE_KIND_CHANGE = 2;
+  // Nothing changed; connections are omitted.
+  CONTAINMENT_STATE_KIND_HEARTBEAT = 3;
+}
+
+// WatchContainmentResponse is the org's containment as the server last confirmed
+// it from the database.
+message WatchContainmentResponse {
+  // Kind.
+  ContainmentStateKind kind = 1;
+  // Containment epoch.
+  int64 epoch = 2;
+  // Whether the org kill switch is engaged.
+  bool kill_switch = 3;
+  // The gateway's configuration version.
+  int64 config_version = 4;
+  // Whether the gateway itself is still active.
+  bool gateway_active = 5;
+  // States of the connections the gateway serves (snapshots and changes).
+  repeated ConnectionStateEntry connections = 6;
+  // Database time of the confirmation.
+  google.protobuf.Timestamp as_of = 7;
+}
+
+// ConnectionStateEntry is one connection's state.
+message ConnectionStateEntry {
+  // Connection id.
+  string connection_id = 1;
+  // "ACTIVE" or "QUARANTINED".
+  string state = 2;
+}
+
+// ReportCircuitRequest reports an opened circuit.
+message ReportCircuitRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+  // UNKNOWN outcomes in the window.
+  int32 unknown_count = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000000
+  }];
+  // All outcomes in the window.
+  int32 total_count = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000000
+  }];
+}
+
+// ReportCircuitResponse says what the server did.
+message ReportCircuitResponse {
+  // Whether the connection is now quarantined.
+  bool quarantined = 1;
+}
+
+// ReportDriftRequest reports an upstream tool that no longer matches.
+message ReportDriftRequest {
+  // Connection id.
+  string connection_id = 1 [(buf.validate.field).string.uuid = true];
+  // Upstream tool name.
+  string tool = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z0-9_.-]+$"
+  }];
+  // Digest the package was reviewed against.
+  string expected_digest = 3 [(buf.validate.field).string.pattern = "^sha256:[0-9a-f]{64}$"];
+  // Digest observed now; empty when the tool is gone.
+  string observed_digest = 4 [(buf.validate.field).string.pattern = "^(sha256:[0-9a-f]{64})?$"];
+}
+
+// ReportDriftResponse says what the server did.
+message ReportDriftResponse {
+  // Whether the package pin is now quarantined.
+  bool quarantined = 1;
+}

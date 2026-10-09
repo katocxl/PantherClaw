@@ -26,6 +26,8 @@ const (
 	RoleIdentityPublisher RoleName = "identity_publisher"
 	RoleGrantIssuer       RoleName = "grant_issuer"
 	RoleFactProvider      RoleName = "fact_provider"
+	RoleGatewayAdmin      RoleName = "gateway_admin"
+	RoleEmergency         RoleName = "emergency_responder"
 )
 
 // Role is a named set of permissions and the scope types it may be bound at.
@@ -55,6 +57,9 @@ var (
 	// authorityReads lets a principal see what agents may do (M4): grants,
 	// guardrails, budgets, packages and policies.
 	authorityReads = []Permission{PermGrantRead, PermGuardrailsRead, PermBudgetRead, PermPackageRead, PermPolicyRead}
+	// boundaryReads lets a principal see how actions reach targets (M6):
+	// gateways, connections and the kill switch.
+	boundaryReads = []Permission{PermGatewayRead, PermConnectionRead, PermContainmentRead}
 )
 
 func with(ps ...[]Permission) []Permission {
@@ -75,14 +80,14 @@ func with(ps ...[]Permission) []Permission {
 var roles = []Role{
 	{
 		Name: RoleOrgAdmin, Title: "Org Admin", Scopes: orgScope,
-		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails or read restricted evidence.",
+		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails, manage gateways and connections, engage the kill switch or read restricted evidence.",
 		Permissions: with(basicReads, []Permission{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
 			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport,
 			PermNotificationRead, PermNotificationManage,
-		}, authorityReads),
+		}, authorityReads, boundaryReads),
 	},
 	{
 		Name: RoleSecurityAdmin, Title: "Security Admin", Scopes: orgScope,
@@ -92,7 +97,7 @@ var roles = []Role{
 			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
 			PermWaitlistRead, PermIssuerRead, PermGrantRevoke, PermFactRead,
 			PermNotificationRead, PermNotificationManage,
-		}, authorityReads),
+		}, authorityReads, boundaryReads),
 	},
 	{
 		Name: RoleAgentOwner, Title: "Agent Owner", Scopes: anyScope,
@@ -125,6 +130,7 @@ var roles = []Role{
 		Description: "Investigates and contains incidents in scope.",
 		Permissions: with(basicReads, []Permission{
 			PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage, PermGrantRead, PermGrantRevoke,
+			PermConnectionRead, PermContainmentRead,
 		}),
 	},
 	{
@@ -134,12 +140,12 @@ var roles = []Role{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
 			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead, PermFactRead,
 			PermNotificationRead,
-		}, authorityReads),
+		}, authorityReads, boundaryReads),
 	},
 	{
 		Name: RoleDeveloper, Title: "Developer", Scopes: anyScope,
 		Description: "Builds agents in scope.",
-		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart}, authorityReads),
+		Permissions: with(basicReads, []Permission{PermAgentRead, PermRunRead, PermRunStart, PermConnectionRead}, authorityReads),
 	},
 	{
 		Name: RoleViewer, Title: "Viewer", Scopes: anyScope,
@@ -172,6 +178,18 @@ var roles = []Role{
 		Name: RoleFactProvider, Title: "Fact Provider", Scopes: orgScope,
 		Description: "For the service account a fact provider is registered with: lets it report facts. Holding the role alone writes nothing: each fact is accepted only from the service account of the provider registered for it.",
 		Permissions: with(basicReads, []Permission{PermFactWrite}),
+	},
+	{
+		Name: RoleGatewayAdmin, Title: "Gateway Admin", Scopes: orgScope,
+		Description: "Enrolls and revokes gateways, registers connections and their route modes, and seals target credentials (human only). Weakening changes are audited and reported to org admins.",
+		Permissions: with(basicReads, []Permission{
+			PermGatewayManage, PermConnectionManage, PermCredentialSeal, PermAgentRead,
+		}, authorityReads, boundaryReads),
+	},
+	{
+		Name: RoleEmergency, Title: "Emergency Responder", Scopes: orgScope,
+		Description: "Engages the org kill switch with a step-up, and proposes or confirms a restore, which needs a second person with a different security key (human only).",
+		Permissions: with(basicReads, []Permission{PermContainmentKillSwitch}, boundaryReads),
 	},
 }
 

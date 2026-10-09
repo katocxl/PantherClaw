@@ -133,3 +133,23 @@ func TestGatewayProceduresAreDelegated(t *testing.T) {
 		t.Fatalf("user credential on a gateway procedure: called=%v err=%v", called, err)
 	}
 }
+
+// TestHR180_GatewayEnrollmentReachesItsHandlerWithoutAPrincipal: Enroll is
+// authenticated by its enrollment token, which the handler verifies; the
+// interceptor neither asks the gateway authenticator nor puts any caller in
+// the context, so a bearer credential sent along gains nothing.
+func TestHR180_GatewayEnrollmentReachesItsHandlerWithoutAPrincipal(t *testing.T) {
+	perms := map[string]td.Permission{pantherclawv1connect.AccessServiceWhoAmIProcedure: td.PermGatewayEnroll}
+	called := false
+	gw := func(ctx context.Context, _ *connect.CallInfo, _ connect.Spec) (context.Context, error) {
+		called = true
+		return ctx, nil
+	}
+	_, client := setup(t, perms, gw)
+	// The fake WhoAmI handler answers Unauthenticated without a caller in the
+	// context: the request reached it, with no principal.
+	_, err := client("viewer").WhoAmI(context.Background(), &pantherclawv1.WhoAmIRequest{})
+	if called || code(err) != connect.CodeUnauthenticated {
+		t.Fatalf("enroll: gateway authenticator called=%v, err=%v", called, err)
+	}
+}
