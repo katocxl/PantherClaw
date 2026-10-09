@@ -21,6 +21,8 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/webhttp"
 	"github.com/katocxl/pantherclaw/internal/authority"
+	"github.com/katocxl/pantherclaw/internal/connections/adapters/connectionsrpc"
+	capp "github.com/katocxl/pantherclaw/internal/connections/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/adapters/gatewaysrpc"
 	gwapp "github.com/katocxl/pantherclaw/internal/gateways/app"
 	"github.com/katocxl/pantherclaw/internal/gateways/ca"
@@ -34,8 +36,8 @@ import (
 	rapp "github.com/katocxl/pantherclaw/internal/response/app"
 )
 
-// m6Services are the M6 services (G0 M6): the internal CA, gateway identity
-// and the kill switch.
+// m6Services are the M6 services (G0 M6): the internal CA, gateway identity,
+// the kill switch and connections.
 type m6Services struct {
 	reg      *keys.Registry
 	ca       *ca.Authority
@@ -44,6 +46,8 @@ type m6Services struct {
 	hub *gwapp.Hub
 	// response is the kill switch (HR-113).
 	response *rapp.Service
+	// connections are the targets gateways serve (HR-183).
+	connections *capp.Service
 }
 
 // newM6 builds the M6 services; notify (M5 notifications) may be nil.
@@ -54,13 +58,15 @@ func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry, notify rapp.Notifier,
 	}
 	return &m6Services{
 		reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{}), hub: gwapp.NewHub(pool, log),
-		response: rapp.New(pool, notify, cfg.Auth.PublicURL),
+		response:    rapp.New(pool, notify, cfg.Auth.PublicURL),
+		connections: capp.New(pool, notify, cfg.Auth.PublicURL, cfg.GatewayAPI.URL),
 	}, nil
 }
 
-// registerPublic adds gateway administration, gateway enrollment and the
-// containment state to the public API. GatewayService's other procedures
-// declare gateway permissions, which the public API never grants (HR-181).
+// registerPublic adds gateway administration, gateway enrollment, the
+// containment state and connections to the public API. GatewayService's
+// other procedures declare gateway permissions, which the public API never
+// grants (HR-181).
 func (m *m6Services) registerPublic(rs *connect.Server) {
 	if m == nil {
 		return
@@ -68,6 +74,7 @@ func (m *m6Services) registerPublic(rs *connect.Server) {
 	pantherclawv1connect.RegisterGatewayAdminServiceHandler(rs, gatewaysrpc.NewAdmin(m.gateways))
 	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
 	pantherclawv1connect.RegisterContainmentServiceHandler(rs, responserpc.New(m.response))
+	pantherclawv1connect.RegisterConnectionServiceHandler(rs, connectionsrpc.New(m.connections))
 }
 
 // mountPages adds the emergency-stop page, the only place the kill switch
