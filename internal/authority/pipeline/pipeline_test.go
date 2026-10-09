@@ -198,7 +198,7 @@ func TestStep4_AuthorityOfEveryAncestor(t *testing.T) {
 	env := gdomain.Envelope{ID: gdomain.NewEnvelopeID(), Org: org, Revision: 1, Scope: gdomain.Scope{Kind: gdomain.ScopeTeam, ID: f.team}, Name: "payments"}
 	b, _ := gdomain.DecodeBounds([]byte(`{"operations": ["payments.refund.get"]}`))
 	env.Bounds = b
-	if err := f.w.Grants.PutEnvelope(t.Context(), org, env, testEvent()); err != nil {
+	if err := f.w.Grants.PutEnvelope(t.Context(), org, env, false, testEvent()); err != nil {
 		t.Fatal(err)
 	}
 	fresh := f.newGrant(grantBounds)

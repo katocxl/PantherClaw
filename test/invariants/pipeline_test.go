@@ -118,7 +118,7 @@ func TestINV03_ProhibitionsWin(t *testing.T) {
 			if err := w.w.Grants.PutEnvelope(context.Background(), org, gdomain.Envelope{
 				ID: gdomain.NewEnvelopeID(), Org: org, Revision: 1,
 				Scope: gdomain.Scope{Kind: gdomain.ScopeOrg}, Name: "org", Bounds: b,
-			}, auditEvent()); err != nil {
+			}, false, auditEvent()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -194,7 +194,7 @@ func TestINV05_TheDecisionBasisIsExact(t *testing.T) {
 			if err := w.w.Grants.PutEnvelope(context.Background(), org, gdomain.Envelope{
 				ID: gdomain.NewEnvelopeID(), Org: org, Revision: 1,
 				Scope: gdomain.Scope{Kind: gdomain.ScopeTeam, ID: w.team}, Name: "team",
-			}, auditEvent()); err != nil {
+			}, false, auditEvent()); err != nil {
 				t.Fatal(err)
 			}
 		case 2:

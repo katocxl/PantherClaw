@@ -203,6 +203,10 @@ func IsUniqueViolation(err error) bool { return hasCode(err, "23505") }
 // PostgreSQL also uses for row-level-security WITH CHECK violations.
 func IsPermissionDenied(err error) bool { return hasCode(err, "42501") }
 
+// IsDeadlock reports SQLSTATE 40P01 (deadlock_detected). Code that locks rows
+// in one fixed order never sees it; tests use it to prove that.
+func IsDeadlock(err error) bool { return hasCode(err, "40P01") }
+
 func hasCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == code

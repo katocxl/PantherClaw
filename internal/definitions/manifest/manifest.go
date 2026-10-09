@@ -64,17 +64,11 @@ func Decode(raw []byte) (*domain.Package, error) {
 	if err := json.Unmarshal(doc, &p, json.RejectUnknownMembers(true)); err != nil {
 		return nil, invalid("%v", err)
 	}
-	var parts struct {
-		Definitions []jsontext.Value `json:"definitions"`
-	}
-	if err := json.Unmarshal(doc, &parts); err != nil || len(parts.Definitions) != len(p.Definitions) {
+	canon, err := canonicalDefinitions(doc)
+	if err != nil || len(canon) != len(p.Definitions) {
 		return nil, invalid("definitions: %v", err)
 	}
-	for i, d := range parts.Definitions {
-		c := bytes.Clone(d)
-		if err := (*jsontext.Value)(&c).Canonicalize(); err != nil {
-			return nil, invalid("definitions[%d]: %v", i, err)
-		}
+	for i, c := range canon {
 		sum := sha256.Sum256(c)
 		p.Definitions[i].Digest = "sha256:" + hex.EncodeToString(sum[:])
 	}
@@ -203,4 +197,33 @@ func tokenErr(at string, err error) error {
 		return invalid("%s: %v", at, err)
 	}
 	return nil
+}
+
+// DefinitionsCanonical returns the RFC 8785 canonical JSON of each
+// definition of a package file, in file order: the exact bytes whose
+// SHA-256 is the definition digest.
+func DefinitionsCanonical(raw []byte) ([][]byte, error) {
+	doc, err := ToJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalDefinitions(doc)
+}
+
+func canonicalDefinitions(doc []byte) ([][]byte, error) {
+	var parts struct {
+		Definitions []jsontext.Value `json:"definitions"`
+	}
+	if err := json.Unmarshal(doc, &parts); err != nil {
+		return nil, invalid("definitions: %v", err)
+	}
+	out := make([][]byte, len(parts.Definitions))
+	for i, d := range parts.Definitions {
+		c := bytes.Clone(d)
+		if err := (*jsontext.Value)(&c).Canonicalize(); err != nil {
+			return nil, invalid("definitions[%d]: %v", i, err)
+		}
+		out[i] = c
+	}
+	return out, nil
 }
