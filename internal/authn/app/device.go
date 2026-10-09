@@ -5,7 +5,6 @@ package app
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/url"
@@ -46,13 +45,24 @@ var (
 	ErrExpiredToken         = &OAuthError{Code: "expired_token", Description: "the device code expired", Status: 400}
 )
 
-// IDClaims are the verified claims of an ID token.
+// IDClaims are the verified claims of an ID token. AuthTime is the zero
+// time when the provider did not send auth_time.
 type IDClaims struct {
 	Issuer, Subject string
 	Email           string
 	EmailVerified   bool
 	Name            string
 	Nonce           string
+	AuthTime        time.Time
+}
+
+// AuthRequest is one authorization request to a provider: state, nonce and
+// PKCE verifier are fresh per request. MaxAge, when positive, asks the
+// provider to re-authenticate a person who signed in longer ago (OIDC Core
+// 3.1.2.1); the ID token must then carry auth_time.
+type AuthRequest struct {
+	State, Nonce, Verifier, RedirectURI string
+	MaxAge                              time.Duration
 }
 
 // IdP is an OpenID provider PantherClaw is a relying party of
@@ -67,7 +77,7 @@ type IdP interface {
 	// TrustEmail reports whether the provider's email claim is trusted even
 	// without email_verified (an IdP-managed directory).
 	TrustEmail() bool
-	AuthCodeURL(ctx context.Context, state, nonce, verifier, redirectURI string) (string, error)
+	AuthCodeURL(ctx context.Context, req AuthRequest) (string, error)
 	Exchange(ctx context.Context, code, verifier, redirectURI string) (IDClaims, error)
 }
 
@@ -290,7 +300,7 @@ func (d *Device) Confirm(ctx context.Context, orgParam, userCode string) (Redire
 	if err != nil {
 		return Redirect{}, err
 	}
-	u, err := idp.AuthCodeURL(ctx, state.Reveal(), nonce, verifier, d.RedirectURI(idp.Name()))
+	u, err := idp.AuthCodeURL(ctx, AuthRequest{State: state.Reveal(), Nonce: nonce, Verifier: verifier, RedirectURI: d.RedirectURI(idp.Name())})
 	if err != nil {
 		return Redirect{}, err
 	}
@@ -344,28 +354,15 @@ func (d *Device) Callback(ctx context.Context, providerName string, params url.V
 		})
 		return Outcome{Reason: reason}, err
 	}
-	if deref(row.Provider) != providerName {
-		return deny("LOGIN_FAILED", slog.String("detail", "provider mix-up"))
-	}
-	if binding == "" || subtle.ConstantTimeCompare(credential.HashString(binding), row.BindingHash) != 1 {
-		return deny("LOGIN_FAILED", slog.String("detail", "browser binding"))
-	}
-	if params.Get("error") != "" {
-		return deny("IDP_ERROR")
-	}
-	needIss, err := idp.RequireIssParam(ctx)
-	if err != nil {
-		return deny("LOGIN_FAILED", slog.String("detail", "provider metadata"))
-	}
-	if iss := params.Get("iss"); (iss == "" && needIss) || (iss != "" && iss != idp.Issuer()) {
-		return deny("LOGIN_FAILED", slog.String("detail", "iss mismatch (RFC 9207)"))
-	}
-	claims, err := idp.Exchange(ctx, params.Get("code"), deref(row.PkceVerifier), d.RedirectURI(providerName))
-	if err != nil {
-		return deny("LOGIN_FAILED", slog.String("detail", "code exchange or ID token"), pclog.Err(err))
-	}
-	if row.Nonce == nil || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(*row.Nonce)) != 1 {
-		return deny("LOGIN_FAILED", slog.String("detail", "nonce"))
+	claims, failed := verifySignIn(ctx, idp, d.RedirectURI(providerName), providerName, params, binding, pendingSignIn{
+		provider: deref(row.Provider), bindingHash: row.BindingHash, nonce: row.Nonce, verifier: row.PkceVerifier,
+	}, d.clock.Now())
+	if failed != nil {
+		attrs := []slog.Attr{slog.String("detail", failed.detail)}
+		if failed.err != nil {
+			attrs = append(attrs, pclog.Err(failed.err))
+		}
+		return deny(failed.reason, attrs...)
 	}
 	var out Outcome
 	err = d.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {

@@ -46,6 +46,11 @@ type Knobs struct {
 	WrongIssParam string // send this iss in the authorization response
 	NoIssSupport  bool   // do not advertise RFC 9207
 	Error         string // return this error instead of a code
+	// AuthTime, when set, is sent as auth_time. Otherwise auth_time is the
+	// time of the authorization when max_age was requested, and absent
+	// when it was not (unless OmitAuthTime).
+	AuthTime     time.Time
+	OmitAuthTime bool
 }
 
 // Provider is a running test provider.
@@ -62,8 +67,9 @@ type Provider struct {
 }
 
 type grant struct {
-	nonce, challenge, redirect string
-	user                       User
+	nonce, challenge, redirect, maxAge string
+	user                               User
+	at                                 time.Time
 }
 
 // New starts a provider; it is closed when the test ends.
@@ -150,7 +156,9 @@ func (p *Provider) authorize(w http.ResponseWriter, r *http.Request) {
 	} else {
 		code := rand.Text()
 		p.mu.Lock()
-		p.codes[code] = grant{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirect: redirect, user: u}
+		p.codes[code] = grant{
+			nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirect: redirect, maxAge: q.Get("max_age"), user: u, at: time.Now(),
+		}
 		p.mu.Unlock()
 		back.Set("code", code)
 	}
@@ -200,6 +208,12 @@ func (p *Provider) idToken(g grant) string {
 	}
 	if k.AZP != "" {
 		claims["azp"] = k.AZP
+	}
+	switch {
+	case !k.AuthTime.IsZero():
+		claims["auth_time"] = k.AuthTime.Unix()
+	case g.maxAge != "" && !k.OmitAuthTime:
+		claims["auth_time"] = g.at.Unix()
 	}
 	if k.Expired {
 		claims["iat"], claims["exp"] = now.Add(-time.Hour).Unix(), now.Add(-30*time.Minute).Unix()
