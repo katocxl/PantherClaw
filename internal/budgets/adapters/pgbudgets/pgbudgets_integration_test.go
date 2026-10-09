@@ -141,12 +141,12 @@ func TestHR048_ReservationLocksNoRowBeforeItsUpdate(t *testing.T) {
 		txn, permit := ids.NewV7(), ids.NewV7()
 		if err := q.InsertDecision(ctx, dbq.InsertDecisionParams{
 			OrgID: org, ID: txn, RunID: ids.NewV7(), ActionID: ids.NewV7(), ActionHash: make([]byte, 32), Operation: "payments.refund.create",
-			Decision: "ALLOW", ReasonCode: "GRANT_COVERS", GatewayID: "gw-test", State: "FINAL",
+			Decision: "ALLOW", ReasonCode: "GRANT_COVERS", GatewayID: "gw-test", State: "FINAL", Mode: "enforce",
 		}); err != nil {
 			return err
 		}
 		if err := q.InsertPermitForTransaction(ctx, dbq.InsertPermitForTransactionParams{
-			OrgID: org, ID: permit, TransactionID: txn, GatewayID: "gw-test", Epoch: 1, ExpiresAt: time.Now().Add(time.Minute),
+			OrgID: org, ID: permit, TransactionID: txn, GatewayID: "gw-test", Epoch: 1, ExpiresAt: time.Now().Add(time.Minute), Mode: "enforce",
 		}); err != nil {
 			return err
 		}
