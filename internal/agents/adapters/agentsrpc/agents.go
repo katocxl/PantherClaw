@@ -10,6 +10,7 @@ package agentsrpc
 
 import (
 	"context"
+	"encoding/hex"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -307,4 +308,23 @@ func (s *Agents) ListAgentChanges(ctx context.Context, req *pantherclawv1.ListAg
 		})
 	}
 	return out, nil
+}
+
+// SubmitScanFindings implements AgentServiceHandler.
+func (s *Agents) SubmitScanFindings(ctx context.Context, req *pantherclawv1.SubmitScanFindingsRequest) (*pantherclawv1.SubmitScanFindingsResponse, error) {
+	findings := make([]app.ScanFinding, 0, len(req.GetFindings()))
+	for _, f := range req.GetFindings() {
+		k, err := hex.DecodeString(f.GetKey())
+		if err != nil || len(k) != 32 {
+			return nil, pcerr.New(pcerr.InvalidArgument, "SCAN_KEY", "a finding key is 64 hex digits")
+		}
+		findings = append(findings, app.ScanFinding{Kind: f.GetKind(), Key: [32]byte(k), Attributes: f.GetAttributes()})
+	}
+	r, err := s.inv.SubmitScan(ctx, req.GetHost(), findings)
+	if err != nil {
+		return nil, err
+	}
+	return &pantherclawv1.SubmitScanFindingsResponse{
+		Created: int32(r.Created), Counted: int32(r.Counted), Dropped: int32(r.Dropped), //nolint:gosec // G115: at most 200
+	}, nil
 }

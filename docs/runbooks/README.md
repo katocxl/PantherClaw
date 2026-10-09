@@ -10,3 +10,4 @@ Operational procedures. Each runbook is completed (from stub to tested procedure
 | [incident-response.md](incident-response.md) | M10 | Respond to a security incident in PantherClaw itself |
 | [dmca-takedown.md](dmca-takedown.md) | M0 | Handle copies that violate the licence or trademark |
 | [release.md](release.md) | M1 | Cut, verify and publish a release (G2/G3) |
+| [workload-identity.md](workload-identity.md) | M3 | Enroll workloads, set up GitHub Actions and Kubernetes attestation, run pull-request bots safely |
