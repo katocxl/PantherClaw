@@ -99,6 +99,10 @@ type Envelope struct {
 	// MinAttestation is the lowest attestation level any grant under this
 	// envelope may be used at.
 	MinAttestation int
+	// ChangedBy and RevisedAt record who stored the current revision, and
+	// when (empty before it is stored).
+	ChangedBy string
+	RevisedAt time.Time
 }
 
 var reasonPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`)

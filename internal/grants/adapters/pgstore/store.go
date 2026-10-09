@@ -41,6 +41,7 @@ type Store struct {
 var (
 	_ app.Repository = (*Store)(nil)
 	_ app.Subjects   = (*Store)(nil)
+	_ app.Listing    = (*Store)(nil)
 )
 
 // ScopeKey names an envelope scope as stored.
@@ -108,6 +109,7 @@ type grantRow struct {
 	CurrentRevision                             int32
 	NotBefore, ExpiresAt                        time.Time
 	Bounds, Requirements, Limits                []byte
+	RevisedAt                                   time.Time
 }
 
 func toGrant(org ids.OrgID, r grantRow) (domain.Grant, error) {
@@ -130,6 +132,7 @@ func toGrant(org ids.OrgID, r grantRow) (domain.Grant, error) {
 		Delegation:     domain.Delegation{Depth: int(r.DelegationDepth), MaxChildren: int(r.MaxChildren)},
 		MinAttestation: int(r.MinAtt), Depth: int(r.Depth),
 		Grantor: domain.Principal{Kind: domain.PrincipalKind(r.GrantorKind), ID: r.GrantorID}, Basis: r.Basis,
+		RevisedAt: r.RevisedAt,
 	}
 	if g.ID, err = domain.ParseGrantID(r.ID.String()); err != nil {
 		return domain.Grant{}, err
@@ -149,7 +152,7 @@ func fromGetGrant(r dbq.GetGrantRow) grantRow {
 	return grantRow{
 		r.ID, r.AgentID, r.EnvironmentID, r.GrantorID, r.InstanceID, r.PrincipalUserID, r.PrincipalSaID, r.ParentID,
 		r.Depth, r.DelegationDepth, r.MaxChildren, r.MinAttestation, r.State, r.GrantorKind, r.Basis, r.TaskRef,
-		r.CurrentRevision, r.NotBefore, r.ExpiresAt, r.Bounds, r.Requirements, r.Limits,
+		r.CurrentRevision, r.NotBefore, r.ExpiresAt, r.Bounds, r.Requirements, r.Limits, r.CreatedAt,
 	}
 }
 
@@ -157,7 +160,7 @@ func fromChain(r dbq.GetGrantChainRow) grantRow {
 	return grantRow{
 		r.ID, r.AgentID, r.EnvironmentID, r.GrantorID, r.InstanceID, r.PrincipalUserID, r.PrincipalSaID, r.ParentID,
 		r.Depth, r.DelegationDepth, r.MaxChildren, r.MinAttestation, r.State, r.GrantorKind, r.Basis, r.TaskRef,
-		r.CurrentRevision, r.NotBefore, r.ExpiresAt, r.Bounds, r.Requirements, r.Limits,
+		r.CurrentRevision, r.NotBefore, r.ExpiresAt, r.Bounds, r.Requirements, r.Limits, r.CreatedAt,
 	}
 }
 
@@ -214,7 +217,7 @@ func (s *Store) Envelopes(ctx context.Context, org ids.OrgID, scopes []domain.Sc
 			return err
 		}
 		for _, r := range rows {
-			e, err := toEnvelope(org, r)
+			e, err := toEnvelope(org, envelopeRow(r))
 			if err != nil {
 				return err
 			}
@@ -225,7 +228,114 @@ func (s *Store) Envelopes(ctx context.Context, org ids.OrgID, scopes []domain.Sc
 	return out, err
 }
 
-func toEnvelope(org ids.OrgID, r dbq.GetEnvelopesRow) (domain.Envelope, error) {
+// EnvelopeByID implements app.Repository: revision 0 is the current one.
+func (s *Store) EnvelopeByID(ctx context.Context, org ids.OrgID, id domain.EnvelopeID, revision int) (domain.Envelope, error) {
+	var out domain.Envelope
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		r, err := dbq.New(tx).GetEnvelopeRevision(ctx, org, id.UUID(), int32(revision)) //nolint:gosec // validated
+		if db.IsNoRows(err) {
+			return app.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		out, err = toEnvelope(org, envelopeRow(r))
+		return err
+	}, db.ReadOnly())
+	return out, err
+}
+
+// ListEnvelopes implements app.Repository: current revisions, oldest
+// first, optionally of one scope kind.
+func (s *Store) ListEnvelopes(ctx context.Context, org ids.OrgID, after ids.UUID, limit int32, kind domain.ScopeKind) ([]domain.Envelope, error) {
+	var out []domain.Envelope
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		rows, err := dbq.New(tx).ListEnvelopes(ctx, dbq.ListEnvelopesParams{
+			OrgID: org, After: optUUID(after), ScopeKind: string(kind), PageLimit: limit,
+		})
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			e, err := toEnvelope(org, envelopeRow(r))
+			if err != nil {
+				return err
+			}
+			out = append(out, e)
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// ListGrants implements app.Repository: newest first.
+func (s *Store) ListGrants(ctx context.Context, org ids.OrgID, f app.GrantFilter, before ids.UUID, limit int32) ([]domain.Grant, error) {
+	var out []domain.Grant
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		p := dbq.ListGrantsParams{OrgID: org, Before: optUUID(before), AgentID: f.AgentID, State: string(f.State), PageLimit: limit}
+		if !f.Parent.IsZero() {
+			parent := f.Parent.UUID()
+			p.ParentID = &parent
+		}
+		rows, err := dbq.New(tx).ListGrants(ctx, p)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			g, err := toGrant(org, grantRow{
+				r.ID, r.AgentID, r.EnvironmentID, r.GrantorID, r.InstanceID, r.PrincipalUserID, r.PrincipalSaID, r.ParentID,
+				r.Depth, r.DelegationDepth, r.MaxChildren, r.MinAttestation, r.State, r.GrantorKind, r.Basis, r.TaskRef,
+				r.CurrentRevision, r.NotBefore, r.ExpiresAt, r.Bounds, r.Requirements, r.Limits, r.CreatedAt,
+			})
+			if err != nil {
+				return err
+			}
+			out = append(out, g)
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// BudgetAccounts implements app.Repository: the latest period of every
+// budget account the owners hold.
+func (s *Store) BudgetAccounts(ctx context.Context, org ids.OrgID, owners []ids.UUID) ([]app.BudgetAccount, error) {
+	var out []app.BudgetAccount
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		rows, err := dbq.New(tx).ListOwnerBudgetAccounts(ctx, org, owners)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			a := app.BudgetAccount{
+				OwnerKind: r.OwnerKind, OwnerID: r.OwnerID, Rule: r.Rule, PeriodStart: r.PeriodStart, Rank: int(r.Rank),
+				Reserved: r.Reserved, Spent: r.Spent, ReservedCount: int64(r.ReservedCount), SpentCount: int64(r.SpentCount),
+			}
+			if r.Currency != nil {
+				a.Currency = *r.Currency
+			}
+			out = append(out, a)
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// envelopeRow is the shape of every guardrail read.
+type envelopeRow struct {
+	ID                              ids.UUID
+	ScopeKind, ScopeKey             string
+	Revision                        int32
+	Name                            string
+	Bounds, Requirements, Limits    []byte
+	MaxDepth, MaxChildren           pgtype.Int2
+	MaxRootLifetimeS, RepeatWindowS pgtype.Int8
+	MinAttestation                  int16
+	CreatedBy                       string
+	CreatedAt                       time.Time
+}
+
+func toEnvelope(org ids.OrgID, r envelopeRow) (domain.Envelope, error) {
 	scope, err := parseScope(r.ScopeKind, r.ScopeKey)
 	if err != nil {
 		return domain.Envelope{}, err
@@ -248,7 +358,7 @@ func toEnvelope(org ids.OrgID, r dbq.GetEnvelopesRow) (domain.Envelope, error) {
 	}
 	e := domain.Envelope{
 		ID: id, Org: org, Revision: int(r.Revision), Scope: scope, Name: r.Name, Bounds: b,
-		Requirements: reqs, Limits: lim, MinAttestation: int(r.MinAttestation),
+		Requirements: reqs, Limits: lim, MinAttestation: int(r.MinAttestation), ChangedBy: r.CreatedBy, RevisedAt: r.CreatedAt,
 	}
 	if r.MaxDepth.Valid {
 		v := int(r.MaxDepth.Int16)

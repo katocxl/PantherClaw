@@ -261,6 +261,62 @@ func (q *Queries) ListHeldReservations(ctx context.Context, orgID ids.OrgID, per
 	return items, nil
 }
 
+const listOwnerBudgetAccounts = `-- name: ListOwnerBudgetAccounts :many
+SELECT DISTINCT ON (owner_id, rule, key_hash)
+       id, owner_kind, owner_id, rule, period_start, rank, currency, reserved, spent, reserved_count, spent_count
+FROM pc.budget_accounts
+WHERE org_id = $1 AND owner_id = ANY($2::uuid[])
+ORDER BY owner_id, rule, key_hash, period_start DESC
+`
+
+type ListOwnerBudgetAccountsRow struct {
+	ID            ids.UUID
+	OwnerKind     string
+	OwnerID       ids.UUID
+	Rule          string
+	PeriodStart   time.Time
+	Rank          int16
+	Currency      *string
+	Reserved      money.Decimal
+	Spent         money.Decimal
+	ReservedCount int32
+	SpentCount    int32
+}
+
+// ListOwnerBudgetAccounts returns the latest period of every budget
+// account the given grants and guardrails own.
+func (q *Queries) ListOwnerBudgetAccounts(ctx context.Context, orgID ids.OrgID, ownerIds []ids.UUID) ([]ListOwnerBudgetAccountsRow, error) {
+	rows, err := q.db.Query(ctx, listOwnerBudgetAccounts, orgID, ownerIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOwnerBudgetAccountsRow{}
+	for rows.Next() {
+		var i ListOwnerBudgetAccountsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerKind,
+			&i.OwnerID,
+			&i.Rule,
+			&i.PeriodStart,
+			&i.Rank,
+			&i.Currency,
+			&i.Reserved,
+			&i.Spent,
+			&i.ReservedCount,
+			&i.SpentCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reserveBudgetAccount = `-- name: ReserveBudgetAccount :execresult
 UPDATE pc.budget_accounts
 SET reserved = reserved + $1, reserved_count = reserved_count + 1

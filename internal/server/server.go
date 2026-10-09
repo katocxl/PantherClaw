@@ -38,9 +38,13 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/billing"
 	"github.com/katocxl/pantherclaw/internal/billing/licence"
+	defspg "github.com/katocxl/pantherclaw/internal/definitions/adapters/pgstore"
 	"github.com/katocxl/pantherclaw/internal/evidence/chainer"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/grants/adapters/grantsrpc"
+	grantspg "github.com/katocxl/pantherclaw/internal/grants/adapters/pgstore"
+	grantsapp "github.com/katocxl/pantherclaw/internal/grants/app"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/identityrpc"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/issuerkeys"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
@@ -417,6 +421,13 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
 	d.authority.WithWorkloads(identity, runs)
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
+	gstore := &grantspg.Store{Pool: pool}
+	grants := &grantsapp.Service{
+		Repo: gstore, Subjects: gstore, Defs: &defspg.Store{Pool: pool}, Authz: grantsapp.SubjectAuthorizer{},
+		Clock: clock.System{}, Listing: gstore,
+	}
+	pantherclawv1connect.RegisterGrantServiceHandler(rs, grantsrpc.NewGrants(grants))
+	pantherclawv1connect.RegisterGuardrailServiceHandler(rs, grantsrpc.NewGuardrails(grants))
 	if d.m5 != nil {
 		pantherclawv1connect.RegisterAccountServiceHandler(rs, accountrpc.New(authnapp.NewAccount(pool, d.m5.webauthn, d.m5.notifications)))
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))

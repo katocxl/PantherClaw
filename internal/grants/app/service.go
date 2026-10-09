@@ -60,6 +60,8 @@ type Service struct {
 	Defs     Definitions
 	Authz    Authorizer
 	Clock    clock.Clock
+	// Listing serves the API's list and state reads (optional elsewhere).
+	Listing Listing
 }
 
 // IssueRequest asks for a new root grant.
@@ -127,6 +129,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (domain.Grant, er
 	if err := s.Repo.Issue(ctx, c.Org, g, ev); err != nil {
 		return domain.Grant{}, apiError(err)
 	}
+	g.RevisedAt = now
 	return g, nil
 }
 
@@ -201,6 +204,7 @@ func (s *Service) Revise(ctx context.Context, req ReviseRequest) (domain.Grant, 
 	if err := s.Repo.Revise(ctx, c.Org, next, rev.Widens, ev); err != nil {
 		return domain.Grant{}, domain.Revision{}, apiError(err)
 	}
+	next.RevisedAt = ic.Now
 	return next, rev, nil
 }
 

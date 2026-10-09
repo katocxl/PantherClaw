@@ -12,6 +12,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
@@ -136,4 +137,29 @@ func (pb ParamBound) fits(spec defs.ParamSpec, dim string) error {
 		}
 	}
 	return nil
+}
+
+// DecodeRequirements strictly decodes a requirements array (unknown fields
+// and duplicate keys are refused) and validates each requirement. Empty
+// input means no requirements.
+func DecodeRequirements(raw []byte) ([]Requirement, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > MaxBoundsBytes {
+		return nil, invalid("requirements: size %d over %d bytes", len(raw), MaxBoundsBytes)
+	}
+	var rs []Requirement
+	if err := json.Unmarshal(raw, &rs, json.RejectUnknownMembers(true)); err != nil {
+		return nil, invalid("requirements: %v", err)
+	}
+	if len(rs) > maxRequirements {
+		return nil, invalid("requirements: at most %d", maxRequirements)
+	}
+	for i, r := range rs {
+		if err := r.validate("requirements[" + strconv.Itoa(i) + "]"); err != nil {
+			return nil, err
+		}
+	}
+	return rs, nil
 }

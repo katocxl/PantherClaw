@@ -10,7 +10,7 @@
 SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
        g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
        r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
-       r.delegation_depth, r.max_children, r.min_attestation
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
 FROM pc.grants g
 JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
 WHERE g.org_id = sqlc.arg(org_id) AND g.id = sqlc.arg(id);
@@ -20,7 +20,7 @@ WHERE g.org_id = sqlc.arg(org_id) AND g.id = sqlc.arg(id);
 SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
        g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
        r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
-       r.delegation_depth, r.max_children, r.min_attestation
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
 FROM pc.grant_lineage l
 JOIN pc.grants g ON g.org_id = l.org_id AND g.id = l.ancestor_id
 JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
@@ -96,7 +96,7 @@ WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(run_id) AND grant_id IS NULL A
 
 -- name: GetEnvelopes :many
 SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
-       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
 FROM pc.envelopes e
 JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id AND r.revision = e.current_revision
 WHERE e.org_id = sqlc.arg(org_id) AND e.scope_key = ANY(sqlc.arg(scope_keys)::text[]);
@@ -143,3 +143,41 @@ SELECT state = 'ACTIVE' AS active FROM pc.users WHERE org_id = sqlc.arg(org_id) 
 
 -- name: SubjectServiceAccountActive :one
 SELECT state = 'ACTIVE' AS active FROM pc.service_accounts WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);
+
+-- ListGrants pages through an org's grants, newest first.
+-- name: ListGrants :many
+SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
+       g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
+       r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
+FROM pc.grants g
+JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
+WHERE g.org_id = sqlc.arg(org_id)
+  AND (sqlc.narg(before)::uuid IS NULL OR g.id < sqlc.narg(before)::uuid)
+  AND (sqlc.narg(agent_id)::uuid IS NULL OR g.agent_id = sqlc.narg(agent_id)::uuid)
+  AND (sqlc.narg(parent_id)::uuid IS NULL OR g.parent_id = sqlc.narg(parent_id)::uuid)
+  AND (sqlc.arg(state)::text = '' OR g.state = sqlc.arg(state)::text)
+ORDER BY g.id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- GetEnvelopeRevision returns one revision of a guardrail; revision 0 is
+-- the current one.
+-- name: GetEnvelopeRevision :one
+SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
+FROM pc.envelopes e
+JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id
+WHERE e.org_id = sqlc.arg(org_id) AND e.id = sqlc.arg(id)
+  AND r.revision = CASE WHEN sqlc.arg(revision)::integer = 0 THEN e.current_revision ELSE sqlc.arg(revision)::integer END;
+
+-- ListEnvelopes pages through an org's guardrails at their current
+-- revision, oldest first.
+-- name: ListEnvelopes :many
+SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
+FROM pc.envelopes e
+JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id AND r.revision = e.current_revision
+WHERE e.org_id = sqlc.arg(org_id) AND e.id > coalesce(sqlc.narg(after)::uuid, '00000000-0000-0000-0000-000000000000')
+  AND (sqlc.arg(scope_kind)::text = '' OR e.scope_kind = sqlc.arg(scope_kind)::text)
+ORDER BY e.id
+LIMIT sqlc.arg(page_limit);

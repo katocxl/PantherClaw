@@ -79,6 +79,7 @@ func (s *Service) PutEnvelope(ctx context.Context, req EnvelopeRequest) (domain.
 	if err := s.Repo.PutEnvelope(ctx, c.Org, next, change.Widens, ev); err != nil {
 		return domain.Envelope{}, domain.Change{}, apiError(err)
 	}
+	next.ChangedBy, next.RevisedAt = ev.Actor.Type+":"+ev.Actor.ID, s.Clock.Now()
 	return next, change, nil
 }
 

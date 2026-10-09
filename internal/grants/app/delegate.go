@@ -102,6 +102,7 @@ func (s *Service) Delegate(ctx context.Context, w Workload, req DelegateRequest)
 	if err := s.Repo.Delegate(ctx, w.Org, child, parent.Revision, childRun.ID, fan, ev); err != nil {
 		return domain.Grant{}, apiError(err)
 	}
+	child.RevisedAt = now
 	return child, nil
 }
 

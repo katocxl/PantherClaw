@@ -183,6 +183,8 @@ type Grant struct {
 	// a scope, or a parent grant's revision.
 	Grantor Principal
 	Basis   string
+	// RevisedAt is when the current revision was stored (zero before it is).
+	RevisedAt time.Time
 }
 
 // IsRoot reports whether the grant was issued by a person, not delegated.

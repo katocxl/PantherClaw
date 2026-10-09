@@ -386,3 +386,29 @@ func TestVersionsFollowEvaluationOrder(t *testing.T) {
 		t.Fatalf("versions %+v", vs)
 	}
 }
+
+// TestHR045_DecodeRequirementsIsStrict: requirements arrive as JSON from the
+// API; unknown members, duplicate keys and invalid requirements are refused,
+// and empty input means none.
+func TestHR045_DecodeRequirementsIsStrict(t *testing.T) {
+	ok := `[{"operations": ["payments.refund.create"], "approval": {"role": "approver", "count": 1}, "reason": "REFUND_REVIEW"}]`
+	rs, err := DecodeRequirements([]byte(ok))
+	if err != nil || len(rs) != 1 || rs[0].Approval == nil || rs[0].Approval.Count != 1 {
+		t.Fatalf("DecodeRequirements(valid) = %v, %v", rs, err)
+	}
+	if rs, err := DecodeRequirements(nil); err != nil || rs != nil {
+		t.Fatalf("DecodeRequirements(empty) = %v, %v", rs, err)
+	}
+	for name, raw := range map[string]string{
+		"unknown member": `[{"operations": ["payments.refund.create"], "approval": {"role": "approver", "count": 1}, "reason": "R_X", "x": 1}]`,
+		"duplicate key":  `[{"operations": ["a.b"], "operations": ["c.d"], "approval": {"role": "approver", "count": 1}, "reason": "R_X"}]`,
+		"no operations":  `[{"operations": [], "approval": {"role": "approver", "count": 1}, "reason": "R_X"}]`,
+		"both kinds":     `[{"operations": ["a.b"], "approval": {"role": "approver", "count": 1}, "step_up": {"subject": "user", "method": "webauthn"}, "reason": "R_X"}]`,
+		"bad reason":     `[{"operations": ["a.b"], "approval": {"role": "approver", "count": 1}, "reason": "lower"}]`,
+		"not an array":   `{"operations": ["a.b"]}`,
+	} {
+		if _, err := DecodeRequirements([]byte(raw)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", name, err)
+		}
+	}
+}

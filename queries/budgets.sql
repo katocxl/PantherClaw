@@ -76,3 +76,12 @@ ORDER BY id;
 -- name: SettleReservation :execresult
 UPDATE pc.reservations SET state = sqlc.arg(to_state), settled_at = now()
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'HELD';
+
+-- ListOwnerBudgetAccounts returns the latest period of every budget
+-- account the given grants and guardrails own.
+-- name: ListOwnerBudgetAccounts :many
+SELECT DISTINCT ON (owner_id, rule, key_hash)
+       id, owner_kind, owner_id, rule, period_start, rank, currency, reserved, spent, reserved_count, spent_count
+FROM pc.budget_accounts
+WHERE org_id = sqlc.arg(org_id) AND owner_id = ANY(sqlc.arg(owner_ids)::uuid[])
+ORDER BY owner_id, rule, key_hash, period_start DESC;

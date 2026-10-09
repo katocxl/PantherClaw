@@ -114,9 +114,61 @@ func (q *Queries) GetEnvelopeHead(ctx context.Context, orgID ids.OrgID, scopeKey
 	return i, err
 }
 
+const getEnvelopeRevision = `-- name: GetEnvelopeRevision :one
+SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
+FROM pc.envelopes e
+JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id
+WHERE e.org_id = $1 AND e.id = $2
+  AND r.revision = CASE WHEN $3::integer = 0 THEN e.current_revision ELSE $3::integer END
+`
+
+type GetEnvelopeRevisionRow struct {
+	ID               ids.UUID
+	ScopeKind        string
+	ScopeKey         string
+	Revision         int32
+	Name             string
+	Bounds           []byte
+	Requirements     []byte
+	Limits           []byte
+	MaxDepth         pgtype.Int2
+	MaxChildren      pgtype.Int2
+	MaxRootLifetimeS pgtype.Int8
+	RepeatWindowS    pgtype.Int8
+	MinAttestation   int16
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
+// GetEnvelopeRevision returns one revision of a guardrail; revision 0 is
+// the current one.
+func (q *Queries) GetEnvelopeRevision(ctx context.Context, orgID ids.OrgID, iD ids.UUID, revision int32) (GetEnvelopeRevisionRow, error) {
+	row := q.db.QueryRow(ctx, getEnvelopeRevision, orgID, iD, revision)
+	var i GetEnvelopeRevisionRow
+	err := row.Scan(
+		&i.ID,
+		&i.ScopeKind,
+		&i.ScopeKey,
+		&i.Revision,
+		&i.Name,
+		&i.Bounds,
+		&i.Requirements,
+		&i.Limits,
+		&i.MaxDepth,
+		&i.MaxChildren,
+		&i.MaxRootLifetimeS,
+		&i.RepeatWindowS,
+		&i.MinAttestation,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getEnvelopes = `-- name: GetEnvelopes :many
 SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
-       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
 FROM pc.envelopes e
 JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id AND r.revision = e.current_revision
 WHERE e.org_id = $1 AND e.scope_key = ANY($2::text[])
@@ -136,6 +188,8 @@ type GetEnvelopesRow struct {
 	MaxRootLifetimeS pgtype.Int8
 	RepeatWindowS    pgtype.Int8
 	MinAttestation   int16
+	CreatedBy        string
+	CreatedAt        time.Time
 }
 
 func (q *Queries) GetEnvelopes(ctx context.Context, orgID ids.OrgID, scopeKeys []string) ([]GetEnvelopesRow, error) {
@@ -161,6 +215,8 @@ func (q *Queries) GetEnvelopes(ctx context.Context, orgID ids.OrgID, scopeKeys [
 			&i.MaxRootLifetimeS,
 			&i.RepeatWindowS,
 			&i.MinAttestation,
+			&i.CreatedBy,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -177,7 +233,7 @@ const getGrant = `-- name: GetGrant :one
 SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
        g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
        r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
-       r.delegation_depth, r.max_children, r.min_attestation
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
 FROM pc.grants g
 JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
 WHERE g.org_id = $1 AND g.id = $2
@@ -206,6 +262,7 @@ type GetGrantRow struct {
 	DelegationDepth int16
 	MaxChildren     int16
 	MinAttestation  int16
+	CreatedAt       time.Time
 }
 
 // SPDX-License-Identifier: BUSL-1.1
@@ -241,6 +298,7 @@ func (q *Queries) GetGrant(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (G
 		&i.DelegationDepth,
 		&i.MaxChildren,
 		&i.MinAttestation,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -249,7 +307,7 @@ const getGrantChain = `-- name: GetGrantChain :many
 SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
        g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
        r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
-       r.delegation_depth, r.max_children, r.min_attestation
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
 FROM pc.grant_lineage l
 JOIN pc.grants g ON g.org_id = l.org_id AND g.id = l.ancestor_id
 JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
@@ -280,6 +338,7 @@ type GetGrantChainRow struct {
 	DelegationDepth int16
 	MaxChildren     int16
 	MinAttestation  int16
+	CreatedAt       time.Time
 }
 
 // GetGrantChain returns a grant and every ancestor, root first.
@@ -315,6 +374,7 @@ func (q *Queries) GetGrantChain(ctx context.Context, orgID ids.OrgID, iD ids.UUI
 			&i.DelegationDepth,
 			&i.MaxChildren,
 			&i.MinAttestation,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -517,6 +577,188 @@ func (q *Queries) InsertGrantRevision(ctx context.Context, arg InsertGrantRevisi
 		arg.CreatedBy,
 	)
 	return err
+}
+
+const listEnvelopes = `-- name: ListEnvelopes :many
+SELECT e.id, e.scope_kind, e.scope_key, r.revision, r.name, r.bounds, r.requirements, r.limits, r.max_depth,
+       r.max_children, r.max_root_lifetime_s, r.repeat_window_s, r.min_attestation, r.created_by, r.created_at
+FROM pc.envelopes e
+JOIN pc.envelope_revisions r ON r.org_id = e.org_id AND r.envelope_id = e.id AND r.revision = e.current_revision
+WHERE e.org_id = $1 AND e.id > coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
+  AND ($3::text = '' OR e.scope_kind = $3::text)
+ORDER BY e.id
+LIMIT $4
+`
+
+type ListEnvelopesParams struct {
+	OrgID     ids.OrgID
+	After     *ids.UUID
+	ScopeKind string
+	PageLimit int32
+}
+
+type ListEnvelopesRow struct {
+	ID               ids.UUID
+	ScopeKind        string
+	ScopeKey         string
+	Revision         int32
+	Name             string
+	Bounds           []byte
+	Requirements     []byte
+	Limits           []byte
+	MaxDepth         pgtype.Int2
+	MaxChildren      pgtype.Int2
+	MaxRootLifetimeS pgtype.Int8
+	RepeatWindowS    pgtype.Int8
+	MinAttestation   int16
+	CreatedBy        string
+	CreatedAt        time.Time
+}
+
+// ListEnvelopes pages through an org's guardrails at their current
+// revision, oldest first.
+func (q *Queries) ListEnvelopes(ctx context.Context, arg ListEnvelopesParams) ([]ListEnvelopesRow, error) {
+	rows, err := q.db.Query(ctx, listEnvelopes,
+		arg.OrgID,
+		arg.After,
+		arg.ScopeKind,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEnvelopesRow{}
+	for rows.Next() {
+		var i ListEnvelopesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ScopeKind,
+			&i.ScopeKey,
+			&i.Revision,
+			&i.Name,
+			&i.Bounds,
+			&i.Requirements,
+			&i.Limits,
+			&i.MaxDepth,
+			&i.MaxChildren,
+			&i.MaxRootLifetimeS,
+			&i.RepeatWindowS,
+			&i.MinAttestation,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGrants = `-- name: ListGrants :many
+SELECT g.id, g.agent_id, g.instance_id, g.principal_user_id, g.principal_sa_id, g.environment_id, g.parent_id,
+       g.depth, g.state, g.current_revision, g.grantor_kind, g.grantor_id, g.basis,
+       r.task_ref, r.not_before, r.expires_at, r.bounds, r.requirements, r.limits,
+       r.delegation_depth, r.max_children, r.min_attestation, r.created_at
+FROM pc.grants g
+JOIN pc.grant_revisions r ON r.org_id = g.org_id AND r.grant_id = g.id AND r.revision = g.current_revision
+WHERE g.org_id = $1
+  AND ($2::uuid IS NULL OR g.id < $2::uuid)
+  AND ($3::uuid IS NULL OR g.agent_id = $3::uuid)
+  AND ($4::uuid IS NULL OR g.parent_id = $4::uuid)
+  AND ($5::text = '' OR g.state = $5::text)
+ORDER BY g.id DESC
+LIMIT $6
+`
+
+type ListGrantsParams struct {
+	OrgID     ids.OrgID
+	Before    *ids.UUID
+	AgentID   *ids.UUID
+	ParentID  *ids.UUID
+	State     string
+	PageLimit int32
+}
+
+type ListGrantsRow struct {
+	ID              ids.UUID
+	AgentID         ids.UUID
+	InstanceID      *ids.UUID
+	PrincipalUserID *ids.UUID
+	PrincipalSaID   *ids.UUID
+	EnvironmentID   ids.UUID
+	ParentID        *ids.UUID
+	Depth           int16
+	State           string
+	CurrentRevision int32
+	GrantorKind     string
+	GrantorID       ids.UUID
+	Basis           string
+	TaskRef         string
+	NotBefore       time.Time
+	ExpiresAt       time.Time
+	Bounds          []byte
+	Requirements    []byte
+	Limits          []byte
+	DelegationDepth int16
+	MaxChildren     int16
+	MinAttestation  int16
+	CreatedAt       time.Time
+}
+
+// ListGrants pages through an org's grants, newest first.
+func (q *Queries) ListGrants(ctx context.Context, arg ListGrantsParams) ([]ListGrantsRow, error) {
+	rows, err := q.db.Query(ctx, listGrants,
+		arg.OrgID,
+		arg.Before,
+		arg.AgentID,
+		arg.ParentID,
+		arg.State,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGrantsRow{}
+	for rows.Next() {
+		var i ListGrantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.InstanceID,
+			&i.PrincipalUserID,
+			&i.PrincipalSaID,
+			&i.EnvironmentID,
+			&i.ParentID,
+			&i.Depth,
+			&i.State,
+			&i.CurrentRevision,
+			&i.GrantorKind,
+			&i.GrantorID,
+			&i.Basis,
+			&i.TaskRef,
+			&i.NotBefore,
+			&i.ExpiresAt,
+			&i.Bounds,
+			&i.Requirements,
+			&i.Limits,
+			&i.DelegationDepth,
+			&i.MaxChildren,
+			&i.MinAttestation,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockGrant = `-- name: LockGrant :one
