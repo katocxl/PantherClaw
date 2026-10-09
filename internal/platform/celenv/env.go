@@ -93,6 +93,7 @@ func New(limits Limits, schema Schema, vars ...Variable) (*Env, error) {
 		),
 	}
 	opts = append(opts, moneyLibrary()...)
+	opts = append(opts, pathLibrary()...)
 	for _, v := range vars {
 		opts = append(opts, cel.Variable(v.Name, v.Type))
 	}

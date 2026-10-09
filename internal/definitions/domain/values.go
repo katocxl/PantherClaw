@@ -24,7 +24,7 @@ type Value struct {
 	Money   money.Money   // money
 	Decimal money.Decimal // decimal
 	Int     int64         // integer
-	Str     string        // enum, identifier, text
+	Str     string        // enum, identifier, text, command, path
 	Bool    bool          // boolean
 	List    []string      // identifier_list
 }
@@ -83,7 +83,7 @@ func (p ParamSpec) decode(name string, raw jsontext.Value) (Value, error) {
 		if err = json.Unmarshal(raw, &v.List); err == nil {
 			err = p.list(v.List)
 		}
-	case TypeEnum, TypeIdentifier, TypeText:
+	case TypeEnum, TypeIdentifier, TypeText, TypeCommand, TypePath:
 		if err = json.Unmarshal(raw, &v.Str); err == nil {
 			err = p.str(v.Str)
 		}
@@ -149,7 +149,15 @@ func (p ParamSpec) str(s string) error {
 		return nil
 	case TypeIdentifier:
 		return p.identifier(s)
-	case TypeText:
+	case TypePath:
+		if p.MaxLength > 0 && len(s) > p.MaxLength {
+			return fmt.Errorf("longer than %d bytes", p.MaxLength)
+		}
+		if n, err := actionir.NormalizePath(s); err != nil || n != s {
+			return fmt.Errorf("not a normalized absolute path (HR-187)")
+		}
+		return nil
+	case TypeText, TypeCommand:
 	case TypeMoney, TypeDecimal, TypeInteger, TypeIdentifierList, TypeBoolean:
 		return fmt.Errorf("not a string type")
 	}
@@ -221,7 +229,7 @@ func (v Value) wire() any {
 		return v.Bool
 	case TypeIdentifierList:
 		return v.List
-	case TypeEnum, TypeIdentifier, TypeText:
+	case TypeEnum, TypeIdentifier, TypeText, TypeCommand, TypePath:
 		return v.Str
 	}
 	return nil

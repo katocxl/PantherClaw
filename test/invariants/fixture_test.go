@@ -60,8 +60,13 @@ func newWorld(tb fataler) *world {
 	}
 	// An untrusted note on refunds (text is never material, HR-023).
 	raw = bytes.Replace(raw, []byte("    effects:"), []byte("      note:\n        type: text\n    effects:"), 1)
-	mcp := []byte("        tool: create_refund\n        route: payments-refund\n        extract:\n          target_id: input.charge\n          params:\n            amount: money(input.amount, input.currency)\n            reason: input.reason")
-	raw = bytes.Replace(raw, mcp, append(append([]byte{}, mcp...), []byte("\n            note: input.note")...), 1)
+	// The MCP refund mapping is the refund definition's last mapping, right
+	// before its dispatch template.
+	mcp := []byte("            reason: input.reason\n    dispatch:")
+	if !bytes.Contains(raw, mcp) {
+		tb.Fatal("the MCP refund mapping moved; update the fixture")
+	}
+	raw = bytes.Replace(raw, mcp, []byte("            reason: input.reason\n            note: input.note\n    dispatch:"), 1)
 	pkg, err := manifest.Decode(raw)
 	if err != nil {
 		tb.Fatal(err)
