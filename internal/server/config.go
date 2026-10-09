@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
-	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
@@ -282,6 +281,10 @@ type OIDCProviderConfig struct {
 	// AllowInsecureLoopback allows an http:// issuer on a loopback host
 	// (local Keycloak). Development only.
 	AllowInsecureLoopback bool `json:"allow_insecure_loopback"`
+	// SubjectTokenAudience, when set, accepts this provider's tokens as RFC
+	// 8693 subject tokens at StartRun when their aud contains it, so a run
+	// can represent a signed-in user (HR-145). Leave it empty otherwise.
+	SubjectTokenAudience string `json:"subject_token_audience"`
 }
 
 func (c *Config) validateOIDC() []error {
@@ -298,7 +301,7 @@ func (c *Config) validateOIDC() []error {
 		}
 		if _, err := oidcrp.New(oidcrp.Config{
 			Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: pclog.NewSecret([]byte("x")),
-			AllowInsecureLoopback: p.AllowInsecureLoopback,
+			AllowInsecureLoopback: p.AllowInsecureLoopback, SubjectTokenAudience: p.SubjectTokenAudience,
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", at, err))
 		}
@@ -307,8 +310,8 @@ func (c *Config) validateOIDC() []error {
 }
 
 // oidcProviders builds the configured providers, reading their secrets.
-func (c *Config) oidcProviders() ([]authnapp.IdP, error) {
-	var out []authnapp.IdP
+func (c *Config) oidcProviders() ([]*oidcrp.Provider, error) {
+	var out []*oidcrp.Provider
 	for _, p := range c.Auth.OIDCProviders {
 		secret, err := config.ReadSecretFile(p.ClientSecretFile)
 		if err != nil {
@@ -316,7 +319,7 @@ func (c *Config) oidcProviders() ([]authnapp.IdP, error) {
 		}
 		prov, err := oidcrp.New(oidcrp.Config{
 			Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: secret, Scopes: p.Scopes,
-			TrustEmail: p.TrustEmail, AllowInsecureLoopback: p.AllowInsecureLoopback,
+			TrustEmail: p.TrustEmail, AllowInsecureLoopback: p.AllowInsecureLoopback, SubjectTokenAudience: p.SubjectTokenAudience,
 		})
 		if err != nil {
 			return nil, err

@@ -55,3 +55,9 @@ SET state = CASE WHEN runs.id = sqlc.arg(id) THEN sqlc.arg(state)::text ELSE 'RE
     ended_at = now()
 WHERE runs.org_id = sqlc.arg(org_id) AND runs.id IN (SELECT id FROM tree) AND runs.state = 'ACTIVE'
 RETURNING *;
+
+-- A subject token proves only an existing, active user of the org; it
+-- never creates one (HR-145).
+-- name: ActiveUserBySubject :one
+SELECT id FROM pc.users
+WHERE org_id = sqlc.arg(org_id) AND issuer = sqlc.arg(issuer) AND subject = sqlc.arg(subject) AND state = 'ACTIVE';

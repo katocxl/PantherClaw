@@ -15,12 +15,15 @@ import (
 
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
+	"github.com/katocxl/pantherclaw/internal/authn/oidctest"
 	billing "github.com/katocxl/pantherclaw/internal/billing/domain"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/page"
 	"github.com/katocxl/pantherclaw/internal/runs/app"
 	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
@@ -269,5 +272,70 @@ func TestHR022_RetiringAnAgentRevokesItsRunTree(t *testing.T) {
 	}
 	if l, _ := w.svc.ListRuns(w.as(td.KindUser, ids.NewV7()), page.Request{Size: 10}, nil, nil); len(l.Items) != 0 {
 		t.Errorf("a caller without run.read listed %d runs", len(l.Items))
+	}
+}
+
+// TestHR146_SubjectTokensRepresentActiveUsersOnce: a launcher with
+// run.represent presents a provider token; the run then represents that
+// user, the token is single use, the user must already be active, and the
+// run's authority is the same as without a token (no grant in M3).
+func TestHR146_SubjectTokensRepresentActiveUsersOnce(t *testing.T) {
+	w := newWorld(t)
+	idp := oidctest.New(t)
+	p, err := oidcrp.New(oidcrp.Config{
+		Name: "corp", Issuer: idp.Issuer(), ClientID: idp.ClientID, ClientSecret: pclog.NewSecret([]byte(idp.ClientSecret)),
+		AllowInsecureLoopback: true, HTTPClient: idp.Client(), SubjectTokenAudience: "https://pc.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := app.New(w.pool).WithSubjects(oidcrp.Subjects{p})
+	alice, bob := ids.NewV7(), ids.NewV7()
+	w.exec(t, "INSERT INTO pc.users (org_id, id, issuer, subject) VALUES ($1, $2, $3, 'alice')", w.org, alice, idp.Issuer())
+	w.exec(t, "INSERT INTO pc.users (org_id, id, issuer, subject, state) VALUES ($1, $2, $3, 'bob', 'DISABLED')", w.org, bob, idp.Issuer())
+	sa := ids.NewV7()
+	w.exec(t, "INSERT INTO pc.service_accounts (org_id, id, name, created_by) VALUES ($1, $2, 'portal', 'test')", w.org, sa)
+	launcher := w.as(td.KindServiceAccount, sa, td.RoleRunLauncher)
+	agent := w.agent(t)
+	token := func(sub string) string {
+		now := time.Now()
+		return idp.Token(map[string]any{
+			"iss": idp.Issuer(), "sub": sub, "aud": "https://pc.example.test", "jti": ids.NewV7().String(),
+			"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+		}, "")
+	}
+	start := func(ctx context.Context, tok, typ string) (app.Run, error) {
+		return svc.StartRun(ctx, app.StartInput{AgentID: agent, SubjectToken: tok, SubjectTokenType: typ})
+	}
+	tok := token("alice")
+	_, err = start(w.as(td.KindUser, w.owner, td.RoleDeveloper), tok, app.SubjectIDToken)
+	wantCode(t, "without run.represent", err, pcerr.PermissionDenied, "")
+	r, err := start(launcher, tok, app.SubjectIDToken)
+	if err != nil || r.PrincipalSource != app.SourceSubjectToken || r.Principal != (app.Actor{Kind: "user", ID: alice.String()}) ||
+		r.Launcher != (app.Actor{Kind: "service_account", ID: sa.String()}) || r.SubjectIssuer != idp.Issuer() ||
+		r.SubjectSubject != "alice" || len(r.ActorChain) != 2 {
+		t.Fatalf("represented run (the refused attempt must not consume the token): %+v, %v", r, err)
+	}
+	_, err = start(launcher, tok, app.SubjectIDToken)
+	wantCode(t, "reused token", err, pcerr.PermissionDenied, "SUBJECT_TOKEN")
+	for name, tc := range map[string][2]string{
+		"disabled user":      {token("bob"), app.SubjectIDToken},
+		"unknown user":       {token("carol"), app.SubjectIDToken},
+		"ID token as access": {token("alice"), app.SubjectAccessToken},
+	} {
+		_, err := start(launcher, tc[0], tc[1])
+		wantCode(t, name, err, pcerr.PermissionDenied, "SUBJECT_TOKEN")
+	}
+	_, err = start(launcher, token("alice"), "")
+	wantCode(t, "no token type", err, pcerr.InvalidArgument, "SUBJECT_TOKEN_TYPE")
+	if n := w.count(t, "SELECT count(*) FROM pc.users WHERE org_id = $1", w.org); n != 3 {
+		t.Errorf("users %d: a subject token created one", n)
+	}
+	self, err := svc.StartRun(launcher, app.StartInput{AgentID: agent})
+	if err != nil || self.PrincipalSource != app.SourceLauncher {
+		t.Fatal(err)
+	}
+	if n := w.count(t, "SELECT count(*) FROM pc.runs WHERE org_id = $1 AND grant_id IS NOT NULL", w.org); n != 0 {
+		t.Errorf("%d runs carry a grant", n)
 	}
 }

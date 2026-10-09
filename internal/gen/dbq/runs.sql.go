@@ -15,6 +15,20 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
+const activeUserBySubject = `-- name: ActiveUserBySubject :one
+SELECT id FROM pc.users
+WHERE org_id = $1 AND issuer = $2 AND subject = $3 AND state = 'ACTIVE'
+`
+
+// A subject token proves only an existing, active user of the org; it
+// never creates one (HR-145).
+func (q *Queries) ActiveUserBySubject(ctx context.Context, orgID ids.OrgID, issuer string, subject string) (ids.UUID, error) {
+	row := q.db.QueryRow(ctx, activeUserBySubject, orgID, issuer, subject)
+	var id ids.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const endRunTree = `-- name: EndRunTree :many
 WITH RECURSIVE tree AS (
     SELECT r.id FROM pc.runs r WHERE r.org_id = $4 AND r.id = $1
