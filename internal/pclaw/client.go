@@ -107,6 +107,9 @@ type clients struct {
 	tenancy pantherclawv1connect.TenancyServiceClient
 	access  pantherclawv1connect.AccessServiceClient
 	sa      pantherclawv1connect.ServiceAccountServiceClient
+	// M5 part 1.
+	account       pantherclawv1connect.AccountServiceClient
+	notifications pantherclawv1connect.NotificationServiceClient
 }
 
 func (a *app) clients() (clients, error) {
@@ -116,9 +119,11 @@ func (a *app) clients() (clients, error) {
 	}
 	c := s.connect()
 	return clients{
-		tenancy: pantherclawv1connect.NewTenancyServiceClient(c),
-		access:  pantherclawv1connect.NewAccessServiceClient(c),
-		sa:      pantherclawv1connect.NewServiceAccountServiceClient(c),
+		tenancy:       pantherclawv1connect.NewTenancyServiceClient(c),
+		access:        pantherclawv1connect.NewAccessServiceClient(c),
+		sa:            pantherclawv1connect.NewServiceAccountServiceClient(c),
+		account:       pantherclawv1connect.NewAccountServiceClient(c),
+		notifications: pantherclawv1connect.NewNotificationServiceClient(c),
 	}, nil
 }
 
