@@ -36,8 +36,8 @@ const (
 	// Queue is the River queue of deliveries: slow destinations never hold
 	// up other jobs.
 	Queue = "notifications"
-	// MaxAttempts bounds the attempts of one delivery (Standard Webhooks
-	// schedule, about 27 hours).
+	// MaxAttempts bounds the attempts of one delivery (a schedule adapted
+	// from the Standard Webhooks example, about 27 hours).
 	MaxAttempts = 8
 	// MaxPendingPerChannel bounds a channel's queue; beyond it new
 	// deliveries are DROPPED and the channel is flagged.
