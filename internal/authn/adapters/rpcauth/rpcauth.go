@@ -34,6 +34,14 @@ func New(a Authenticator, perms map[string]td.Permission, gateway rpc.Authentica
 		if !ok || perm == td.PermPublic {
 			return nil, connect.NewError(connect.CodePermissionDenied, "permission denied")
 		}
+		if perm.Workload() {
+			// WorkloadService is authenticated by PAP/1: each handler verifies
+			// the request proof (and workload token) itself before doing
+			// anything (internal/identity/adapters/workloadrpc). No principal
+			// is put in the context, so no use case for people or services
+			// can run from here.
+			return ctx, nil
+		}
 		if perm.Gateway() {
 			if gateway == nil {
 				return nil, connect.NewError(connect.CodeUnauthenticated, "gateway credentials required")

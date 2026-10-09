@@ -104,7 +104,7 @@ message ListWaitlistEntriesRequest {
 
 // ListWaitlistEntriesResponse is one page.
 message ListWaitlistEntriesResponse {
-  // Entries, earliest deadline first.
+  // Entries, oldest first.
   repeated WaitlistEntry entries = 1;
   // Token for the next page; empty on the last page.
   string next_page_token = 2;
