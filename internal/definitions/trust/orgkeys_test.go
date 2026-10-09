@@ -41,6 +41,9 @@ func TestHR162_OrgKeySignsTheOrgsOwnPackages(t *testing.T) {
 	if !IsOrgKID(v.KID) || IsOrgKID(RootKID(s.Public())) || OrgKID(s.Public()) == RootKID(s.Public()) {
 		t.Fatalf("kid %q: org and root kids must differ by prefix", v.KID)
 	}
+	if got := rootkey.KID(rootkey.PurposeOrgPackages, s.Public()); got != v.KID {
+		t.Fatalf("pclaw's key file kid %q differs from the trust kid %q", got, v.KID)
+	}
 	if _, err := v.Match("acme.billing", "1.0.0", orgPkg); err != nil {
 		t.Fatal(err)
 	}
