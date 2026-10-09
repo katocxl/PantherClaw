@@ -3,7 +3,7 @@
 
 # PantherClaw Authority Protocol — PAP/1
 
-**Status:** Draft 1 (2026-10-08) · **License:** Apache-2.0 (this directory) · **Normative language:** MUST, MUST NOT, SHOULD, MAY per RFC 2119/8174.
+**Status:** Draft 1 (2026-10-08; §3.3 and §5 revised 2026-10-09) · **License:** Apache-2.0 (this directory) · **Normative language:** MUST, MUST NOT, SHOULD, MAY per RFC 2119/8174.
 
 PAP/1 defines how an AI agent workload proves *who it is*, how a run is bound to *whose authority* it uses, how a requested action is expressed *exactly*, and how authorization, dispatch and evidence are represented so that any party can verify them. It is open so that SDKs, gateways and target-side verifiers interoperate.
 
@@ -48,10 +48,10 @@ The workload MUST generate an Ed25519 key pair locally. The private key MUST NOT
 | Level | Evidence | Notes |
 |---|---|---|
 | L1 | Enrollment token + Owner fingerprint confirmation | Desktop workloads (`pclaw mcp proxy`) are capped at L1. |
-| L2 | GitHub Actions OIDC token or Kubernetes projected service-account token (validated via TokenReview) + image digest | GitHub: MUST match `repository_id`, `repository_owner_id`, `job_workflow_ref`; `aud` MUST be `pantherclaw:<org_id>`; MUST reject `pull_request` from forks and `pull_request_target`. |
-| L3 | SPIFFE SVID / cloud instance identity | Future. |
+| L2 | Workload token from a **trusted issuer** configured for the org. Presets: GitHub Actions OIDC token; Kubernetes projected service-account token (validated via TokenReview) + image digest | Every issuer entry MUST pin the issuer, key source, audience (`pantherclaw:<org_id>`), allowed algorithms and at least one immutable claim binding the token to one agent; an entry without one MUST be rejected. Rules built into a preset MUST NOT be disabled by configuration. GitHub: MUST match `repository_id` and `repository_owner_id`; MUST require `ref_protected` to be `true` (the triggering ref is a protected branch or tag); MUST reject tokens whose `event_name` is `pull_request` (from forks or the same repository) or `pull_request_target`, because those runs execute code not yet reviewed into a protected ref. The workflow binding depends on the job type, and each issuer entry declares which it accepts: an ordinary workflow job binds on `workflow_ref` (workflow path and ref); a job that calls a reusable workflow binds on `job_workflow_ref` (the called workflow's path and ref, which MUST itself be a protected branch or tag of its repository). An entry MAY also pin `workflow_sha` or `job_workflow_sha` to one exact revision. Kubernetes: the projected token MUST carry the entry's audience and be validated through TokenReview, which MUST return the bound pod's name and UID; the entry pins the cluster, namespace and service account. The image digest MUST come from trusted cluster state for that pod UID (the API server's `status.containerStatuses[].imageID`) or from signed evidence bound to that pod, such as a verified image signature or admission attestation; a digest the workload supplies itself is only `declared`. Each attestation token is single use (`jti`). Further presets (GitLab CI, cloud workload identity, SPIFFE JWT-SVID, Microsoft Entra Agent ID) are future. |
+| L3 | SPIFFE X.509 SVID / cloud instance identity | Future. |
 
-Release identity (code hash, image digest) is recorded as `declared` unless supplied by L2+ attestation, then `attested`.
+Release identity (code hash, image digest) is recorded as `declared` unless supplied by L2+ attestation, then `attested`. A value the workload reports about itself is always `declared`, whatever its attestation level.
 
 ### 3.4 Workload token
 Issued by the Authority after admission; JWS compact, header `{"alg":"EdDSA","kid":"<authority key id>","typ":"pap-wt+jwt"}`:
@@ -88,6 +88,8 @@ Verification order (MUST): (1) verify workload token signature, `iss`, `aud`, `e
 ## 5. Runs
 
 A **run** is created by the Authority (never by the workload) via `StartRun{agent_id, instance_id?, launcher, represented_principal, grant_id | task template, task_ref}` called by an authenticated launcher (human session, service account, or automation identity). The Authority returns a server-minted `run_id` bound to: instance (or instance set), launcher, represented principal and grant. Workloads reference `run_id`; any mismatch with the bound instance ⇒ `DENY` (tamper).
+
+**Represented principal from the customer's identity provider.** When the launcher is not the represented principal (for example a service that starts a run for a signed-in user), `StartRun` MAY carry `subject_token` and `subject_token_type` with RFC 8693 semantics, issued to that user by an OIDC provider configured for the org: either an OIDC ID token or an access token that is a signed JWT (RFC 9068 profile) carrying `iss`, `sub`, `aud`, `exp` and `iat`. Opaque access tokens MUST be rejected; PAP/1 defines no introspection path. The launcher is the actor. The Authority MUST verify the signature, issuer, audience (MUST name the Authority), expiry and freshness (`iat` ≤ 5 minutes old), MUST reject a replayed token (keyed on `jti`, or on the token's SHA-256 when it has none), and MUST link `(iss, sub)` to a user of the org. The run records the provider identity and the actor chain. A subject token proves who is represented; it MUST NOT create, widen or substitute for a grant.
 
 ## 6. ActionIR v1 — the canonical action
 

@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Format: Context → Decision → Consequences → Alternatives considered. Status: Proposed | Accepted | Superseded by ADR-XXXX. New ADRs are numbered sequentially and reviewed at G0/G1. All ADRs below were accepted at G0 on 2026-10-08 after an adversarial security review and a toolchain-currency review.
+Format: Context → Decision → Consequences → Alternatives considered. Status: Proposed | Accepted | Superseded by ADR-XXXX. New ADRs are numbered sequentially and reviewed at G0/G1. ADR-0001 to ADR-0014 were accepted at G0 on 2026-10-08 after an adversarial security review and a toolchain-currency review; later ADRs state their own status and date.
 
 | ADR | Title |
 |---|---|
@@ -20,3 +20,6 @@ Format: Context → Decision → Consequences → Alternatives considered. Statu
 | [0014](0014-permits-and-dispatch-commit.md) | Dispatch permits with a server-side commit point |
 | [0015](0015-budget-settlement-off-the-hot-row.md) | Keep budget settlement off the hot row (**Proposed**, M1.5) |
 | [0016](0016-human-and-service-authentication.md) | Human and service authentication for the control plane (M2) |
+| [0017](0017-coding-agents-first-and-proven-coverage.md) | Coding and DevOps agents first; v0.1.0 built around proven coverage (2026-10-09) |
+| [0018](0018-federated-workload-identity-and-represented-principals.md) | Federated workload identity and represented principals from the customer's IdP (M3) |
+| [0019](0019-standards-at-the-edges.md) | Standards at the edges: AuthZEN endpoint (M14) and Shared Signals receiver (M10) |

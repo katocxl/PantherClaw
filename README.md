@@ -1,14 +1,29 @@
 # PantherClaw
 
-**Runtime authorization for AI agents.**
+**The agent transaction firewall.**
 
-PantherClaw sits between AI agents and the systems they act on, so that every consequential action an agent takes is authorized, controlled and accounted for.
+PantherClaw verifies which AI agent is acting and for whom, gives it only the access its current task needs, and puts its actions behind a firewall that proves, route by route, where it cannot be bypassed, with evidence your auditors can check. It answers one question for every consequential action: can this agent run do this, for this task, through this route, right now, and can we prove the boundary held?
 
-> **Status: pre-alpha.** Under active development; not ready for production use.
+> **Status: pre-alpha.** Under active development; not ready for production use. Everything below is planned.
+
+## What's inside
+
+| Component | Tagline | What it does |
+|---|---|---|
+| **Badge** | Know every agent | Finds every agent, gives it an owner, and verifies which workload is acting and for whom, using the identities you already have (your IdP, GitHub Actions, Kubernetes) |
+| **Pass** | Grant temporary access | Just enough access for one task, for a limited time, with exact human approvals |
+| **Guardrails** | Set the boundaries | Org rules, budgets and sequence limits that hold across parallel agents and sub-agents |
+| **Checkpoint** | Control every action | An agent firewall: a gateway for MCP and API calls plus a containment sandbox, with per-route evidence of which routes cannot be bypassed |
+| **Stash** | Keep credentials safe | Credentials PantherClaw holds never reach the agent and are used only for authorized actions; keys an agent still holds are reported as gaps |
+| **Reflex** | Stop threats instantly | Spot misuse, see the blast radius, and stop a run, an agent or the whole org; the target is containment reaching every gateway in under 1 second at p99 |
+| **Trail** | Prove what happened | Signed decision, execution and effect receipts you can verify offline, plus a red-team range for your own policies |
+| **Root** | Manage it all | The platform: self-hosted or hybrid deployment, administration, automations and licensing |
+
+Details: [docs/PRODUCT.md](docs/PRODUCT.md).
 
 ## Integrations
 
-Planned (not yet released): MCP clients, Claude Code, and Python, TypeScript and Go SDKs. See the milestones in [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md).
+Planned (not yet released), coding agents first: Claude Code and the Claude Agent SDK, MCP clients, GitHub, and Go, Python and TypeScript SDKs. See the milestones in [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md).
 
 ## Development
 

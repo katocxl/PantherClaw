@@ -1,6 +1,6 @@
 # PantherClaw — Product Features (revised)
 
-PantherClaw is an AI Agent Identity & Runtime Authorization Firewall. It gives every agent workload a verifiable identity and binds each consequential action to an explicit task grant and a deterministic policy decision. It routes that action through a gateway that dispatches only what was authorized, and keeps signed, independently verifiable evidence of what was decided, what was dispatched and what actually happened. This document turns all 802 catalog requirements (F001–F802) into consolidated, testable backend capabilities grouped into 20 commercially framed pillars. It also adds new PantherClaw features (PN-001–PN-022). Version 1.0 is a Go backend with a Connect-RPC API and the `pclaw` CLI. The UI comes later, so each row states what the backend must deliver, and the later UI will expose it. Everything here is planned scope, not a claim that the behaviour is built. Behaviour detail lives in the catalog ([`reference/PantherClaw_Feature_Catalog_F001-F802.md`](reference/PantherClaw_Feature_Catalog_F001-F802.md)), [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`protocol/PAP-1.md`](protocol/PAP-1.md); where they are more specific, they take precedence.
+PantherClaw is an AI Agent Identity & Runtime Authorization Firewall. It gives every agent workload a verifiable identity and binds each consequential action to an explicit task grant and a deterministic policy decision. It routes that action through a gateway that dispatches only what was authorized, and keeps signed, independently verifiable evidence of what was decided, what was dispatched and what actually happened. This document turns all 802 catalog requirements (F001–F802) into consolidated, testable backend capabilities grouped into 20 commercially framed pillars, which roll up into seven product components ([PRODUCT.md](PRODUCT.md)). It also adds new PantherClaw features (PN-001–PN-024). Version 1.0 is a Go backend with a Connect-RPC API and the `pclaw` CLI. The UI comes later, so each row states what the backend must deliver, and the later UI will expose it. Everything here is planned scope, not a claim that the behaviour is built. Behaviour detail lives in the catalog ([`reference/PantherClaw_Feature_Catalog_F001-F802.md`](reference/PantherClaw_Feature_Catalog_F001-F802.md)), [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`protocol/PAP-1.md`](protocol/PAP-1.md); where they are more specific, they take precedence.
 
 ## How to read this
 
@@ -8,7 +8,7 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 **Phase**
 
-- `MVP`: in the v1.0 backend (milestones M1–M13).
+- `MVP`: in the v1.0 backend (milestones M1–M14, delivered in the order given below the milestone table).
 - `Next`: planned after 1.0.
 - `Later`: wanted, but not scheduled.
 
@@ -30,14 +30,21 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | M5 | Human approvals, WebAuthn step-up, Agent Waitlist |
 | M6 | Gateway: MCP proxy, HTTP proxy, credential broker, dispatch, kill switch, monitor/enforce modes, Claude Code hook |
 | M7 | Effects, reconciliation, evidence ledger, replay, packs |
-| M8 | SDKs (Python, TypeScript, Go) & real connectors (GitHub App, Stripe test mode, Slack, Postgres) |
+| M8 | Coding-agent integrations: Go SDK and target verifier, core Python and TypeScript clients, Claude Agent SDK, GitHub App connector, `pclaw init` |
 | M9 | Coverage & containment sandbox |
 | M10 | Detection, investigation, response, breach radius, SIEM (OCSF), search |
 | M11 | Policy lifecycle & automations |
 | M12 | Adversarial red-team range |
 | M13 | Commercial & production hardening |
+| M14 | Framework SDKs & business connectors (framework wrappers, Stripe test mode, Slack, Postgres) |
 | UI phase | User interface, built after the backend |
 | post-1.0 | Not yet scheduled to a milestone |
+
+Milestone numbers are identifiers, not delivery order. Delivery order ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)): M1 … M9, M12, then the v0.1.0 preview, then M10, M11, M14, M13 and v1.0.
+
+**Component**
+
+Every pillar belongs to one of seven product components (Badge, Pass, Guardrails, Checkpoint, Stash, Reflex, Trail) or to Root, the platform. Each pillar heading names its component. The components are how PantherClaw is explained and sold; they change no behaviour. See [PRODUCT.md](PRODUCT.md).
 
 **IDs**
 
@@ -78,6 +85,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 1. Agent Inventory
 
+**Component:** Badge.
+
 **Why customers buy this:** You cannot govern agents you cannot name. PantherClaw keeps one accountable record per agent (owner, purpose, environment, authority and open issues), so every action traces back to someone responsible.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -94,6 +103,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 2. Discovery (shadow agents)
 
+**Component:** Badge (credential-reach findings, F048, are shown under Stash).
+
 **Why customers buy this:** Much agent risk sits in agents nobody registered. Discovery finds MCP configs, agent frameworks, CI workflows and stray keys on developer machines and in GitHub. It queues each finding for an owner before that agent can hold governed authority.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -109,6 +120,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F692 | New-agent intake automation | A governed workflow proposes candidate owners, inspects tools, drafts a baseline grant and runs safe tests. Humans confirm identity and any production access. | MVP | Team | M11 | F692 |
 
 ## 3. Lifecycle
+
+**Component:** Badge.
 
 **Why customers buy this:** Agents get promoted, suspended and retired, and authority must follow those changes instead of lingering. Lifecycle states make every transition explicit and attributable, and a suspended agent can resume only through governed restoration.
 
@@ -128,17 +141,20 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 4. Identity & Authority Protocol (PAP/1)
 
+**Component:** Badge.
+
 **Why customers buy this:** Model names, display names and shared API keys are not identity. PAP/1 proves which workload instance is acting, for whom and in which run, using bound keys that resist replay. It is an open spec, so targets and auditors can verify it themselves.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
 | PN-002.1 | Workload keys & enrollment (L1) | Each workload instance generates an Ed25519 key locally. A single-use enrollment token (≤ 15 min) plus owner fingerprint confirmation admits it. Token reuse is rejected and audited. Desktop workloads are capped at L1. | MVP | Community | M3 | F029, F032 |
-| PN-002.2 | Platform attestation (L2) | Accepts GitHub Actions OIDC (repository, owner and workflow pinned; fork PRs rejected) and Kubernetes service-account tokens, plus image digest. Matching pinned claims may auto-admit, and release identity becomes `attested`. | MVP | Community | M3 | F028, F029, F031 |
-| PN-002.3 | SPIFFE attestation (L3) | Accepts SPIFFE SVIDs and cloud instance identity as workload attestation. | Later | Enterprise | post-1.0 | F029 |
+| PN-002.2 | Platform attestation (L2) | Accepts workload tokens from configured trusted issuers with pinned issuer, keys, audience and binding claims. Presets: GitHub Actions OIDC (fork PRs rejected) and Kubernetes service-account tokens plus image digest. Matching claims may auto-admit. | MVP | Community | M3 | F028, F029, F031 |
+| PN-002.3 | Federated workload identity | Further issuer presets (GitLab CI, cloud workload identity, SPIFFE JWT-SVIDs, Microsoft Entra Agent ID) on the same pinned-claims framework, plus L3 attestation from SPIFFE X.509 SVIDs and cloud instance identity. | Next | Enterprise | post-1.0 | F029 |
 | PN-002.4 | Key-bound tokens & DPoP | Workload tokens (≤ 10 min) carry `cnf.jkt`. Every request carries a proof over method, URI, token and raw-body hash, using a server nonce. Replayed `(jkt, jti)` pairs are rejected. | MVP | Community | M3 | F032, F037 |
 | PN-002.5 | Server-minted run context | Only the authority creates runs (`StartRun`), bound to instance, launcher, principal and grant. Workload-supplied context is labelled and cannot enlarge authority. Any mismatch is denied as tampering. | MVP | Community | M4 | F049, F050 |
 | PN-002.6 | Action tokens (target-enforced mode) | For targets running verifier middleware, the gateway attaches a single-use token (≤ 60 s) bound to action hash, body hash, operation and target. Only then can cooperative routes count as `ENFORCED`. | MVP | Community | M6 | F417 |
 | PN-002.7 | Open protocol | The PAP/1 spec, ActionIR schema, error codes, JWKS discovery and test vectors are published under Apache-2.0, with Go, Python and TypeScript verifier libraries. | MVP | Community | M8 | new |
+| PN-002.8 | Represented principal from the customer IdP | `StartRun` accepts the represented user as an RFC 8693 subject token from a configured OIDC provider, with the launcher as actor. The run records both; the token proves who is represented and grants nothing. | MVP | Community | M3 | F027, F030 |
 | F026 | Stable identity, per-run context | Agent identity persists across releases for ownership and history. Each run gets its own server-minted identity context and grant. | MVP | Community | M3 | F026 |
 | F027 | Actor attribution | Records launcher, represented principal, calling application and executor separately. A scheduler is recorded as the launcher, never as the business principal. | MVP | Community | M3 | F027, F030, F064 |
 | F028 | Release & configuration identity | Records code hash, image digest and configuration identity per instance as `declared` or `attested`, separately from the named agent definition. | MVP | Community | M3 | F028 |
@@ -150,9 +166,13 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 5. Authorization (task grants & policy)
 
+**Components:** Pass (5A), Guardrails (5B, 5C) and Root (platform, 5D).
+
 **Why customers buy this:** Agents should hold exactly the authority a task needs, for as long as it needs it. Task grants, inherited guardrails and a deterministic CEL policy engine decide every covered action and explain exactly why. This pillar is the authority core, so it is split into four sub-tables.
 
 ### 5A. Task grants & delegation
+
+**Component:** Pass.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -167,6 +187,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F576 | Inherited guardrails | Org guardrails set the ceiling, and business units, teams and environments can only narrow it. Grants are issued only inside the inherited envelope; exceptions need designated authority. | MVP | Community | M4 | F576–F580 |
 
 ### 5B. Decision pipeline & policy engine
+
+**Component:** Guardrails.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -183,6 +205,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F405 | Downstream-consequence rules | Reviewed, bounded rules (e.g., merge to `main` triggers a production deploy) apply consequence-level authority, approvals and windows. Predicted consequences are labelled separately from authorized and confirmed ones. Missing links stop derivation; the model never invents causality. | Next | Team | post-1.0 | F405–F413 |
 
 ### 5C. Policy lifecycle
+
+**Component:** Guardrails.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -202,6 +226,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ### 5D. Governed automations
 
+**Component:** Root (platform).
+
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
 | F283 | Automation lifecycle & status | Create from template, simulate, test, enable, pause, inspect, retry, revise and retire. Status shows next run, latest verified outcome, budget ceiling and backlog. Workflow graph data links each step to its authority. | MVP | Team | M11 | F283, F662, F663, F751 |
@@ -220,9 +246,13 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 6. Non-bypassable Transaction Boundary
 
+**Components:** Checkpoint (6A, 6C, 6D) and Stash (6B).
+
 **Why customers buy this:** A decision only matters if the action cannot route around it. The gateway holds credentials, re-serialises exactly what was authorized and commits dispatch on the server side. Anything it cannot mediate is labelled as partial coverage rather than counted as protected.
 
 ### 6A. Gateway & dispatch
+
+**Component:** Checkpoint.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -235,13 +265,17 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | PN-015.2 | Reviewed tool surface | Clients receive reviewed tool descriptions from the active package, never live server text. Elicitation and sampling are policy-gated. Holds surface as MCP pending results or tasks. | MVP | Community | M6 | F384 |
 | PN-014 | Claude Code & Agent SDK integration | Apache-2.0 plugin with a PreToolUse hook for the Bash and PowerShell tools (with Windows path normalisation) and Agent SDK `canUseTool`. Labelled `PARTIAL` unless credentials are in PantherClaw custody. | MVP | Community | M6 | F761 |
 | PN-016.1 | SDKs | Apache-2.0 Python, TypeScript and Go SDKs: PAP/1 client, DPoP, ActionIR canonicaliser and wait handles, with a cross-language conformance suite. SDK-only (cooperative) use is labelled `PARTIAL`. | MVP | Community | M8 | new |
-| PN-016.2 | Framework wrappers & target verifier | Wrappers for LangChain/LangGraph, the OpenAI Agents SDK, CrewAI, the Vercel AI SDK and the MCP TypeScript SDK. Target-side verifier middleware checks action tokens. | MVP | Community | M8 | F417 |
+| PN-016.2 | Target verifier middleware | Target-side middleware checks PAP/1 action tokens (signature, audience, expiry, body hash, single use), so a customer's own service, such as a deployment API, enforces decisions itself. | MVP | Community | M8 | F417 |
+| PN-016.3 | Framework wrappers | Wrappers for LangChain/LangGraph, the OpenAI Agents SDK, CrewAI, the Vercel AI SDK and the MCP TypeScript SDK, built on the core clients and the conformance suite. | MVP | Community | M14 | new |
+| PN-023 | AuthZEN decision endpoint | Third-party enforcement points (Envoy `ext_authz`, agent gateways) request decisions through OpenID AuthZEN. They skip permits and `BeginDispatch`, so their routes are `PARTIAL`; budget-consuming allows are never released early. | MVP | Community | M14 | new |
 | F127 | Pre- and post-dispatch gates | All pre-execution checks complete before dispatch, and effects are observed afterwards. Dependent work waits for the qualifying state. Later verification never legitimises a prohibited action. | MVP | Community | M6 | F127–F130 |
 | F131 | Retries are not permission | Stable `action_id` and semantic dedupe keys; the same ID with a different hash is denied as tampering. Unknown irreversible outcomes park in reconciliation. Retries reassess current authority, and earlier attempts stay visible. | MVP | Community | M7 | F131, F136, F137, F138 |
 | F132 | Changed-request reauthorization | Any change to parameters, payee, destination, target, represented user or task needs a new decision. Expired approvals cannot authorize execution. | MVP | Community | M6 | F132, F133 |
 | F642 | Typed failures | Errors distinguish policy denial, authentication failure (`PAP-Error` codes), tool failure, enforcement failure and uncertain execution, each with its own remedy. | MVP | Community | M6 | F642 |
 
 ### 6B. Credential custody
+
+**Component:** Stash.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -253,16 +287,20 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ### 6C. Connections & connectors
 
+**Component:** Checkpoint.
+
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
 | F346 | Capability-declared connections | Each integration declares discovery, observation, enforcement and response support, plus operations, attribution, permissions with reasons, limits, failure behaviour and its last successful test. | MVP | Community | M8 | F346–F350 |
 | F351 | Connection lifecycle | Choose capability and environment first, then connect, test, approve capabilities, quarantine, rotate or disconnect. Health shows permissions, tests, delivery failures and dependent agents. | MVP | Community | M8 | F351, F358, F359 |
 | PN-017.1 | GitHub App connector | Issues narrow, short-lived installation tokens per authorized action (repository, permission, expiry). Governs reads, branches, PRs, merges and settings. | MVP | Community | M8 | F755 |
-| PN-017.2 | Stripe connector (test mode) | Refunds and payments in Stripe test mode with amount, currency, recipient and cumulative limits. Idempotency keys derive from the transaction, and effect checks are settlement-aware. | MVP | Community | M8 | F758 |
-| PN-017.4 | Postgres query connector | Read-only queries with row limits and column selection. The connector rejects writes. | MVP | Community | M8 | F759 |
+| PN-017.2 | Stripe connector (test mode) | Refunds and payments in Stripe test mode with amount, currency, recipient and cumulative limits. Idempotency keys derive from the transaction, and effect checks are settlement-aware. | MVP | Community | M14 | F758 |
+| PN-017.4 | Postgres query connector | Read-only queries with row limits and column selection. The connector rejects writes. | MVP | Community | M14 | F759 |
 | F756 | Additional resource domains | Cloud/infrastructure, business-application, communication and further host operations, added connector by connector with environment, record scope, recipient and channel coverage declared. | Next | Team | post-1.0 | F756, F757, F760 |
 
 ### 6D. Reviewed tool packages & action meaning (ActionIR)
+
+**Component:** Checkpoint.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -277,6 +315,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F402 | Reviewed restoration of meaning | Quarantined definitions return only with fresh reviewed evidence. Model-proposed mappings stay drafts until validated and activated. | MVP | Community | M4 | F402, F404 |
 
 ## 7. Agent Waitlist
+
+**Component:** Pass.
 
 **Why customers buy this:** Some decisions need a human, and agents need a predictable way to wait for them. The Agent Waitlist puts every pending decision into one deadline-driven queue with cryptographically bound approvals: admissions, access requests, held actions, tool reviews, restorations and reconciliations.
 
@@ -299,11 +339,13 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F158 | Merge review | Repository approvals show the repository, PR, source commit, destination branch, change summary, required checks and supported deployment consequences. | MVP | Community | M8 | F158 |
 | F159 | Consent limits & history | Discloses when the target cannot guarantee a condition all the way through execution. The original consent is kept even after it can no longer authorize. | MVP | Community | M5 | F159, F160 |
 | F161 | Approval channels | API and CLI at launch, Slack via PN-017.3, and Teams, ticketing and IDE later. The authenticated in-product approval is authoritative; an external approval needs equivalent binding, expiry and replay resistance. | MVP | Community | M5 | F161, F162, F163 |
-| PN-017.3 | Slack approvals | Slack cards carry minimal data and deep-link to the authenticated approval page. High-consequence approvals are never decided inside Slack, and reactions or free-text replies never count as approval. | MVP | Team | M8 | F164, F166 |
+| PN-017.3 | Slack approvals | Slack cards carry minimal data and deep-link to the authenticated approval page. High-consequence approvals are never decided inside Slack, and reactions or free-text replies never count as approval. | MVP | Team | M14 | F164, F166 |
 | F626 | Empty-queue semantics | Empty results state which scope was checked and include routing health and recent decisions. | MVP | Community | M5 | F626 |
 | F693 | Approval-routing automation | A template finds eligible approvers, delivers requests, reminds and escalates within the deadline, and records the resolution and the resulting action outcome. | MVP | Team | M11 | F693 |
 
 ## 8. Agent Controls (budgets, limits, sequences, constraints)
+
+**Component:** Guardrails.
 
 **Why customers buy this:** Per-call checks miss damage done in aggregate. Budgets, counts, rates, sequences and safe constraints bound what an agent can do across a task, a run tree or a time period, without race conditions.
 
@@ -311,7 +353,7 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | --- | --- | --- | --- | --- | --- | --- |
 | F059 | Shared budget groupings | Limits group by task, principal, target account, team or another grouping. Split requests, new run IDs and child grants all draw on the same budget. | MVP | Community | M4 | F059, F116, F117 |
 | F100 | Declared constraint support | Packages declare which constraints each tool enforces: row limits, fields, destinations, target sets, amounts. A constraint the tool cannot enforce yields `CANNOT_AUTHORIZE`, never a false claim. | MVP | Community | M4 | F100, F109 |
-| F101 | Data-scoping constraints | Field filtering, task-linked record filtering and response redaction, applied only where the connection reliably supports them. | MVP | Team | M8 | F101, F102, F103 |
+| F101 | Data-scoping constraints | Field filtering, task-linked record filtering and response redaction, applied only where the connection reliably supports them. | MVP | Team | M14 | F101, F102, F103 |
 | F104 | Safe transformations only | A request changes only when the contract declares the transformation safe and the grant allows it. Material business changes (an $85 refund cut to $50) need a new request; shell commands are never rewritten. | MVP | Community | M4 | F104, F105, F106 |
 | F107 | Requested vs effective action | Every decision records the requested action, each modification applied, and the resulting effective action. | MVP | Community | M4 | F107 |
 | F110 | Value, count, rate & concurrency limits | Per-call and cumulative value limits per run, task or period; counts of writes, recipients, records, delegations or merges; action rate; and maximum concurrent outstanding actions. | MVP | Community | M4 | F110, F111, F112 |
@@ -322,6 +364,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F124 | Trusted history | Rules declare what counts as history: an attempt, an acceptance or a confirmed effect. Explanations show prior transactions, windows and freshness. Agent memory is never history, and missing history yields `CANNOT_AUTHORIZE`. | MVP | Community | M4 | F124, F125, F126 |
 
 ## 9. Sessions (runs)
+
+**Component:** Reflex.
 
 **Why customers buy this:** Runs are where intent becomes action. The session record shows a run end to end (task, authority, decisions, approvals, budget and effects) without needing transcripts or the model's reasoning.
 
@@ -343,6 +387,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 10. Containment
 
+**Component:** Reflex (the containment sandbox, PN-008.1, is sold with Checkpoint).
+
 **Why customers buy this:** When something goes wrong, responders need narrow, fast, confirmed stops, plus a big red button for the whole org. Containment ranges from denying one action to an org-wide kill switch. It tracks confirmation path by path instead of assuming success.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -355,6 +401,7 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F243 | Prefilled, narrow-first response | From an action or incident, proposes the affected runs, grants and connections and the known business impact. A narrow suspension commits immediately; wider scope shows its consequence first. | MVP | Community | M10 | F243, F556, F557 |
 | F288 | Per-path containment confirmation | For each path: request time, operator, control, confirmation evidence, in-flight cancellation, failures, unsupported controls and remaining bypass exposure. Status stays partial while any material path is unresolved. | MVP | Community | M10 | F288, F558, F559, F560 |
 | F541 | External (SOAR) response requests | SOAR tools can request supported scoped controls if they hold explicit response permission. Requests are audited with scope and reason, are idempotent, and return confirmed, failed, unsupported or unknown. | MVP | Business | M10 | F541–F544 |
+| PN-024 | Shared Signals receiver | Accepts signed CAEP/RISC events from the customer's identity provider. User disabled, sessions revoked or credential compromised finds that person's grants and approvals; a preauthorized playbook suspends them, otherwise a case opens. | MVP | Business | M10 | F426, F562 |
 | F545 | External governance preservation | Separation of duties and restoration rules apply to outside workflows too. Each synced incident field has one owner, and a ticket status change cannot restore authority. | Next | Business | post-1.0 | F545, F546 |
 | F547 | Graduated response controls | Deny one action, hold consequential writes while reads continue, suspend a run, suspend an agent, or revoke a grant and its dependants. Each discloses remaining authority and shared-credential paths. | MVP | Community | M6 | F547–F551 |
 | F552 | Connection & resource containment | Quarantine a connection (alternative connections stay visible), or protect a named resource where resource-level enforcement is supported. | MVP | Community | M10 | F552, F553 |
@@ -366,6 +413,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F732 | Resume revalidation | Resuming rechecks authority, policy, resources, approvals and coverage. Missed irreversible work is never replayed automatically. | MVP | Team | M11 | F732, F733 |
 
 ## 11. Monitoring
+
+**Component:** Reflex.
 
 **Why customers buy this:** Security teams need signal, not call logs. Monitoring surfaces what needs attention, with freshness and gaps made explicit. New routes run in monitor mode first, and the event stream feeds the customer's SIEM.
 
@@ -388,6 +437,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 12. Threat Detection
 
+**Component:** Reflex.
+
 **Why customers buy this:** Agent attacks look like legitimate tool use until you see the sequence. Detections over decisions, dispatches and tool definitions catch tool poisoning, rug pulls, exfiltration patterns and authority abuse, mapped to MITRE ATLAS and the OWASP agentic risks.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -403,6 +454,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F734 | Automation loop prevention | Trigger ancestry detects self-loops and reciprocal loops. Per-event and per-period action limits apply, and a stopped loop opens one grouped issue. | MVP | Team | M11 | F734, F735, F736 |
 
 ## 13. Investigation
+
+**Component:** Reflex.
 
 **Why customers buy this:** After an alert, teams must answer what happened, under whose authority, and what else is affected. Investigation turns any action into an evidence-linked case, backed by permission-safe search and graph data.
 
@@ -427,6 +480,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 14. Breach Radius
 
+**Component:** Reflex.
+
 **Why customers buy this:** Before and during an incident, the question is how far an agent could reach. Breach radius separates what actually happened, what grants allow, and what raw credentials allow, and it drives remediation.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -444,6 +499,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F299 | Evidence-based containment comparison | Earlier reads and impact questions persist after revocation. Removing an edge alone never proves closure. | MVP | Team | M10 | F299 |
 
 ## 15. Proof (evidence)
+
+**Component:** Trail.
 
 **Why customers buy this:** Auditors, insurers and incident reviewers need evidence that stands on its own. Linked signed receipts, a transparency-anchored chain and offline verification prove what was decided, dispatched and observed, and each states its own limits.
 
@@ -476,6 +533,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 16. Coverage & Bypass Resistance
 
+**Component:** Checkpoint.
+
 **Why customers buy this:** A firewall that can be bypassed is just a log. Coverage records prove, per workload, target and effect, whether every equivalent route is mediated, and they downgrade automatically when that proof expires.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -498,6 +557,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 17. Adversarial Sandbox
 
+**Component:** Trail.
+
 **Why customers buy this:** Customers need to know their configuration holds before an attacker tests it. The adversarial range runs realistic agent attacks against the tenant's real policies on simulated targets, and gates CI on regressions.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -511,6 +572,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F630 | Simulation labelling | Simulated, demo and range data are clearly labelled. They never count as real coverage, blocked work or onboarding proof. | MVP | Community | M12 | F630 |
 
 ## 18. Deployments
+
+**Component:** Root (platform).
 
 **Why customers buy this:** Buyers differ on where control and credentials may live. PantherClaw runs self-hosted, with a customer-run gateway, hybrid or as SaaS, and it tracks where each agent is actually deployed.
 
@@ -529,6 +592,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 
 ## 19. Performance
 
+**Component:** Root (platform).
+
 **Why customers buy this:** Authorization in the hot path has to be fast enough that teams leave it switched on. PantherClaw publishes and tests its latency, propagation and concurrency SLOs, and defines safe degraded behaviour.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
@@ -541,6 +606,8 @@ Each pillar table has the columns `ID | Feature | What the backend delivers | Ph
 | F773 | Published operating evidence | SLOs are first validated on the M1.5 walking skeleton, then nightly (k6 with benchstat trends). Each release states freshness, continuity and operating limits. | MVP | Community | M13 | F773 |
 
 ## 20. Management (teams, admin, commercial, installation)
+
+**Component:** Root (platform).
 
 **Why customers buy this:** Adoption depends on installing in minutes and administering at scale. Management covers tenancy, roles, licensing, metering, support access and onboarding, plus the API contract the later UI will build on.
 
@@ -595,29 +662,29 @@ These boundaries constrain every pillar above. A feature request that conflicts 
 
 ## Commercial vocabulary map
 
-| Sales term | Pillar | Anchor features | Claim boundary |
-| --- | --- | --- | --- |
-| Inventory of agents | 1 | F003, F016, F017, PN-010.5 | Covers discovered and enrolled agents only |
-| Effortless installation | 20 | PN-012.6, PN-010.1, F322, F325 | The 30-minute target is measured, not guaranteed |
-| Lifecycle | 3 | F020, F023, F563 | Restoring is a governed action, never automatic |
-| Agent controls | 8 | F110, F114, F120, F104 | Enforced on mediated routes |
-| Discovery | 2 | PN-001.1, PN-001.2, F015 | "Not observed" is not "absent" |
-| Containment | 10 | PN-005, F547, F288, PN-008.1 | Confirmed per path; in-flight requests complete |
-| Monitoring | 11 | PN-013, F211, F215, PN-018 | Monitor mode never claims prevention |
-| Threat detection | 12 | PN-006.1–PN-006.5 | Detections are inference, labelled as such |
-| Authorisation | 5 | F038, F081, F092, F179 | Decisions apply to covered actions |
-| Investigation | 13 | F237, F244, F306 | Answers link to evidence or are not given |
-| Concrete identity & authority protocol | 4 | PN-002.1–PN-002.7 | Attestation level is always stated |
-| Non-bypassable transaction boundary | 6 | PN-003.1–PN-003.5, PN-015.1, F416 | Only where pillar 16 shows `ENFORCED` |
-| Proof | 15 | PN-007.1–PN-007.4, F461 | Integrity ≠ completeness ≠ business effect |
-| Breach radius | 14 | F253, F256, F262 | Possible reach is kept separate from observed impact |
-| Waitlist | 7 | PN-004.1–PN-004.5, PN-020.1 | Expiry means deny |
-| Deployed | 18 | PN-010.1–PN-010.7 | Hybrid and SaaS are post-1.0 |
-| Session | 9 | F224, F284, PN-002.5 | No transcripts required |
-| Performance | 19 | PN-011.1–PN-011.5 | SLOs are published with their test conditions |
-| Management | 20 | PN-012.1–PN-012.5, F573, F581 | Licence expiry never disables enforcement |
-| Bypass-resistant enforcement | 16 (with 6, 10) | F435, F443, PN-008.2 | Per route, with current, expiring evidence |
-| Adversarial sandbox | 17 | PN-009.1–PN-009.5 | Simulated targets only; separate from the containment sandbox (PN-008) |
+| Sales term | Component | Pillar | Anchor features | Claim boundary |
+| --- | --- | --- | --- | --- |
+| Inventory of agents | Badge | 1 | F003, F016, F017, PN-010.5 | Covers discovered and enrolled agents only |
+| Effortless installation | Root | 20 | PN-012.6, PN-010.1, F322, F325 | The 30-minute target is measured, not guaranteed |
+| Lifecycle | Badge | 3 | F020, F023, F563 | Restoring is a governed action, never automatic |
+| Agent controls | Guardrails | 8 | F110, F114, F120, F104 | Enforced on mediated routes |
+| Discovery | Badge | 2 | PN-001.1, PN-001.2, F015 | "Not observed" is not "absent" |
+| Containment | Reflex | 10 | PN-005, F547, F288, PN-008.1 | Confirmed per path; in-flight requests complete |
+| Monitoring | Reflex | 11 | PN-013, F211, F215, PN-018 | Monitor mode never claims prevention |
+| Threat detection | Reflex | 12 | PN-006.1–PN-006.5 | Detections are inference, labelled as such |
+| Authorisation | Pass, Guardrails | 5 | F038, F081, F092, F179 | Decisions apply to covered actions |
+| Investigation | Reflex | 13 | F237, F244, F306 | Answers link to evidence or are not given |
+| Concrete identity & authority protocol | Badge | 4 | PN-002.1–PN-002.8 | Attestation level is always stated |
+| Non-bypassable transaction boundary | Checkpoint, Stash | 6 | PN-003.1–PN-003.5, PN-015.1, F416 | Only where pillar 16 shows `ENFORCED` |
+| Proof | Trail | 15 | PN-007.1–PN-007.4, F461 | Integrity ≠ completeness ≠ business effect |
+| Breach radius | Reflex | 14 | F253, F256, F262 | Possible reach is kept separate from observed impact |
+| Waitlist | Pass | 7 | PN-004.1–PN-004.5, PN-020.1 | Expiry means deny |
+| Deployed | Root | 18 | PN-010.1–PN-010.7 | Hybrid and SaaS are post-1.0 |
+| Session | Reflex | 9 | F224, F284, PN-002.5 | No transcripts required |
+| Performance | Root | 19 | PN-011.1–PN-011.5 | SLOs are published with their test conditions |
+| Management | Root | 20 | PN-012.1–PN-012.5, F573, F581 | Licence expiry never disables enforcement |
+| Bypass-resistant enforcement | Checkpoint | 16 (with 6, 10) | F435, F443, PN-008.2 | Per route, with current, expiring evidence |
+| Adversarial sandbox | Trail | 17 | PN-009.1–PN-009.5 | Simulated targets only; separate from the containment sandbox (PN-008) |
 
 ## Traceability
 
@@ -628,9 +695,9 @@ These boundaries constrain every pillar above. A feature request that conflicts 
 
 ## Coverage verification
 
-Checked on 2026-10-08 by a script that parsed every table row with a Source column and expanded the ranges.
+Checked on 2026-10-09 by a script that parsed every table row with a Source column and expanded the ranges, after ADR-0017, ADR-0018 and ADR-0019 added PN-002.8, PN-016.3, PN-023 and PN-024 and moved four rows to M14.
 
-- **Rows:** 336 in total: 326 pillar rows (75 of them PN rows covering 22 new features, PN-001–PN-022) and 10 boundary rows.
+- **Rows:** 340 in total: 330 pillar rows (79 of them PN rows covering 24 new features, PN-001–PN-024) and 10 boundary rows.
 - **Coverage:** 802 of 802 catalog IDs (F001–F802) appear in at least one Source cell. None are missing and none are out of range.
 - **Format checks:** every row ID matches its convention, and no row ID repeats. Every Phase, Edition and Milestone value is valid. Every "What the backend delivers" cell is ≤ 36 words.
 

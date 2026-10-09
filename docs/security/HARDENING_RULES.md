@@ -116,7 +116,7 @@
 | HR-090 | Verify token, `cnf`, and proof signature **before** inserting `jti`; replay store unique `(jkt, jti)`, time-partitioned. | T-032 | M3 |
 | HR-091 | Server-issued DPoP nonces (≤ 5 min) remove reliance on client clocks; raw body hashed before parsing. | T-032 | M3 |
 | HR-092 | Desktop workloads (`pclaw mcp proxy`) capped at L1, stdio only (never a localhost HTTP listener); same jkt from a new network ⇒ alert. | T-033 | M3/M6 |
-| HR-093 | GitHub OIDC attestation matches ids (`repository_id`, `repository_owner_id`, `job_workflow_ref`), `aud = pantherclaw:<org>`, rejects forks and `pull_request_target`. | T-035 | M3 |
+| HR-093 | GitHub OIDC attestation matches `repository_id`, `repository_owner_id` and the workflow (`workflow_ref` for ordinary jobs, `job_workflow_ref` for reusable workflows, on a protected branch or tag), requires `ref_protected`, checks `aud = pantherclaw:<org>`, and rejects `pull_request` runs (from forks or the same repository) and `pull_request_target`. | T-035 | M3 |
 | HR-094 | Owner confirms the key fingerprint in ADMISSION unless an L2 auto-admission policy matches pinned claims. | T-004 | M3 |
 | HR-095 | Algorithms are pinned per key; `none`, HMAC on asymmetric keys and unlisted algorithms are rejected (go-jose allowlists). | T-032 | M2 |
 
