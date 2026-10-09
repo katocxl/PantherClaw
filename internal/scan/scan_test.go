@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/katocxl/pantherclaw/internal/scan"
 )
@@ -96,6 +97,23 @@ func TestHR056_ScanFindingsCarryNoSecrets(t *testing.T) {
 		if f.Kind == scan.KindEnvSecret && f.Attributes["name"] == "PANTHERCLAW_API_KEY" &&
 			(f.Attributes["redacted"] != "pck_…" || f.Attributes["secret_kind"] != "pantherclaw_api_key") {
 			t.Errorf("pck_ key finding %v", f.Attributes)
+		}
+	}
+}
+
+// TestF015_LongAttributesStayValidUTF8: clipping never splits a character,
+// so a submission is never refused for invalid UTF-8.
+func TestF015_LongAttributesStayValidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	name := "a" + strings.Repeat("ü", 200) // 401 bytes: a 256-byte cut lands inside a character
+	write(t, filepath.Join(dir, ".mcp.json"), `{"mcpServers": {"`+name+`": {"command": "python"}}}`)
+	got := scan.Run(scan.Options{Host: "h", Paths: []string{dir}})
+	if len(got) != 1 {
+		t.Fatalf("findings %v", got)
+	}
+	for k, v := range got[0].Attributes {
+		if !utf8.ValidString(v) || len(v) > 256 {
+			t.Errorf("attribute %s: %d bytes, valid UTF-8 %v", k, len(v), utf8.ValidString(v))
 		}
 	}
 }

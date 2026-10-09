@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect/v2"
 
@@ -30,25 +31,41 @@ const (
 	HeaderActionID = "PC-Action-Id"
 )
 
+// nonceCacheFor bounds how long the gateway serves a nonce from its cache.
+// A nonce stays valid at least 5 minutes after it is issued (HR-091), so a
+// workload handed a cached one still has time to use it.
+const nonceCacheFor = time.Minute
+
 // nonces caches the org's current nonce from Authority responses (G0 M3
-// constraint 7).
+// constraint 7), never past its expiry.
 type nonces struct {
-	mu  sync.Mutex
-	cur string
+	mu    sync.Mutex
+	cur   string
+	until time.Time
 }
 
-func (n *nonces) set(v string) {
+// set caches v until the earlier of exp (zero when unknown) and
+// nonceCacheFor from now.
+func (n *nonces) set(v string, exp time.Time) {
 	if v == "" {
 		return
 	}
+	until := time.Now().Add(nonceCacheFor)
+	if !exp.IsZero() && exp.Before(until) {
+		until = exp
+	}
 	n.mu.Lock()
-	n.cur = v
+	n.cur, n.until = v, until
 	n.mu.Unlock()
 }
 
+// get returns the cached nonce, or "" once it is due for renewal.
 func (n *nonces) get() string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if !time.Now().Before(n.until) {
+		return ""
+	}
 	return n.cur
 }
 
@@ -58,7 +75,11 @@ func (g *Gateway) nonce(ctx context.Context) string {
 		return v
 	}
 	if res, err := g.authority.GetNonce(ctx, &pb.GetNonceRequest{}); err == nil {
-		g.nonces.set(res.GetNonce())
+		var exp time.Time
+		if e := res.GetExpireTime(); e != nil && e.IsValid() {
+			exp = e.AsTime()
+		}
+		g.nonces.set(res.GetNonce(), exp)
 	}
 	return g.nonces.get()
 }

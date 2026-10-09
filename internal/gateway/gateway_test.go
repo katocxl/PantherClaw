@@ -480,3 +480,23 @@ func TestAuthorityDownFailsClosed(t *testing.T) {
 		t.Fatalf("authority down = %d, target calls %d", code, h.target.calls())
 	}
 }
+
+// TestHR091_GatewayNonceCacheExpires: a cached nonce is served at most
+// nonceCacheFor and never past the expiry the Authority gave.
+func TestHR091_GatewayNonceCacheExpires(t *testing.T) {
+	var n nonces
+	n.set("n-1", time.Time{})
+	if n.get() != "n-1" {
+		t.Fatal("fresh nonce not served")
+	}
+	n.set("n-2", time.Now().Add(-time.Second))
+	if n.get() != "" {
+		t.Fatal("served a nonce past its expiry")
+	}
+	n.mu.Lock()
+	n.cur, n.until = "n-3", time.Now().Add(-time.Millisecond)
+	n.mu.Unlock()
+	if n.get() != "" {
+		t.Fatal("served a nonce past the cache lifetime")
+	}
+}

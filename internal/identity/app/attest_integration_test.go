@@ -153,6 +153,12 @@ func TestHR094_AutoAdmissionOnlyThroughAnActiveAutoAdmitEntry(t *testing.T) {
 	if iss, err := w.attestToken(t, w.svc, wl, auto.Instance, nil); err != nil || iss.Level != 2 {
 		t.Fatalf("token: %+v, %v", iss, err)
 	}
+	// With an enrollment token as well, the auto-admitting entry still
+	// decides: the same attestation alone would have been admitted.
+	both, err := w.attestEnroll(t, w.svc, newWorkload(), w.enrollmentToken(t, agent), ghAtt(w.ghClaims(mainRef)))
+	if err != nil || both.State != "ADMITTED" {
+		t.Fatalf("enrollment token and auto-admitting attestation: %+v, %v", both, err)
+	}
 	// A token matching no entry, and one for a desktop agent (never L2,
 	// HR-092), do not auto-admit.
 	_, err = w.attestEnroll(t, w.svc, newWorkload(), "", ghAtt(w.ghClaims(tagRef)))

@@ -134,14 +134,17 @@ type Enrolled struct {
 var errReused = errors.New("identity: enrollment token reused")
 
 // Enroll registers the proof's key as an instance of an agent (PAP-1
-// §3.2). With an enrollment token, the instance is PENDING_ADMISSION with
-// an ADMISSION entry showing the fingerprint; the token is consumed exactly
-// once and reusing it is refused and audited (PN-002.1, T-004). An
+// §3.2). An enrollment token, when sent, names the agent; it is consumed
+// exactly once and reusing it is refused and audited (PN-002.1, T-004). An
 // attestation, when sent, must match an active entry of that agent and
-// makes the instance L2. Without an enrollment token, the attestation's
-// audience names the org and it must match an active entry that
-// auto-admits: the entry names the agent and the instance is admitted at
-// once (HR-094). The attestation is consumed in the same transaction.
+// makes the instance L2. The instance waits in PENDING_ADMISSION, with an
+// ADMISSION entry showing the fingerprint to the owner, unless the matching
+// entry auto-admits and the agent can be L2: that entry is an activated,
+// human-approved policy for exactly these claims (HR-094, HR-141), so the
+// instance is admitted at once whether or not an enrollment token came
+// with it. Without an enrollment token, the attestation's audience names
+// the org, the entry names the agent, and only an auto-admitting entry
+// enrolls. The attestation is consumed in the same transaction.
 func (s *Service) Enroll(ctx context.Context, in EnrollInput) (Enrolled, error) {
 	if _, ok := in.Proof.Token(); ok {
 		return Enrolled{}, pap.Err(pap.CodeInvalidProof) // enrollment uses a key-only proof

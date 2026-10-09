@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // Finding kinds.
@@ -65,12 +66,18 @@ func key(parts ...string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// clip keeps at most maxValue bytes of valid UTF-8, cutting on a rune
+// boundary (a protobuf string field refuses invalid UTF-8).
 func clip(s string) string {
 	s = strings.ToValidUTF8(s, "")
 	if len(s) <= maxValue {
 		return s
 	}
-	return s[:maxValue]
+	s = s[:maxValue]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // Run scans and returns the findings, sorted by kind and key.

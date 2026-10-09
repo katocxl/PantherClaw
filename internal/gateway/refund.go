@@ -156,7 +156,7 @@ func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusServiceUnavailable, result{Error: "authority_unavailable"})
 		return
 	}
-	g.nonces.set(res.GetNonce())
+	g.nonces.set(res.GetNonce(), time.Time{})
 	if n := res.GetNonce(); n != "" {
 		w.Header().Set(HeaderNonce, n)
 	}
