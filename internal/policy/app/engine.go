@@ -299,3 +299,20 @@ func missingFact(needs []string, have map[string]fdomain.Value) string {
 	}
 	return ""
 }
+
+// FactRequirements returns the facts the rules in scope of an operation and
+// environment declare, with their maximum ages (pipeline step 6). The
+// definition's prerequisites are added by the caller.
+func (c *Compiled) FactRequirements(operation, env string) []fdomain.Requirement {
+	var out []fdomain.Requirement
+	for i := range c.Bundle.Rules {
+		r := &c.Bundle.Rules[i]
+		if !r.Applies(operation, env) {
+			continue
+		}
+		for _, f := range r.Facts {
+			out = append(out, fdomain.Requirement{Name: f.Name, MaxAge: time.Duration(f.MaxAgeSeconds) * time.Second, Source: "rule " + r.ID})
+		}
+	}
+	return out
+}

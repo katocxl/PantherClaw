@@ -93,6 +93,8 @@ type Item struct {
 	Reason   string `json:"reason"`
 	Detail   string `json:"detail,omitzero"`
 	Decisive bool   `json:"decisive"`
+	// Verdict is what this rule alone does to the action.
+	Verdict Verdict `json:"verdict"`
 }
 
 // Outcome is the policy verdict with its explanation.
@@ -185,7 +187,7 @@ func Compose(results []Result) Outcome {
 	items := make([]Item, 0, len(results))
 	for _, r := range results {
 		status, v, reason := classify(r)
-		items = append(items, Item{Rule: r.Rule.ID, Kind: r.Rule.Kind, Status: status, Reason: reason, Detail: r.Detail})
+		items = append(items, Item{Rule: r.Rule.ID, Kind: r.Rule.Kind, Status: status, Reason: reason, Detail: r.Detail, Verdict: v})
 		if stricter(v, out.Verdict) {
 			out.Verdict, decisive = v, len(items)-1
 		}
