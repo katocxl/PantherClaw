@@ -32,7 +32,7 @@ func scanCmd(ctx context.Context, a *app, args []string) error {
 	fs.Var(&paths, "path", "project directory to search for agent frameworks and MCP configs (repeatable; default: the current directory)")
 	asJSON, noEnv, noUser := fs.Bool("json", false, "print the findings as JSON"),
 		fs.Bool("no-env", false, "do not check the environment for credentials"),
-		fs.Bool("no-user-config", false, "skip the per-user MCP configurations (Claude, Cursor, VS Code)")
+		fs.Bool("no-user-config", false, "skip the per-user MCP configurations (Claude, Cursor, VS Code, Windsurf, Zed, Junie)")
 	submit := fs.Bool("submit", false, "add the MCP servers and agent projects found to your org's discovered agents")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -107,6 +107,9 @@ func describeFinding(f scan.Finding) string {
 		}
 		if at["env_names"] != "" {
 			s += "; env " + at["env_names"]
+		}
+		if at["header_names"] != "" {
+			s += "; headers " + at["header_names"]
 		}
 		return s
 	case scan.KindAgentProject:

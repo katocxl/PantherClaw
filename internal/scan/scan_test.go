@@ -101,6 +101,118 @@ func TestHR056_ScanFindingsCarryNoSecrets(t *testing.T) {
 	}
 }
 
+// editorFixture lays out the configurations of Windsurf, Devin Desktop, Zed
+// (JSONC with trailing commas, current and older server formats) and Junie,
+// with credentials in environment values and HTTP headers, and placeholders
+// that are not credentials.
+func editorFixture(t *testing.T) scan.Options {
+	t.Helper()
+	root := t.TempDir()
+	home, cfg, proj := filepath.Join(root, "home"), filepath.Join(root, "config"), filepath.Join(root, "proj")
+	write(t, filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"), `{"mcpServers": {
+		"wind-remote": {"serverUrl": "https://wind.example.com/mcp?key=QUERYSECRET", "headers": {"Authorization": "Bearer ghp_HEADERSECRET0000"}},
+		"wind-local": {"command": "npx", "args": ["-y", "server-github"], "env": {"GITHUB_TOKEN": "${env:GITHUB_TOKEN}"}}}}`)
+	opaque := "OPAQUESECRET" + strings.Repeat("1", 4) // not a credential: built here so secret scanners skip it
+	write(t, filepath.Join(cfg, "devin", "mcp_config.json"), `{"mcpServers": {
+		"devin": {"serverUrl": "https://devin.example.com/mcp", "headers": {"X-API-Key": "`+opaque+`"}}}}`)
+	write(t, filepath.Join(home, ".config", "zed", "settings.json"), `// Zed settings
+{
+  "theme": "One Dark",
+  "context_servers": {
+    "zed-new": {"command": "uvx", "args": ["mcp-server-git"], "env": {},},
+    /* before 2025 */
+    "zed-old": {"command": {"path": "/usr/bin/node", "args": ["srv.js"], "env": {"ANTHROPIC_API_KEY": "sk-ant-OLDSECRET0000",},}, "settings": {},},
+    "zed-remote": {"url": "https://zed.example.com/mcp", "headers": {"Authorization": "Basic BASICSECRET00",},},
+    "trailing, ]": {"source": "extension", "settings": {"list": [1, 2,],},},
+  },
+}`)
+	write(t, filepath.Join(proj, ".zed", "settings.json"), `{"context_servers": {"zed-proj": {"command": "python"}}}`)
+	write(t, filepath.Join(home, ".junie", "mcp", "mcp.json"), `{"mcpServers": {
+		"junie-user": {"url": "https://junie.example.com/v1", "headers": {"Authorization": "Bearer ${env:JUNIE_TOKEN}", "X-Trace": "on-all-requests"}}}}`)
+	write(t, filepath.Join(proj, ".junie", "mcp", "mcp.json"), `{"mcpServers": {"junie-proj": {"command": "docker"}}}`)
+	return scan.Options{Host: "laptop-2", Home: home, ConfigDir: cfg, Paths: []string{proj}}
+}
+
+// TestF015_ScanReadsWindsurfZedAndJunie (PN-001.1): the scan finds the MCP
+// servers of Windsurf, Devin Desktop, Zed and Junie, user and project
+// scope, and the credentials in their environment values and headers.
+func TestF015_ScanReadsWindsurfZedAndJunie(t *testing.T) {
+	servers := map[string]map[string]string{}
+	creds := map[string]map[string]string{}
+	for _, f := range scan.Run(editorFixture(t)) {
+		switch f.Kind {
+		case scan.KindMCPServer:
+			servers[f.Attributes["name"]] = f.Attributes
+		case scan.KindEnvSecret:
+			creds[f.Attributes["where"]+" "+f.Attributes["name"]] = f.Attributes
+		}
+	}
+	want := map[string]map[string]string{
+		"wind-remote": {"client": "windsurf", "transport": "http", "url_host": "wind.example.com", "header_names": "Authorization"},
+		"wind-local":  {"client": "windsurf", "transport": "stdio", "command": "npx", "env_names": "GITHUB_TOKEN"},
+		"devin":       {"client": "devin_desktop", "transport": "http", "url_host": "devin.example.com", "header_names": "X-API-Key"},
+		"zed-new":     {"client": "zed", "transport": "stdio", "command": "uvx"},
+		"zed-old":     {"client": "zed", "transport": "stdio", "command": "node", "env_names": "ANTHROPIC_API_KEY"},
+		"zed-remote":  {"client": "zed", "transport": "http", "url_host": "zed.example.com", "header_names": "Authorization"},
+		"trailing, ]": {"client": "zed", "transport": ""},
+		"zed-proj":    {"client": "zed", "transport": "stdio", "command": "python"},
+		"junie-user":  {"client": "junie", "transport": "http", "url_host": "junie.example.com", "header_names": "Authorization,X-Trace"},
+		"junie-proj":  {"client": "junie", "transport": "stdio", "command": "docker"},
+	}
+	if len(servers) != len(want) {
+		t.Errorf("MCP servers %d, want %d: %v", len(servers), len(want), servers)
+	}
+	for name, attrs := range want {
+		for k, v := range attrs {
+			if servers[name][k] != v {
+				t.Errorf("server %q: %s = %q, want %q", name, k, servers[name][k], v)
+			}
+		}
+	}
+	wantCreds := map[string][2]string{ // where name → kind, redacted
+		"windsurf wind-remote headers Authorization": {"github_token", "Bearer ghp_…"},
+		"devin_desktop devin headers X-API-Key":      {"http_credential", "…"},
+		"zed zed-old ANTHROPIC_API_KEY":              {"anthropic_api_key", "sk-ant-…"},
+		"zed zed-remote headers Authorization":       {"http_credential", "Basic …"},
+	}
+	if len(creds) != len(wantCreds) {
+		t.Errorf("credentials %v, want %d (placeholders and plain headers are not credentials)", creds, len(wantCreds))
+	}
+	for at, w := range wantCreds {
+		if c := creds[at]; c["secret_kind"] != w[0] || c["redacted"] != w[1] {
+			t.Errorf("credential %q: %v, want %v", at, c, w)
+		}
+	}
+}
+
+// TestHR056_EditorConfigCredentialsAreRedacted: header values, URL queries
+// and environment values from the editors' configurations never appear in
+// a finding.
+func TestHR056_EditorConfigCredentialsAreRedacted(t *testing.T) {
+	b, err := json.Marshal(scan.Run(editorFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "SECRET") {
+		t.Fatalf("a secret leaked into the findings: %s", b)
+	}
+}
+
+// TestF015_AConfigNamedTwiceIsReadOnce: when two locations name one file,
+// as on a case-insensitive file system, its servers are reported once.
+func TestF015_AConfigNamedTwiceIsReadOnce(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".config", "zed", "settings.json"), `{"context_servers": {"git": {"command": "uvx"}}}`)
+	upper := filepath.Join(home, ".CONFIG")
+	if _, err := os.Stat(filepath.Join(upper, "zed", "settings.json")); err != nil {
+		t.Skip("case-sensitive file system")
+	}
+	got := scan.Run(scan.Options{Host: "h", Home: home, ConfigDir: upper})
+	if len(got) != 1 {
+		t.Fatalf("findings %v, want the one server once", got)
+	}
+}
+
 // TestF015_LongAttributesStayValidUTF8: clipping never splits a character,
 // so a submission is never refused for invalid UTF-8.
 func TestF015_LongAttributesStayValidUTF8(t *testing.T) {

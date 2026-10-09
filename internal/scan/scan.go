@@ -3,11 +3,13 @@
 
 // Package scan is the local shadow-agent scan behind `pclaw scan`
 // (PN-001.1, F015). It reads, and never changes, the MCP configurations of
-// Claude Desktop, Claude Code, Cursor and VS Code, looks for agent-framework
-// projects under the given directories, and checks the environment for
-// credentials agents use, PantherClaw pck_ keys included. Secrets never
-// appear in a finding: only the variable name, the kind of credential and
-// its well-known prefix. Findings stay on the machine unless submitted.
+// Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin
+// Desktop), Zed and JetBrains Junie, looks for agent-framework projects
+// under the given directories, and checks the environment and the servers'
+// configured environment and HTTP headers for credentials agents use,
+// PantherClaw pck_ keys included. Secrets never appear in a finding: only
+// the variable or header name, the kind of credential and its well-known
+// prefix. Findings stay on the machine unless submitted.
 package scan
 
 import (
@@ -83,7 +85,15 @@ func clip(s string) string {
 // Run scans and returns the findings, sorted by kind and key.
 func Run(o Options) []Finding {
 	var out []Finding
+	var read []os.FileInfo
 	for _, c := range clientConfigs(o) {
+		// Read each file once, even when two locations name it (a
+		// case-insensitive file system, a symlinked ~/.config).
+		info, err := os.Stat(c.path)
+		if err != nil || slices.ContainsFunc(read, func(r os.FileInfo) bool { return os.SameFile(r, info) }) {
+			continue
+		}
+		read = append(read, info)
 		out = append(out, mcpFindings(o.Host, c.client, c.path, c.servers)...)
 	}
 	for _, p := range o.Paths {
@@ -116,16 +126,25 @@ func clientConfigs(o Options) []clientConfig {
 		add("claude_desktop", filepath.Join(o.ConfigDir, "Claude", "claude_desktop_config.json"), "mcpServers")
 		add("vscode", filepath.Join(o.ConfigDir, "Code", "User", "mcp.json"), "servers")
 		add("vscode", filepath.Join(o.ConfigDir, "Code", "User", "settings.json"), "mcp", "servers")
+		// %APPDATA% on Windows, $XDG_CONFIG_HOME on Linux.
+		add("devin_desktop", filepath.Join(o.ConfigDir, "devin", "mcp_config.json"), "mcpServers")
+		add("zed", filepath.Join(o.ConfigDir, "zed", "settings.json"), "context_servers")
 	}
 	if o.Home != "" {
 		add("claude_desktop", filepath.Join(o.Home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), "mcpServers")
 		add("claude_code", filepath.Join(o.Home, ".claude.json"), "mcpServers")
 		add("cursor", filepath.Join(o.Home, ".cursor", "mcp.json"), "mcpServers")
+		add("windsurf", filepath.Join(o.Home, ".codeium", "windsurf", "mcp_config.json"), "mcpServers")
+		add("devin_desktop", filepath.Join(o.Home, ".config", "devin", "mcp_config.json"), "mcpServers")
+		add("zed", filepath.Join(o.Home, ".config", "zed", "settings.json"), "context_servers")
+		add("junie", filepath.Join(o.Home, ".junie", "mcp", "mcp.json"), "mcpServers")
 	}
 	for _, p := range o.Paths {
 		add("project", filepath.Join(p, ".mcp.json"), "mcpServers")
 		add("cursor", filepath.Join(p, ".cursor", "mcp.json"), "mcpServers")
 		add("vscode", filepath.Join(p, ".vscode", "mcp.json"), "servers")
+		add("zed", filepath.Join(p, ".zed", "settings.json"), "context_servers")
+		add("junie", filepath.Join(p, ".junie", "mcp", "mcp.json"), "mcpServers")
 	}
 	return out
 }
@@ -142,14 +161,15 @@ func readJSON(path string) map[string]any {
 		return nil
 	}
 	var v map[string]any
-	if json.Unmarshal(stripComments(b), &v, jsontext.AllowDuplicateNames(true)) != nil {
+	if json.Unmarshal(fromJSONC(b), &v, jsontext.AllowDuplicateNames(true)) != nil {
 		return nil
 	}
 	return v
 }
 
-// stripComments removes // and /* */ comments outside strings (JSONC).
-func stripComments(b []byte) []byte {
+// fromJSONC removes what JSONC allows and JSON does not (VS Code and Zed
+// settings): // and /* */ comments, and a comma before a closing bracket.
+func fromJSONC(b []byte) []byte {
 	out := make([]byte, 0, len(b))
 	inStr, esc := false, false
 	for i := 0; i < len(b); i++ {
@@ -179,6 +199,17 @@ func stripComments(b []byte) []byte {
 				i++
 			}
 			i++
+		case c == '}' || c == ']':
+			// Outside a string, the last byte before the bracket that is
+			// not white space is structural, so a comma there is trailing.
+			j := len(out)
+			for j > 0 && strings.IndexByte(" \t\r\n", out[j-1]) >= 0 {
+				j--
+			}
+			if j > 0 && out[j-1] == ',' {
+				out = append(out[:j-1], out[j:]...)
+			}
+			out = append(out, c)
 		default:
 			out = append(out, c)
 		}
@@ -221,27 +252,48 @@ func mcpFindings(host, client, path string, serversAt []string) []Finding {
 				continue
 			}
 			attrs := map[string]string{"client": client, "config": clip(path), "name": clip(name), "host": clip(host)}
-			if cmd, ok := s["command"].(string); ok && cmd != "" {
+			cmd, _ := s["command"].(string)
+			env, _ := s["env"].(map[string]any)
+			if nested, ok := s["command"].(map[string]any); ok { // older Zed: {"command": {"path", "args", "env"}}
+				cmd, _ = nested["path"].(string)
+				env, _ = nested["env"].(map[string]any)
+			}
+			if cmd != "" {
 				attrs["transport"], attrs["command"] = "stdio", clip(filepath.Base(cmd))
 			}
-			if u, ok := s["url"].(string); ok && u != "" {
+			u, _ := s["url"].(string)
+			if u == "" {
+				u, _ = s["serverUrl"].(string) // Windsurf and Devin Desktop
+			}
+			if u != "" {
 				attrs["transport"] = "http"
 				if pu, err := url.Parse(u); err == nil {
 					attrs["url_host"] = clip(pu.Host) // never the path or query: tokens live there
 				}
 			}
 			var envNames []string
-			if env, ok := s["env"].(map[string]any); ok {
-				for k, v := range env {
-					envNames = append(envNames, k)
-					if val, ok := v.(string); ok {
-						out = append(out, envSecrets(host, client+" "+name, []string{k + "=" + val})...)
-					}
+			for k, v := range env {
+				envNames = append(envNames, k)
+				if val, ok := v.(string); ok {
+					out = append(out, envSecrets(host, client+" "+name, []string{k + "=" + val})...)
 				}
 			}
 			slices.Sort(envNames)
 			if len(envNames) > 0 {
 				attrs["env_names"] = clip(strings.Join(envNames, ","))
+			}
+			var headerNames []string
+			if headers, ok := s["headers"].(map[string]any); ok {
+				for k, v := range headers {
+					headerNames = append(headerNames, k)
+					if val, ok := v.(string); ok {
+						out = append(out, headerSecrets(host, client+" "+name+" headers", k, val)...)
+					}
+				}
+			}
+			slices.Sort(headerNames)
+			if len(headerNames) > 0 {
+				attrs["header_names"] = clip(strings.Join(headerNames, ","))
 			}
 			out = append(out, Finding{Kind: KindMCPServer, Key: key(KindMCPServer, host, path, name), Attributes: attrs})
 		}
@@ -370,32 +422,68 @@ var secretNames = map[string]string{ //nolint:gosec // G101: variable names, not
 	"GITHUB_TOKEN": "github_token", "GH_TOKEN": "github_token", "AWS_SECRET_ACCESS_KEY": "aws_secret_access_key",
 }
 
+// credentialHeaders carry a credential whatever its value looks like.
+var credentialHeaders = []string{"authorization", "proxy-authorization", "x-api-key"}
+
+// knownPrefix recognizes a credential by its well-known prefix.
+func knownPrefix(value string) (kind, prefix string) {
+	for _, s := range secretKinds {
+		if strings.HasPrefix(value, s.prefix) {
+			return s.kind, s.prefix
+		}
+	}
+	return "", ""
+}
+
+// placeholder reports a reference such as ${env:GITHUB_TOKEN} or
+// ${input:token}: the client fills it in at start-up, so the file holds no
+// credential.
+func placeholder(value string) bool {
+	return strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}")
+}
+
+func secretFinding(host, where, name, kind, redacted string) Finding {
+	return Finding{Kind: KindEnvSecret, Key: key(KindEnvSecret, host, where, name), Attributes: map[string]string{
+		"name": clip(name), "secret_kind": kind, "where": clip(where), "redacted": clip(redacted), "host": clip(host),
+	}}
+}
+
 // envSecrets reports NAME=value pairs that hold credentials, redacted.
 func envSecrets(host, where string, env []string) []Finding {
 	var out []Finding
 	for _, kv := range env {
 		name, value, ok := strings.Cut(kv, "=")
-		if !ok || len(value) < 8 {
+		if !ok || len(value) < 8 || placeholder(value) {
 			continue
 		}
-		kind, shown := "", ""
-		for _, s := range secretKinds {
-			if strings.HasPrefix(value, s.prefix) {
-				kind, shown = s.kind, s.prefix
-				break
-			}
-		}
+		kind, shown := knownPrefix(value)
 		if kind == "" {
-			if k, ok := secretNames[strings.ToUpper(name)]; ok {
-				kind = k
-			}
+			kind = secretNames[strings.ToUpper(name)]
 		}
-		if kind == "" {
-			continue
+		if kind != "" {
+			out = append(out, secretFinding(host, where, name, kind, shown+"…"))
 		}
-		out = append(out, Finding{Kind: KindEnvSecret, Key: key(KindEnvSecret, host, where, name), Attributes: map[string]string{
-			"name": clip(name), "secret_kind": kind, "where": clip(where), "redacted": shown + "…", "host": clip(host),
-		}})
 	}
 	return out
+}
+
+// headerSecrets reports an HTTP header of an MCP server that holds a
+// credential, redacted. These are reported as env_secret findings too, so
+// they are never submitted.
+func headerSecrets(host, where, name, value string) []Finding {
+	scheme, token := "", value
+	if s, t, ok := strings.Cut(value, " "); ok && slices.Contains([]string{"bearer", "basic", "token"}, strings.ToLower(s)) {
+		scheme, token = s+" ", strings.TrimSpace(t)
+	}
+	if len(token) < 8 || placeholder(token) {
+		return nil
+	}
+	kind, shown := knownPrefix(token)
+	if kind == "" && slices.Contains(credentialHeaders, strings.ToLower(name)) {
+		kind = "http_credential"
+	}
+	if kind == "" {
+		return nil
+	}
+	return []Finding{secretFinding(host, where, name, kind, scheme+shown+"…")}
 }
