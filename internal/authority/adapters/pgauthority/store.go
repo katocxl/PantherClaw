@@ -128,6 +128,7 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 			}); err != nil {
 				return err
 			}
+			// Record locks no budget row: its keys are checked at COMMIT.
 			if err := pgbudgets.Record(ctx, q, org, w.TransactionID, w.Permit.ID, lines); err != nil {
 				return err
 			}
