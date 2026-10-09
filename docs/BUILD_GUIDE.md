@@ -217,6 +217,24 @@ go run ./cmd/pclaw sa token --key-file ci-key.json                          # pr
 
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
 
+**Browser sign-in, security keys and notifications (M5 part 1):** WebAuthn needs a domain name, so locally use `http://localhost:8080` as `auth.public_url` (the Keycloak development realm accepts both callback URLs). Security keys are off, with a start-up warning, while the public URL is an IP address.
+
+```bash
+# in your server config: "auth": {"public_url": "http://localhost:8080", ...}
+# optional email through a local relay: "notifications": {"smtp": {"host": "127.0.0.1", "port": 1025, "tls": "none", "from": "pantherclaw@localhost"}}
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.local.json
+# open http://localhost:8080/account?org=<org id>, sign in, then "Add a security key or passkey"
+go run ./cmd/pclaw login --server http://localhost:8080 --org <org id>
+go run ./cmd/pclaw session list && go run ./cmd/pclaw key list
+go run ./cmd/pclaw channel create --name ops --kind log --event 'security.*'
+go run ./cmd/pclaw channel create --name siem --kind webhook --event 'security.*' --url https://hooks.example.com/pantherclaw   # prints the signing secret once
+go run ./cmd/pclaw channel create --name chat --kind slack --event 'security.*' --url-file slack-url.txt                      # the Slack URL is a secret
+go run ./cmd/pclaw channel test <channel id> && go run ./cmd/pclaw delivery list --channel <channel id>
+go run ./cmd/pclaw user revoke-sessions <user id>                                                                             # sign a person out everywhere
+```
+
+Browser sessions last 30 idle minutes and 12 hours at most. Adding or removing a key needs a sign-in at most 5 minutes old (the page sends you back to your identity provider) or a step-up with a key you already have, and the user is emailed about it. Webhooks are signed per Standard Webhooks: any `standardwebhooks` library verifies them with the `whsec_` secret. Slack and email messages only link back to PantherClaw; nothing in a channel can approve anything. Community allows 3 channels. Without `notifications.smtp.host`, email deliveries are skipped and shown as such in `pclaw delivery list`.
+
 **Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
 
 ```bash
