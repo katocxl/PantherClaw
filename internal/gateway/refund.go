@@ -36,7 +36,7 @@ import (
 // the digest equal to the package's).
 var mockPayments = actionir.Definition{
 	Package: "pc.mock-payments", Version: "1.0.0",
-	Digest: "sha256:c6ebec993cc06768ff0f09d1fc6f9b9f0aaba195270c0e93239ca196d1624335",
+	Digest: "sha256:9ebb4b465342ac90911d1ea4c9ed1d5ac7e356e9742d17938f99076bb836678d",
 }
 
 var chargePattern = regexp.MustCompile(`^ch_[A-Za-z0-9]{1,64}$`)

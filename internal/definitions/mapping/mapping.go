@@ -45,6 +45,7 @@ type Context struct {
 type Mapper struct {
 	pkg  *domain.Package
 	mcp  map[string]*compiled
+	hook map[string]*compiled
 	http []*compiled
 }
 
@@ -78,7 +79,7 @@ func New(pkg *domain.Package, limits celenv.Limits) (*Mapper, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Mapper{pkg: pkg, mcp: map[string]*compiled{}}
+	m := &Mapper{pkg: pkg, mcp: map[string]*compiled{}, hook: map[string]*compiled{}}
 	for i := range pkg.Definitions {
 		d := &pkg.Definitions[i]
 		for _, mp := range d.Mappings {
@@ -86,9 +87,12 @@ func New(pkg *domain.Package, limits celenv.Limits) (*Mapper, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%w: %s %s%s%s: %w", domain.ErrInvalid, d.Operation, mp.Tool, mp.Method, mp.Path, err)
 			}
-			if mp.Channel == domain.ChannelMCP {
+			switch mp.Channel {
+			case domain.ChannelMCP:
 				m.mcp[mp.Tool] = c
-			} else {
+			case domain.ChannelHook:
+				m.hook[mp.Tool] = c
+			case domain.ChannelHTTP:
 				m.http = append(m.http, c)
 			}
 		}
@@ -109,7 +113,7 @@ func paramType(t domain.ParamType) *types.Type {
 		return cel.BoolType
 	case domain.TypeIdentifierList:
 		return cel.ListType(cel.StringType)
-	case domain.TypeEnum, domain.TypeIdentifier, domain.TypeText:
+	case domain.TypeEnum, domain.TypeIdentifier, domain.TypeText, domain.TypeCommand, domain.TypePath:
 		return cel.StringType
 	}
 	return nil
@@ -194,7 +198,17 @@ func (c *compiled) hasPathVar(v string) bool {
 
 // MCP maps a tools/call by tool name and JSON arguments.
 func (m *Mapper) MCP(ctx context.Context, tc Context, tool string, args []byte) (actionir.Parsed, error) {
-	c, ok := m.mcp[tool]
+	return m.byName(ctx, tc, m.mcp, tool, args)
+}
+
+// Hook maps a cooperative client's call (the Claude Code hook) by its kind
+// and JSON input.
+func (m *Mapper) Hook(ctx context.Context, tc Context, kind string, input []byte) (actionir.Parsed, error) {
+	return m.byName(ctx, tc, m.hook, kind, input)
+}
+
+func (m *Mapper) byName(ctx context.Context, tc Context, by map[string]*compiled, tool string, args []byte) (actionir.Parsed, error) {
+	c, ok := by[tool]
 	if !ok {
 		return actionir.Parsed{}, fmt.Errorf("%w: tool %q", ErrUnmapped, tool)
 	}
@@ -351,7 +365,7 @@ func evalParam(ctx context.Context, p *celenv.Program, t domain.ParamType, vars 
 		var b types.Bool
 		b, ok = v.(types.Bool)
 		out.Bool = bool(b)
-	case domain.TypeEnum, domain.TypeIdentifier, domain.TypeText:
+	case domain.TypeEnum, domain.TypeIdentifier, domain.TypeText, domain.TypeCommand, domain.TypePath:
 		var s types.String
 		s, ok = v.(types.String)
 		out.Str = string(s)

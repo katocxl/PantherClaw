@@ -4,7 +4,9 @@
 # Reviewed tool package for the simulated payments API (pantherclaw-sim
 # payments). Every effect is SIMULATED. Mappings are reviewed as code: a wrong
 # mapping is a total bypass (HR-124), so any change here needs the golden
-# tests in internal/definitions to be updated deliberately.
+# tests in internal/definitions to be updated deliberately. The dispatch
+# templates say what the gateway sends to the API (HR-075), and the MCP
+# descriptions and input schemas are what MCP clients see (HR-081).
 format: 1
 name: pc.mock-payments
 version: 1.0.0
@@ -70,18 +72,51 @@ definitions:
       - channel: mcp
         tool: create_refund
         route: payments-refund
+        description: >-
+          Refund part or all of a card charge on the simulated payments API.
+          Every refund is SIMULATED. The amount is in the currency's units,
+          with exactly its minor-unit digits (12.50 USD).
+        input_schema:
+          type: object
+          additionalProperties: false
+          required: [charge, amount, currency, reason]
+          properties:
+            charge:
+              type: string
+              description: The charge to refund
+              pattern: '^ch_[A-Za-z0-9]{1,64}$'
+            amount:
+              type: string
+              description: The amount to refund, for example 12.50
+              pattern: '^[0-9]{1,16}(\.[0-9]{1,4})?$'
+            currency:
+              type: string
+              enum: [USD, EUR]
+            reason:
+              type: string
+              enum: [duplicate, fraudulent, requested_by_customer]
         extract:
           target_id: input.charge
           params:
             amount: money(input.amount, input.currency)
             reason: input.reason
+    dispatch:
+      http:
+        method: POST
+        path: /v1/refunds
+        body:
+          charge: target.id
+          amount: params.amount.value
+          currency: params.amount.currency
+          reason: params.reason
+        idempotency_header: Idempotency-Key
 
   - operation: payments.refund.get
     summary: Read one refund
     access: read
     target:
       type: payments.refund
-      id_pattern: '^re_[A-Za-z0-9]{1,64}$'
+      id_pattern: '^re_[A-Za-z0-9-]{1,64}$'
       account: none
     params: {}
     effects:
@@ -106,6 +141,20 @@ definitions:
       - channel: mcp
         tool: get_refund
         route: payments-refund-get
+        description: Read one refund on the simulated payments API by its id.
+        input_schema:
+          type: object
+          additionalProperties: false
+          required: [refund]
+          properties:
+            refund:
+              type: string
+              description: The refund id
+              pattern: '^re_[A-Za-z0-9-]{1,64}$'
         extract:
           target_id: input.refund
           params: {}
+    dispatch:
+      http:
+        method: GET
+        path: /v1/refunds/{target.id}

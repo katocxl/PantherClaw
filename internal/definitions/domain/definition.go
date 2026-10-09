@@ -76,6 +76,8 @@ type Definition struct {
 	Dedupe        []string             `json:"dedupe_key,omitzero"`
 	Assurance     Assurance            `json:"assurance"`
 	Mappings      []Mapping            `json:"mappings"`
+	// Dispatch is the outbound request template (G0 M6, HR-075).
+	Dispatch *Dispatch `json:"dispatch,omitzero"`
 
 	// Digest is "sha256:<hex>" of the canonical JSON of this definition,
 	// mappings included. It is what ActionIR pins (definition.digest) and
@@ -288,7 +290,7 @@ func (d *Definition) Validate() error {
 			return err
 		}
 	}
-	return nil
+	return d.validateDispatch()
 }
 
 func (t TargetSpec) validate(op string) error {
