@@ -33,7 +33,7 @@ var (
 		"pending": pantherclawv1.DeliveryState_DELIVERY_STATE_PENDING, "delivered": pantherclawv1.DeliveryState_DELIVERY_STATE_DELIVERED,
 		"failed": pantherclawv1.DeliveryState_DELIVERY_STATE_FAILED, "expired": pantherclawv1.DeliveryState_DELIVERY_STATE_EXPIRED,
 		"skipped": pantherclawv1.DeliveryState_DELIVERY_STATE_SKIPPED, "dropped": pantherclawv1.DeliveryState_DELIVERY_STATE_DROPPED,
-		"canceled": pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELLED,
+		"canceled": pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELED,
 	}
 )
 

@@ -85,7 +85,7 @@ func TestM5Commands(t *testing.T) {
 		t.Fatalf("pause and resume = %d %q", code, errs)
 	}
 	if code, _, _ := run(t, env, "delivery", "list", "--state", "canceled"); code != 0 ||
-		n.list.GetState() != pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELLED {
+		n.list.GetState() != pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELED {
 		t.Fatalf("delivery list = %d, %v", code, n.list)
 	}
 	if code, _, _ := run(t, env, "user", "remove-key", "u1", "k1"); code != 0 || acct.remove.GetUserId() != "u1" || acct.remove.GetKeyId() != "k1" {
