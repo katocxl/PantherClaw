@@ -28,6 +28,9 @@ import (
 // are measured instead of hidden by coordinated omission).
 type loadConfig struct {
 	Gateway string
+	// Connection is the payments connection's name, the first path segment
+	// at the gateway (G0 M6).
+	Connection string
 	// Key signs every request (PAP-1 §4); Token returns the workload token
 	// and Run is the run the requests belong to.
 	Key         ed25519.PrivateKey
@@ -79,6 +82,7 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(stderr)
 	var c loadConfig
 	fs.StringVar(&c.Gateway, "gateway", "http://127.0.0.1:8090", "gateway base URL")
+	fs.StringVar(&c.Connection, "connection", "payments", "the payments connection's name (dev seed --target-url creates \"payments\")")
 	workloadFile := fs.String("workload-file", "", "workload key file (from `pantherclaw-server dev seed --workload-out`)")
 	tokenFile := fs.String("token-file", "", "use this workload token instead of asking the key file's server")
 	fs.StringVar(&c.Run, "run", "", "run id (default: the key file's run)")
@@ -191,7 +195,7 @@ func drive(ctx context.Context, c loadConfig) (Summary, error) {
 }
 
 func one(ctx context.Context, client *http.Client, c loadConfig, run, body string) sample {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.Gateway, "/")+"/v1/refunds", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.Gateway, "/")+"/"+c.Connection+"/v1/refunds", strings.NewReader(body))
 	if err != nil {
 		return sample{}
 	}

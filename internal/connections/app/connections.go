@@ -26,6 +26,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
+	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -83,7 +84,13 @@ var (
 	ErrStale           = pcerr.New(pcerr.FailedPrecondition, "CONNECTION_REVISION_STALE", "the connection changed since it was read")
 	ErrState           = pcerr.New(pcerr.FailedPrecondition, "CONNECTION_STATE", "the connection is not in a state that allows this")
 	ErrReason          = pcerr.New(pcerr.InvalidArgument, "REASON_REQUIRED", "a reason of 1 to 500 characters is required")
+	ErrNameReserved    = pcerr.New(pcerr.InvalidArgument, "CONNECTION_NAME_RESERVED", "this name is a path of the gateway itself")
 )
+
+// reservedNames are the gateway's own first path segments: a connection's
+// name is the first segment of its HTTP routes (/{connection}/…), so it
+// can never shadow them.
+var reservedNames = []string{"mcp", "hook", "sdk", "healthz", "readyz", "metrics"}
 
 // Notifier queues a notification in the caller's transaction (M5).
 type Notifier interface {
@@ -119,20 +126,32 @@ type CreateInput struct {
 	MaxResponseBytes, TimeoutMs                     int32
 }
 
-func (s *Service) caller(ctx context.Context, p td.Permission) (tenancy.Caller, error) {
-	c, err := tenancy.CallerFrom(ctx)
-	if err != nil {
-		return c, err
-	}
-	return c, c.Require(p, td.OrgPath(c.Org))
+// actor is who makes a change: a person holding the permission, or the
+// operator seeding a development org (Seed).
+type actor struct {
+	Org ids.OrgID
+	// By is recorded in created_by, updated_by and changed_by.
+	By    string
+	Audit evdomain.Actor
 }
 
-func record(ctx context.Context, tx db.TenantTx, c tenancy.Caller, name string, conn ids.UUID, details map[string]string) error {
+func (s *Service) caller(ctx context.Context, p td.Permission) (actor, error) {
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return actor{}, err
+	}
+	if err := c.Require(p, td.OrgPath(c.Org)); err != nil {
+		return actor{}, err
+	}
+	return actor{Org: c.Org, By: c.Principal.String(), Audit: c.Actor()}, nil
+}
+
+func record(ctx context.Context, tx db.TenantTx, c actor, name string, conn ids.UUID, details map[string]string) error {
 	for k, v := range details {
 		details[k] = clip(v)
 	}
 	_, err := audit.Record(ctx, tx, audit.Event{
-		Name: name, Actor: c.Actor(), Outcome: audit.Success, Object: &audit.Object{Type: "connection", ID: conn.String()}, Details: details,
+		Name: name, Actor: c.Audit, Outcome: audit.Success, Object: &audit.Object{Type: "connection", ID: conn.String()}, Details: details,
 	})
 	return err
 }
@@ -150,17 +169,17 @@ func clip(s string) string {
 	return s[:cut]
 }
 
-func (s *Service) notifyWeakened(ctx context.Context, tx db.TenantTx, c tenancy.Caller, conn dbq.PcConnection, changes []string) error {
+func (s *Service) notifyWeakened(ctx context.Context, tx db.TenantTx, c actor, conn dbq.PcConnection, changes []string) error {
 	if s.notify == nil {
 		return nil
 	}
 	_, err := s.notify.Enqueue(ctx, tx, napp.Message{Org: c.Org, Type: "security.connection_weakened", Params: map[string]string{
-		"connection": conn.Name, "user": c.Principal.String(), "change": strings.Join(changes, ", "),
+		"connection": conn.Name, "user": c.By, "change": strings.Join(changes, ", "),
 	}})
 	return err
 }
 
-func (s *Service) notifyQuarantined(ctx context.Context, tx db.TenantTx, c tenancy.Caller, conn dbq.PcConnection, code string) error {
+func (s *Service) notifyQuarantined(ctx context.Context, tx db.TenantTx, c actor, conn dbq.PcConnection, code string) error {
 	if s.notify == nil {
 		return nil
 	}
@@ -285,6 +304,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Connection, error
 	if err != nil {
 		return Connection{}, err
 	}
+	return s.create(ctx, c, in)
+}
+
+// Seed creates a connection as the operator, for `pantherclaw-server dev
+// seed` and `dev connection`, with every check Create makes. DEVELOPMENT
+// ONLY: in production a person holding connection.manage creates
+// connections (HR-183).
+func (s *Service) Seed(ctx context.Context, org ids.OrgID, operator string, in CreateInput) (Connection, error) {
+	return s.create(ctx, actor{Org: org, By: "operator:" + operator, Audit: evdomain.Actor{Type: "operator", ID: operator}}, in)
+}
+
+func (s *Service) create(ctx context.Context, c actor, in CreateInput) (Connection, error) {
+	if slices.Contains(reservedNames, in.Name) {
+		return Connection{}, ErrNameReserved
+	}
 	in.DestinationClass = orDefault(in.DestinationClass, ClassPublic)
 	in.DefaultMode = orDefault(in.DefaultMode, ModeMonitor)
 	in.MaxResponseBytes = orDefault(in.MaxResponseBytes, DefaultMaxResponseBytes)
@@ -312,7 +346,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Connection, error
 			OrgID: c.Org, ID: ids.NewV7(), Name: in.Name, Kind: in.Kind, GatewayID: in.Gateway, Package: in.Package,
 			BaseUrl: base, AllowedHosts: hosts, DestinationClass: in.DestinationClass, AccessMode: in.AccessMode,
 			CredentialHeader: ptr(in.CredentialHeader), CredentialScheme: ptr(in.CredentialScheme), DefaultMode: in.DefaultMode,
-			MaxResponseBytes: in.MaxResponseBytes, TimeoutMs: in.TimeoutMs, CreatedBy: c.Principal.String(),
+			MaxResponseBytes: in.MaxResponseBytes, TimeoutMs: in.TimeoutMs, CreatedBy: c.By,
 		})
 		if db.IsUniqueViolation(err) {
 			return ErrNameTaken
@@ -321,7 +355,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Connection, error
 		}
 		for _, r := range rs {
 			if err := q.InsertConnectionRoute(ctx, dbq.InsertConnectionRouteParams{
-				OrgID: c.Org, ConnectionID: conn.ID, Route: r, Mode: in.DefaultMode, ChangedBy: c.Principal.String(),
+				OrgID: c.Org, ConnectionID: conn.ID, Route: r, Mode: in.DefaultMode, ChangedBy: c.By,
 			}); err != nil {
 				return err
 			}

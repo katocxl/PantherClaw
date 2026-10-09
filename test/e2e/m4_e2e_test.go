@@ -30,11 +30,13 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
-// refundOf sends a refund of charge for amount as a workload, in run.
+// refundOf sends a refund of charge for amount as a workload, in run. It
+// returns the status and the body: the target's answer with the gateway's
+// PC-Outcome header prepended, or the gateway's refusal.
 func (s *m3Stack) refundOf(t *testing.T, key ed25519.PrivateKey, token, run, charge, amount string) (int, string) {
 	t.Helper()
 	body := `{"charge":"` + charge + `","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, run)
 	req.Header.Set(gateway.HeaderActionID, ids.NewV7().String())
 	c := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{Key: key, Token: func() string { return token }}}
@@ -44,6 +46,9 @@ func (s *m3Stack) refundOf(t *testing.T, key ed25519.PrivateKey, token, run, cha
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
+	if o := resp.Header.Get("PC-Outcome"); o != "" {
+		return resp.StatusCode, `"outcome":"` + o + `" ` + string(b)
+	}
 	return resp.StatusCode, string(b)
 }
 
@@ -102,6 +107,7 @@ func TestE2E_M4_GrantsDelegationRevocationAndCounters(t *testing.T) {
 	// The reference package (seeded: no test server trusts a package root),
 	// and a billing provider whose own service account reports facts.
 	seedPackage(t, s.db.AppPool(t), ids.MustParse[ids.Org](s.org))
+	s.connect(t)
 	sa := field(t, must("sa", "create", "--name", "billing"), "id")
 	must("role", "bind", "--role", "fact_provider", "--sa", sa)
 	secret := field(t, must("apikey", "create", "--sa", sa, "--name", "billing", "--scope", "fact.write"), "secret")

@@ -384,3 +384,40 @@ func deref(p *string) string {
 	}
 	return *p
 }
+
+// TestPN003_ConnectionNamesNeverShadowTheGatewaysOwnPaths: a connection's name
+// is the first path segment of its routes at the gateway (/{connection}/…),
+// so the gateway's own endpoints are not available as names.
+func TestPN003_ConnectionNamesNeverShadowTheGatewaysOwnPaths(t *testing.T) {
+	e := newEnv(t)
+	for _, name := range []string{"mcp", "hook", "sdk", "healthz", "readyz", "metrics"} {
+		if _, err := e.svc.Create(e.admin, app.CreateInput{
+			Name: name, Kind: app.KindHTTP, Package: mockpayments.Name, BaseURL: "https://payments.example.test", Gateway: e.gateway,
+			AccessMode: app.AccessNone,
+		}); !is(err, app.ErrNameReserved) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// TestHR077_TheOperatorSeedMakesEveryRegistrationCheck: dev seed creates
+// connections through Seed, which refuses what Create refuses and records
+// the operator as the actor.
+func TestHR077_TheOperatorSeedMakesEveryRegistrationCheck(t *testing.T) {
+	e := newEnv(t)
+	in := app.CreateInput{
+		Name: "payments", Kind: app.KindHTTP, Package: mockpayments.Name, BaseURL: "http://169.254.169.254", Gateway: e.gateway,
+		AccessMode: app.AccessNone, DefaultMode: app.ModeEnforce,
+	}
+	if _, err := e.svc.Seed(context.Background(), e.org, "dev-seed", in); !is(err, app.ErrBaseURL) {
+		t.Fatalf("metadata address: %v", err)
+	}
+	in.BaseURL = "http://127.0.0.1:9090"
+	c, err := e.svc.Seed(context.Background(), e.org, "dev-seed", in)
+	if err != nil || c.CreatedBy != "operator:dev-seed" || modeOf(c, "payments-refund") != app.ModeEnforce {
+		t.Fatalf("seed: %+v %v", c, err)
+	}
+	if n := e.int64(t, "SELECT count(*) FROM pc.ledger_entries WHERE org_id = $1 AND kind = 'audit.connection.created' AND actor_type = 'operator' AND actor_id = 'dev-seed'", e.org); n != 1 {
+		t.Fatalf("operator audit entries: %d", n)
+	}
+}

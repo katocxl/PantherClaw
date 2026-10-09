@@ -218,6 +218,12 @@ func TestHR103_MissingOrUnmappedCallsAreNeverDefaulted(t *testing.T) {
 		if _, err := m.HTTP(ctx, tc, c[0], c[1], "", nil); !errors.Is(err, ErrUnmapped) {
 			t.Errorf("%s %s: err = %v, want ErrUnmapped", c[0], c[1], err)
 		}
+		if r, ok := m.HTTPRoute(c[0], c[1]); ok {
+			t.Errorf("%s %s: route %q", c[0], c[1], r)
+		}
+	}
+	if r, ok := m.HTTPRoute("GET", "/v1/refunds/re_1"); !ok || r != "payments-refund-get" {
+		t.Errorf("route of GET /v1/refunds/re_1: %q %v", r, ok)
 	}
 }
 

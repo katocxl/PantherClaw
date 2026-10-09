@@ -13,7 +13,9 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
+	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
+	"github.com/katocxl/pantherclaw/internal/platform/celenv"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
@@ -28,6 +30,8 @@ var ErrConfig = errors.New("control: configuration refused")
 // Config is what this gateway serves (G0 M6 design decision 19).
 type Config struct {
 	Version int64
+	// Org is the gateway's org (checked against its certificate).
+	Org string
 	// ByName and ByID index the connections (active and quarantined).
 	ByName, ByID map[string]*Connection
 }
@@ -38,6 +42,9 @@ type Connection struct {
 	// Package is the pinned package, decoded strictly; every definition
 	// digest is derived here, not taken from the server.
 	Package *domain.Package
+	// Mapper maps calls through the package's reviewed mappings, compiled
+	// once per configuration.
+	Mapper *mapping.Mapper
 	// Modes are the explicit route modes.
 	Modes map[string]string
 	// Credential is the active sealed credential, or nil.
@@ -168,25 +175,33 @@ func (s *Store) build(res *pb.GetConfigurationResponse) (*Config, error) {
 	if res.GetOrgId() != s.org || res.GetGatewayId() != s.gateway {
 		return nil, fmt.Errorf("%w: it is for another org or gateway", ErrConfig)
 	}
-	pkgs := map[string]*domain.Package{}
+	type compiled struct {
+		pkg    *domain.Package
+		mapper *mapping.Mapper
+	}
+	pkgs := map[string]compiled{}
 	for _, p := range res.GetPackages() {
 		d, err := manifest.Decode(p.GetRaw())
 		if err != nil || d.Name != p.GetName() || d.Version != p.GetVersion() {
 			return nil, fmt.Errorf("%w: package %s@%s does not decode", ErrConfig, p.GetName(), p.GetVersion())
 		}
-		pkgs[d.Name+"@"+d.Version] = d
+		m, err := mapping.New(d, celenv.DefaultLimits)
+		if err != nil {
+			return nil, fmt.Errorf("%w: package %s@%s: %w", ErrConfig, p.GetName(), p.GetVersion(), err)
+		}
+		pkgs[d.Name+"@"+d.Version] = compiled{pkg: d, mapper: m}
 	}
 	creds := map[string]*pb.SealedCredential{}
 	for _, c := range res.GetCredentials() {
 		creds[c.GetConnectionId()] = c
 	}
-	cfg := &Config{Version: res.GetVersion(), ByName: map[string]*Connection{}, ByID: map[string]*Connection{}}
+	cfg := &Config{Version: res.GetVersion(), Org: s.org, ByName: map[string]*Connection{}, ByID: map[string]*Connection{}}
 	for _, gc := range res.GetConnections() {
 		pkg, ok := pkgs[gc.GetPackage()+"@"+gc.GetPackageVersion()]
 		if !ok {
 			return nil, fmt.Errorf("%w: connection %s uses a package that was not sent", ErrConfig, gc.GetName())
 		}
-		c := &Connection{GatewayConnection: gc, Package: pkg, Modes: map[string]string{}, Credential: creds[gc.GetId()]}
+		c := &Connection{GatewayConnection: gc, Package: pkg.pkg, Mapper: pkg.mapper, Modes: map[string]string{}, Credential: creds[gc.GetId()]}
 		for _, r := range gc.GetRoutes() {
 			c.Modes[r.GetRoute()] = r.GetMode()
 		}
