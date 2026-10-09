@@ -50,7 +50,7 @@ var (
 		"PENDING": pantherclawv1.DeliveryState_DELIVERY_STATE_PENDING, "DELIVERED": pantherclawv1.DeliveryState_DELIVERY_STATE_DELIVERED,
 		"FAILED": pantherclawv1.DeliveryState_DELIVERY_STATE_FAILED, "EXPIRED": pantherclawv1.DeliveryState_DELIVERY_STATE_EXPIRED,
 		"SKIPPED": pantherclawv1.DeliveryState_DELIVERY_STATE_SKIPPED, "DROPPED": pantherclawv1.DeliveryState_DELIVERY_STATE_DROPPED,
-		"CANCELLED": pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELLED, //nolint:misspell // the schema's state name
+		"CANCELLED": pantherclawv1.DeliveryState_DELIVERY_STATE_CANCELED, //nolint:misspell // the schema's state name
 	}
 )
 
