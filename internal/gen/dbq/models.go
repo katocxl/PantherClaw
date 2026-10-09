@@ -15,6 +15,15 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
 
+type PcActionDefinition struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	VersionID ids.UUID
+	Operation string
+	Digest    string
+	Canonical []byte
+}
+
 type PcAgent struct {
 	OrgID             ids.OrgID
 	ID                ids.UUID
@@ -159,6 +168,14 @@ type PcCliSession struct {
 	ExpiresAt       time.Time
 	RefreshedAt     *time.Time
 	RevokedAt       *time.Time
+}
+
+type PcConsequenceRule struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	VersionID ids.UUID
+	Position  int32
+	Canonical []byte
 }
 
 type PcCrossOrgListAudit struct {
@@ -372,6 +389,35 @@ type PcOrgContainment struct {
 	UpdatedAt  time.Time
 }
 
+type PcPackagePin struct {
+	OrgID     ids.OrgID
+	PackageID ids.UUID
+	VersionID ids.UUID
+	Version   string
+	Digest    string
+	UpdatedAt time.Time
+}
+
+type PcPackageTrust struct {
+	OrgID         ids.OrgID
+	Version       int64
+	PayloadDigest string
+	ExpiresAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type PcPackageVersion struct {
+	OrgID      ids.OrgID
+	ID         ids.UUID
+	PackageID  ids.UUID
+	Version    string
+	FileDigest string
+	Raw        []byte
+	State      string
+	ImportedAt time.Time
+	ChangedAt  time.Time
+}
+
 type PcPermit struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -385,6 +431,26 @@ type PcPermit struct {
 	ExpiresAt     time.Time
 	DispatchingAt *time.Time
 	FinishedAt    *time.Time
+}
+
+type PcPolicy struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	BundleID  string
+	CreatedAt time.Time
+}
+
+type PcPolicyVersion struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	PolicyID    ids.UUID
+	Version     int32
+	Bundle      []byte
+	State       string
+	CreatedBy   string
+	CreatedAt   time.Time
+	PublishedBy *string
+	PublishedAt *time.Time
 }
 
 type PcRoleBinding struct {
@@ -462,6 +528,13 @@ type PcTeam struct {
 	State          string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type PcToolPackage struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	Name      string
+	CreatedAt time.Time
 }
 
 type PcTransaction struct {
