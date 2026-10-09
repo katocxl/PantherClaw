@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -190,13 +191,18 @@ func (p *Provider) RequireIssParam(ctx context.Context) (bool, error) {
 }
 
 // AuthCodeURL implements authnapp.IdP: authorization code flow with state,
-// nonce and PKCE S256.
-func (p *Provider) AuthCodeURL(ctx context.Context, state, nonce, verifier, redirectURI string) (string, error) {
+// nonce and PKCE S256, and max_age when the request asks for a recent
+// sign-in.
+func (p *Provider) AuthCodeURL(ctx context.Context, req authnapp.AuthRequest) (string, error) {
 	d, err := p.load(ctx)
 	if err != nil {
 		return "", err
 	}
-	return p.oauth(d, redirectURI).AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), nil
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(req.Nonce), oauth2.S256ChallengeOption(req.Verifier)}
+	if req.MaxAge > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("max_age", strconv.Itoa(int(req.MaxAge/time.Second))))
+	}
+	return p.oauth(d, req.RedirectURI).AuthCodeURL(req.State, opts...), nil
 }
 
 // Exchange implements authnapp.IdP.
@@ -227,6 +233,7 @@ func (p *Provider) Exchange(ctx context.Context, code, verifier, redirectURI str
 		EmailVerified any    `json:"email_verified"`
 		Name          string `json:"name"`
 		Preferred     string `json:"preferred_username"`
+		AuthTime      *int64 `json:"auth_time"`
 	}
 	if err := idt.Claims(&c); err != nil {
 		return authnapp.IDClaims{}, fmt.Errorf("oidc: claims: %w", err)
@@ -246,9 +253,16 @@ func (p *Provider) Exchange(ctx context.Context, code, verifier, redirectURI str
 	if name == "" {
 		name = c.Preferred
 	}
+	var authTime time.Time
+	if c.AuthTime != nil {
+		if *c.AuthTime <= 0 || time.Unix(*c.AuthTime, 0).After(time.Now().Add(5*time.Minute)) {
+			return authnapp.IDClaims{}, errors.New("oidc: auth_time is not a past time")
+		}
+		authTime = time.Unix(*c.AuthTime, 0)
+	}
 	return authnapp.IDClaims{
 		Issuer: idt.Issuer, Subject: idt.Subject, Email: c.Email, EmailVerified: truthy(c.EmailVerified),
-		Name: name, Nonce: idt.Nonce,
+		Name: name, Nonce: idt.Nonce, AuthTime: authTime,
 	}, nil
 }
 
