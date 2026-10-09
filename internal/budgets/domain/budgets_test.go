@@ -114,7 +114,7 @@ func TestHR048_ReservationIsAllOrNothing(t *testing.T) {
 	}
 }
 
-func TestCountersAndOutstandingLimits(t *testing.T) {
+func TestHR049_CountersAndOutstandingLimits(t *testing.T) {
 	b := NewBook()
 	c := ids.NewV7()
 	b.Counters[c] = &Counter{ID: c, Max: 3, MaxOutstanding: count(2)}

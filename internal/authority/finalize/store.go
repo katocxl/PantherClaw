@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+// Package finalize binds a pipeline evaluation (step 9) and settles what it
+// reserved (step 10): idempotency per (org, run, action) (HR-005, HR-006),
+// repeat protection by dedupe-key claims (HR-007), all-or-nothing
+// reservation of every budget account and counter in the fixed lock order
+// (HR-048, HR-049), the single-use permit and the signed decision receipt
+// (G0 M4 part 2, design decisions 15–18). The transaction itself is behind
+// the Store port: Postgres in production, an in-memory world in tests.
+package finalize
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
+	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
+	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
+	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+)
+
+// Store errors. Each one rolls back the whole finalization.
+var (
+	// ErrConflict: the containment epoch, a grant or guardrail revision,
+	// or the idempotency row changed since the evaluation (a lost race,
+	// HR-004). The Authority evaluates again.
+	ErrConflict = errors.New("finalize: changed since evaluation")
+	// ErrExhausted: a budget account or counter had no room left. The
+	// Authority evaluates again, which explains the limit.
+	ErrExhausted = errors.New("finalize: limit reached")
+	// ErrParked: the dedupe key is held by an earlier attempt (HR-007).
+	ErrParked = errors.New("finalize: repeat parked")
+	// ErrDuplicate: a concurrent request for the same (run, action)
+	// committed first. The Authority answers from it.
+	ErrDuplicate = errors.New("finalize: transaction already recorded")
+)
+
+// MaxEvaluations caps how often one OPEN transaction is evaluated (T-023);
+// past it the stored decision is returned without a new evaluation.
+const MaxEvaluations = 32
+
+// Stored is a recorded transaction for one (org, run, action).
+type Stored struct {
+	TransactionID ids.UUID
+	ActionHash    string
+	Decision      adomain.Decision
+	Reason        string
+	// Final: ALLOW, ALLOW_WITH_OBLIGATIONS or DENY. OPEN transactions
+	// (REQUIRE_*, CANNOT_AUTHORIZE) are evaluated again on resubmission.
+	Final       bool
+	Evaluations int
+	Receipt     string
+}
+
+// Final reports whether a decision closes its transaction.
+func Final(d adomain.Decision) bool {
+	return d == adomain.Allow || d == adomain.AllowWithObligations || d == adomain.Deny
+}
+
+// Row is a budget account or counter row resolved from a reservation ref.
+type Row struct {
+	Ref  bdomain.Ref
+	Kind bdomain.Kind
+	ID   ids.UUID
+}
+
+// PermitWrite is the permit an ALLOW issues.
+type PermitWrite struct {
+	ID        ids.UUID
+	JWS       string
+	GatewayID string
+	Epoch     int64
+	ExpiresAt time.Time
+}
+
+// ClaimWrite claims a dedupe key for the transaction.
+type ClaimWrite struct {
+	Key           string
+	TransactionID ids.UUID
+}
+
+// BudgetState is one account's state after the reservation, for the
+// receipt (F113, F119).
+type BudgetState struct {
+	Level     string `json:"level"`
+	Rule      string `json:"rule"`
+	Currency  string `json:"currency,omitzero"`
+	Available string `json:"available,omitzero"`
+	Reserved  string `json:"reserved,omitzero"`
+	Spent     string `json:"spent,omitzero"`
+	Count     string `json:"count,omitzero"`
+}
+
+// Write is everything one finalization records, in one transaction:
+//
+//  1. for a permit, the containment row FOR SHARE: the epoch must still
+//     be Eval.Epoch and the kill switch off;
+//  2. for a permit, the grant chain and guardrails: revisions and states
+//     as evaluated (a decision that permits nothing binds no authority);
+//  3. the idempotency row: inserted, or updated conditionally on Prev;
+//  4. the dedupe claim, when Claim is set;
+//  5. the counters and budget accounts in Lines, in their lock order, last;
+//  6. the permit, the decision receipt and its ledger entry.
+type Write struct {
+	Eval          *pipeline.Evaluation
+	TransactionID ids.UUID
+	Evaluation    int
+	// Prev is the stored transaction this evaluation follows (OPEN), or
+	// nil for a new one.
+	Prev   *Stored
+	Final  bool
+	Reason string
+	// Claim, Lines and Permit are set for a decision that permits.
+	Claim  *ClaimWrite
+	Lines  []bdomain.Line
+	Rows   []Row
+	Permit *PermitWrite
+	// Sign builds and signs the decision receipt once the budget state
+	// after the reservation is known.
+	Sign func(budgets []BudgetState) (Receipt, error)
+	// GatewayID records which gateway asked.
+	GatewayID string
+}
+
+// Receipt is a signed decision receipt and the canonical body that the
+// ledger entry carries.
+type Receipt struct {
+	JWS  string
+	Body []byte
+}
+
+// Outcome of a dispatched permit (PAP-1 §7.4).
+type Outcome string
+
+// Outcomes.
+const (
+	Accepted Outcome = "accepted"
+	Failed   Outcome = "failed"
+	Unknown  Outcome = "unknown"
+)
+
+// Store is the finalization and settlement port.
+type Store interface {
+	// Lookup returns the stored transaction for (run, action), or nil.
+	Lookup(ctx context.Context, org ids.OrgID, run, action ids.UUID) (*Stored, error)
+	// Prepare makes sure the rows of a reservation plan exist, in its own
+	// short transaction (never inside Finalize, so Finalize only updates
+	// rows and its lock order cannot deadlock), and resolves their ids.
+	Prepare(ctx context.Context, org ids.OrgID, plan gdomain.Plan) ([]Row, error)
+	// Finalize records w in one transaction (see Write).
+	Finalize(ctx context.Context, org ids.OrgID, w Write) error
+	// Tamper records a request whose hash differs from the stored one for
+	// the same (run, action): an OPEN transaction becomes FINAL with
+	// DENY ACTION_TAMPERED and gets receipt; a FINAL one is unchanged.
+	// Either way a security.action_tampered audit event is written.
+	Tamper(ctx context.Context, org ids.OrgID, prev Stored, receipt *Receipt, gatewayID string) error
+	// BeginDispatch moves a permit ISSUED → DISPATCHING if it is unexpired
+	// (database clock) and the epoch is current (HR-001).
+	BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error
+	// RecordExecution settles every line of the permit's reservation and
+	// its claim: accepted commits (claim SUCCEEDED), failed releases (claim
+	// RELEASED), unknown keeps both held (HR-003, F115).
+	RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, o Outcome) error
+	// Sweep releases expired ISSUED permits (and their claims) and marks
+	// stale DISPATCHING ones UNKNOWN, never releasing them (HR-003).
+	Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Duration) (released, unknown int, err error)
+}
+
+// Dispatch errors: the gateway must not dispatch on any of them (HR-001).
+var (
+	ErrPermitUnknown  = pcerr.New(pcerr.FailedPrecondition, "PERMIT_UNKNOWN", "permit not found")
+	ErrPermitUsed     = pcerr.New(pcerr.FailedPrecondition, "PERMIT_ALREADY_USED", "permit already used")
+	ErrPermitExpired  = pcerr.New(pcerr.FailedPrecondition, "PERMIT_EXPIRED", "permit expired")
+	ErrEpochStale     = pcerr.New(pcerr.FailedPrecondition, "EPOCH_STALE", "containment changed since the permit was issued")
+	ErrKillSwitch     = pcerr.New(pcerr.Deny, "KILL_SWITCH_ENGAGED", "kill switch engaged")
+	ErrNotDispatching = pcerr.New(pcerr.FailedPrecondition, "PERMIT_NOT_DISPATCHING", "permit is not dispatching")
+)
