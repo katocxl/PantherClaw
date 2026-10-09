@@ -212,7 +212,12 @@ func kindName(k bdomain.Kind) string {
 	return "budget"
 }
 
-// Record records one reservation per line for a permit.
+// Record records one reservation per line for a permit. It locks no account
+// or counter row: the reservations' keys to them are checked at COMMIT
+// (migration 00027), after ReserveLines has updated every row, because FOR
+// KEY SHARE held by other transactions while a row is updated and rolled
+// back can fail the next update in PostgreSQL with "new multixact has more
+// than one updating member".
 func Record(ctx context.Context, q *dbq.Queries, org ids.OrgID, txn, permit ids.UUID, lines []Line) error {
 	for _, l := range lines {
 		p := dbq.InsertReservationParams{OrgID: org, ID: ids.NewV7(), TransactionID: txn, PermitID: permit, Amount: l.Amount}
