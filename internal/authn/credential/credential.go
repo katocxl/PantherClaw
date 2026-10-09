@@ -40,6 +40,9 @@ const (
 	DeviceCode   Kind = "pcd"
 	RefreshToken Kind = "pcr"
 	OAuthState   Kind = "pcs"
+	// EnrollmentToken is an owner's single-use agent enrollment token (PAP-1
+	// §3.2, M3).
+	EnrollmentToken Kind = "pce"
 )
 
 // Env labels API keys by deployment, so that a key made for one deployment
@@ -189,7 +192,7 @@ func Secret() (string, error) {
 
 func (k Kind) valid() bool {
 	switch k {
-	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState:
+	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState, EnrollmentToken:
 		return true
 	}
 	return false
