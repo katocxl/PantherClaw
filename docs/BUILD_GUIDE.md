@@ -194,15 +194,13 @@ go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
 # copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
 go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
-# since M4 a refund needs a fresh payments.charge.refundable fact about its charge (at most 5 minutes old);
-# "value" is base64 of {"bool":true}
-curl -s -H "Authorization: Bearer $(cat deploy/dev/secrets/facts.key)" -H 'Content-Type: application/json' \
-  -d '{"observations":[{"name":"payments.charge.refundable","subjectType":"payments.charge","subjectId":"ch_load1","value":"eyJib29sIjp0cnVlfQ==","observeTime":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}]}' \
-  http://127.0.0.1:8080/pantherclaw.v1.FactService/PutFacts
-go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1 --duration 2s --warmup 0s
+# since M4 every refund needs a fresh payments.charge.refundable fact about its charge, and identical
+# refunds are parked: --unique varies charge and amount, --facts-key-file reports the facts first
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --facts-key-file deploy/dev/secrets/facts.key \
+  --unique --rate 1 --duration 2s --warmup 0s
 ```
 
-Since M4 (slice 214) `dev seed` imports and activates the reference package (signed with a throwaway key that nothing keeps, decision 3), registers a development fact provider, issues the workload a grant (refunds up to `authority.grant_max_per_action` each, a task budget of `--budget-limit`, at most `--max-count` refunds) and binds its run to it. Identical irreversible refunds are parked for the repeat window (HR-007), so `sim load`, which repeats one refund of `ch_load1`, gets one acceptance and then `RECONCILIATION_REQUIRED` until it varies its charges (M4 exit, slice 216).
+Since M4 (slice 214) `dev seed` imports and activates the reference package (signed with a throwaway key that nothing keeps, decision 3), registers a development fact provider, issues the workload a grant (refunds up to `authority.grant_max_per_action` each, a task budget of `--budget-limit`, at most `--max-count` refunds) and binds its run to it. Identical irreversible refunds are parked for the repeat window (HR-007), so without `--unique` the load driver gets one acceptance and then `RECONCILIATION_REQUIRED`. To report a fact by hand, use `pclaw fact put` with the provider's API key in `PANTHERCLAW_API_KEY`. The M4 measurements are in [docs/perf/M4.md](perf/M4.md).
 
 The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
@@ -241,6 +239,21 @@ go run ./cmd/pclaw workload token --key-file workload.json             # a workl
 CI jobs and pods can attest instead of using an enrollment token: an admin proposes a trusted-issuer entry (`pclaw issuer propose-github …` or `pclaw issuer propose-kubernetes …`), a person with the Identity Publisher role activates it (`pclaw issuer activate ENTRY REVISION`), and the workload enrolls with `--github` (an Actions job with `id-token: write`) or `--kubernetes-token FILE` (a projected service-account token with audience `pantherclaw:<org id>`). Unknown keys that reach the gateway show up as discovered agents: `pclaw agent list --state discovered`, then `pclaw agent claim` or `pclaw agent retire`. `pclaw scan` looks for shadow agents on a machine: the MCP servers configured for Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin Desktop), Zed and JetBrains Junie, agent-framework projects under `--path`, and credentials in the environment and in those servers' environment values and HTTP headers (shown redacted). Results stay local; `--submit` adds the MCP servers and agent projects to the discovered agents (credentials are never sent).
 
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
+
+**Authority: packages, facts, guardrails, grants and policies (M4):** a run's actions use only the grant its run is bound to, so an org needs an active tool package, the facts its definitions require, a grant, and optionally guardrails and a published policy. Each document is a JSON (or YAML package) file; the server decodes it strictly. Importing a package needs a targets document signed by a trusted package root (`pclaw-admin packages sign`); activating packages, changing guardrails, issuing grants, registering fact providers and publishing policies are human only.
+
+```bash
+go run ./cmd/pclaw package import --name pc.mock-payments --version 1.0.0 --targets-file targets.jws --file packages/mock-payments/package.yaml
+go run ./cmd/pclaw package transition pc.mock-payments 1.0.0 --to active
+go run ./cmd/pclaw fact-provider register --name billing --sa <sa id> --fact payments.charge.refundable:boolean:payments.charge:5m
+go run ./cmd/pclaw fact put --name payments.charge.refundable --subject-type payments.charge --subject-id ch_1 --value-file true.json   # as the provider's service account
+go run ./cmd/pclaw guardrail create --scope team:<team id> --name payments --bounds-file team-bounds.json --max-root-lifetime 72h
+go run ./cmd/pclaw grant issue <agent id> --principal user:<user id> --expires 48h --bounds-file bounds.json --limits-file limits.json
+go run ./cmd/pclaw run start <agent id> --instance <instance id> --grant <grant id> --task "refund ch_1"
+go run ./cmd/pclaw grant get <grant id>      # lineage, guardrails and effective bounds
+go run ./cmd/pclaw grant budget <grant id>   # reserved, spent and available per budget account
+go run ./cmd/pclaw policy create --file bundle.json && go run ./cmd/pclaw policy publish <version id>
+```
 
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.
 
