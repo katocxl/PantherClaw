@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+// Package pipeline is the Transaction Authority's decision pipeline, steps
+// 1–8 of ARCHITECTURE §6.1 (G0 M4 part 2): scope, identity, containment,
+// authority, exact meaning, current facts, boundaries and requirements. It
+// reads through one port, composes every step deterministically (the
+// strictest result wins and a known prohibition is reported as DENY even
+// when evidence is also missing), and returns the checklist, the decision
+// basis and the reservation plan that the finalization (step 9) binds.
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/katocxl/pantherclaw/internal/actionir"
+	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
+	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
+	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
+	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	papp "github.com/katocxl/pantherclaw/internal/policy/app"
+)
+
+// ErrNotFound is returned by the Reader for a record that does not exist in
+// the org.
+var ErrNotFound = errors.New("pipeline: not found")
+
+// Identity is the workload identity the Authority verified itself (M3,
+// HR-021): never a value the gateway or the agent asserted.
+type Identity struct {
+	InstanceID       ids.UUID
+	AgentID          ids.UUID
+	AttestationLevel int
+}
+
+// Request is one action to decide.
+type Request struct {
+	Org      ids.OrgID
+	Action   actionir.Parsed
+	Identity Identity
+}
+
+// Pinned is an org's pinned definition with its lifecycle state.
+type Pinned struct {
+	Definition *defs.Definition
+	State      defs.State
+}
+
+// Policy is an org's published, compiled policy.
+type Policy struct {
+	Compiled *papp.Compiled
+	// Version names the bundle as id@version for the decision basis.
+	Version string
+	// Budget is the tenant's CEL cost budget per evaluation (HR-043).
+	Budget uint64
+}
+
+// Run is what the pipeline needs to know about a run (M3).
+type Run struct {
+	AgentID       ids.UUID
+	InstanceID    ids.UUID
+	Launcher      gdomain.Principal
+	Principal     gdomain.Principal
+	EnvironmentID ids.UUID
+	GrantID       gdomain.GrantID
+	Active        bool
+}
+
+// Agent is what the pipeline needs to know about an agent (M3).
+type Agent struct {
+	State          string
+	BusinessUnitID ids.UUID
+	TeamID         ids.UUID
+}
+
+// Containment is the org's containment state and the database time.
+type Containment struct {
+	Epoch      int64
+	KillSwitch bool
+	Now        time.Time
+}
+
+// Usage is what is already reserved and spent on budget accounts and
+// counters. A row that does not exist yet has no usage.
+type Usage struct {
+	Accounts map[bdomain.Ref]bdomain.Account
+	Counters map[bdomain.Ref]bdomain.Counter
+	// CounterRows counts the rows of each counter rule and window, for the
+	// cardinality cap (T-023); keyed by the ref with a zero key.
+	CounterRows map[bdomain.Ref]int
+}
+
+// ClaimState is the state of an earlier attempt on a dedupe key.
+type ClaimState string
+
+// Claim states: HELD while its permit is issued, dispatching or UNKNOWN;
+// SUCCEEDED once accepted; RELEASED when it expired unused or failed.
+const (
+	ClaimHeld      ClaimState = "HELD"
+	ClaimSucceeded ClaimState = "SUCCEEDED"
+	ClaimReleased  ClaimState = "RELEASED"
+)
+
+// Claim is the latest attempt on a dedupe key (HR-007).
+type Claim struct {
+	TransactionID ids.UUID
+	State         ClaimState
+	At            time.Time
+}
+
+// Reader is every read the pipeline makes. Implementations return
+// ErrNotFound for missing records; any other error is treated as missing
+// evidence (CANNOT_AUTHORIZE), never as a pass.
+type Reader interface {
+	Containment(ctx context.Context, org ids.OrgID) (Containment, error)
+	Definition(ctx context.Context, org ids.OrgID, pin actionir.Definition) (Pinned, error)
+	// Policy returns nil when the org has published no policy.
+	Policy(ctx context.Context, org ids.OrgID) (*Policy, error)
+	Run(ctx context.Context, org ids.OrgID, id ids.UUID) (Run, error)
+	Agent(ctx context.Context, org ids.OrgID, id ids.UUID) (Agent, error)
+	// Chain returns the grant and its ancestors, root first.
+	Chain(ctx context.Context, org ids.OrgID, id gdomain.GrantID) ([]gdomain.Grant, error)
+	Envelopes(ctx context.Context, org ids.OrgID, scopes []gdomain.Scope) ([]gdomain.Envelope, error)
+	// Facts returns the current facts of active providers about one
+	// subject, by name.
+	Facts(ctx context.Context, org ids.OrgID, subjectType, subjectID string, names []string) (map[string]fdomain.Fact, error)
+	Usage(ctx context.Context, org ids.OrgID, plan gdomain.Plan) (Usage, error)
+	// Claim returns the latest attempt on a dedupe key, or nil.
+	Claim(ctx context.Context, org ids.OrgID, key string) (*Claim, error)
+}

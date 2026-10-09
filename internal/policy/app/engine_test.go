@@ -86,7 +86,7 @@ func (f *fixture) compile(rules ...domain.Rule) (*Compiled, error) {
 
 func (f *fixture) eval(c *Compiled, a actionir.ActionIR, budget uint64) domain.Outcome {
 	f.t.Helper()
-	out, err := c.Evaluate(context.Background(), f.def(a.Operation), a, budget)
+	out, err := c.Evaluate(context.Background(), f.def(a.Operation), a, Input{Budget: budget})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestDefinitionsCompiledLaterFailClosed(t *testing.T) {
 	if !maps.Equal(statuses, map[string]domain.Status{"f": domain.StatusError, "a": domain.StatusError}) {
 		t.Fatalf("checklist %+v", out.Checklist)
 	}
-	if _, err := c.Evaluate(context.Background(), f.def("payments.refund.create"), read.Action, DefaultBudget); !errors.Is(err, actionir.ErrAmbiguous) {
+	if _, err := c.Evaluate(context.Background(), f.def("payments.refund.create"), read.Action, Input{Budget: DefaultBudget}); !errors.Is(err, actionir.ErrAmbiguous) {
 		t.Fatalf("an action evaluated against another definition: %v", err)
 	}
 }
