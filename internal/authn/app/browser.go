@@ -546,3 +546,24 @@ func boolString(b bool) string {
 	}
 	return "false"
 }
+
+// Profile is what the account page shows about its user.
+type Profile struct {
+	Org         ids.OrgID
+	User        ids.UUID
+	Email, Name string
+}
+
+// Profile returns the caller's own profile.
+func (b *Browser) Profile(ctx context.Context, s BrowserSession) (Profile, error) {
+	var out Profile
+	err := b.pool.InTenantTx(ctx, s.Org, func(ctx context.Context, tx db.TenantTx) error {
+		u, err := dbq.New(tx).GetUser(ctx, s.Org, s.User())
+		if err != nil {
+			return err
+		}
+		out = Profile{Org: s.Org, User: u.ID, Email: u.Email, Name: u.DisplayName}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}

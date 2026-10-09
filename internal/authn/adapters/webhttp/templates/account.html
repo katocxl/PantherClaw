@@ -1,0 +1,30 @@
+{{template "head" .}}
+<h1>Your account</h1>
+<dl>
+<dt>Name</dt><dd>{{.Profile.Name}}</dd>
+<dt>Email</dt><dd>{{.Profile.Email}}</dd>
+<dt>Organization</dt><dd><code>{{.Profile.Org}}</code></dd>
+<dt>User id</dt><dd><code>{{.Profile.User}}</code></dd>
+</dl>
+<p><button type="button" id="sign-out">Sign out</button></p>
+
+<h2>Browser sessions</h2>
+<p class="note">Device and address are what this server observed; they are not verified.</p>
+<table>
+<thead><tr><th>Started</th><th>Last seen</th><th>Device</th><th>Address</th><th>Status</th><th></th></tr></thead>
+<tbody>
+{{range .Sessions}}
+<tr>
+<td>{{.CreatedAt.UTC.Format "2006-01-02 15:04 UTC"}}</td>
+<td>{{.LastSeen.UTC.Format "2006-01-02 15:04 UTC"}}</td>
+<td class="untrusted">{{.UserAgent}}</td>
+<td class="untrusted">{{.ClientIP}}</td>
+<td>{{if .Current}}This browser{{else if .Live}}Active{{else}}Ended{{if .EndReason}} ({{.EndReason}}){{end}}{{end}}</td>
+<td>{{if and .Live (not .Current)}}<button type="button" class="revoke-session" data-id="{{.ID}}">Sign out</button>{{end}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+<p id="status" role="status"></p>
+<script src="/static/account.js"></script>
+{{template "foot" .}}
