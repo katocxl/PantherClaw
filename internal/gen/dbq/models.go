@@ -131,6 +131,23 @@ type PcBudget struct {
 	CreatedAt     time.Time
 }
 
+type PcBudgetAccount struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	OwnerKind     string
+	OwnerID       ids.UUID
+	Rule          string
+	KeyHash       []byte
+	PeriodStart   time.Time
+	Rank          int16
+	Currency      *string
+	Reserved      money.Decimal
+	Spent         money.Decimal
+	ReservedCount int32
+	SpentCount    int32
+	CreatedAt     time.Time
+}
+
 type PcBudgetLedger struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -176,6 +193,20 @@ type PcConsequenceRule struct {
 	VersionID ids.UUID
 	Position  int32
 	Canonical []byte
+}
+
+type PcCounter struct {
+	OrgID       ids.OrgID
+	ID          ids.UUID
+	OwnerKind   string
+	OwnerID     ids.UUID
+	Rule        string
+	KeyHash     []byte
+	WindowStart time.Time
+	Rank        int16
+	Reserved    int32
+	Spent       int32
+	CreatedAt   time.Time
 }
 
 type PcCrossOrgListAudit struct {
@@ -526,6 +557,19 @@ type PcPolicyVersion struct {
 	CreatedAt   time.Time
 	PublishedBy *string
 	PublishedAt *time.Time
+}
+
+type PcReservation struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	TransactionID ids.UUID
+	PermitID      ids.UUID
+	AccountID     *ids.UUID
+	CounterID     *ids.UUID
+	Amount        money.Decimal
+	State         string
+	CreatedAt     time.Time
+	SettledAt     *time.Time
 }
 
 type PcRoleBinding struct {
