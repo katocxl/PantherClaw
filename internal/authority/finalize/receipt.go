@@ -59,7 +59,11 @@ type DecisionPAP struct {
 	Identity    pipeline.IdentitySummary      `json:"identity"`
 	Budgets     []BudgetState                 `json:"budgets,omitzero"`
 	Gateway     string                        `json:"gateway"`
-	Simulated   bool                          `json:"simulated"`
+	// Monitor marks a hypothetical decision in monitor mode (HR-184): it
+	// prevented nothing; Connection is the connection the action named.
+	Monitor    bool   `json:"monitor,omitzero"`
+	Connection string `json:"connection,omitzero"`
+	Simulated  bool   `json:"simulated"`
 }
 
 // receipt builds, fits and signs the decision receipt of one evaluation.
@@ -69,9 +73,13 @@ func (a *Authority) receipt(gw Gateway, ev *pipeline.Evaluation, txn ids.UUID, e
 		Run: ev.RunID.String(), Action: ev.ActionID.String(), Act: ev.ActionHash, Decision: ev.Decision,
 		Checklist: ev.Checklist, Obligations: ev.Obligations, Approvals: ev.Approvals, StepUps: ev.StepUps,
 		Basis: ev.Basis, BasisDigest: ev.Basis.Digest(), Identity: ev.Identity, Budgets: budgets, Gateway: gw.ID,
+		Monitor: ev.MonitorPermit(),
 	}
 	if ev.EffectiveHash != ev.ActionHash {
 		pap.Effective = ev.EffectiveHash
+	}
+	if ev.Connection != nil {
+		pap.Connection = ev.Connection.ID.String()
 	}
 	r := DecisionReceipt{Iss: a.issuer(), Jti: txn.String() + "/" + strconv.Itoa(evaluation), Iat: ev.Now.Unix(), Pap: pap}
 	payload, err := fit(r)
@@ -83,10 +91,14 @@ func (a *Authority) receipt(gw Gateway, ev *pipeline.Evaluation, txn ids.UUID, e
 		return Receipt{}, err
 	}
 	digest := sha256.Sum256([]byte(jws))
-	body, err := evdomain.CanonicalBody(map[string]string{
+	entry := map[string]string{
 		"txn": txn.String(), "evaluation": strconv.Itoa(evaluation), "decision": string(ev.Decision),
 		"act": ev.ActionHash, "reason": ev.Decisive().Code, "receipt_sha256": hex.EncodeToString(digest[:]),
-	})
+	}
+	if pap.Monitor {
+		entry["monitor"] = "true"
+	}
+	body, err := evdomain.CanonicalBody(entry)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -139,13 +151,19 @@ type permitPAP struct {
 }
 
 // permit signs the single-use permit (HR-009). It binds the effective
-// action: what the gateway may dispatch after any clamping (F107).
+// action: what the gateway may dispatch after any clamping (F107). A
+// monitor-mode permit binds the requested action, which monitor mode
+// dispatches unchanged (HR-184).
 func (a *Authority) permit(gw Gateway, ev *pipeline.Evaluation, txn ids.UUID) (*PermitWrite, error) {
 	id := ids.NewV7()
 	exp := ev.Now.Add(a.ttl())
+	act := ev.EffectiveHash
+	if ev.MonitorPermit() {
+		act = ev.ActionHash
+	}
 	b, err := json.Marshal(permitClaims{
 		Iss: a.issuer(), Aud: "gw:" + gw.ID, Jti: id.String(), Iat: ev.Now.Unix(), Exp: exp.Unix(),
-		Pap: permitPAP{V: 1, Org: gw.Org.String(), Txn: txn.String(), Act: ev.EffectiveHash, Epoch: ev.Epoch},
+		Pap: permitPAP{V: 1, Org: gw.Org.String(), Txn: txn.String(), Act: act, Epoch: ev.Epoch},
 	})
 	if err != nil {
 		return nil, err

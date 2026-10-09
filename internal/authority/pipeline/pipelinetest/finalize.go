@@ -148,7 +148,9 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 	f := w.fin()
 	ev := wr.Eval
 	if wr.Permit != nil {
-		if w.Cont.Epoch != ev.Epoch || w.Cont.KillSwitch || !active || !slices.Equal(current, ev.Chain.Versions()) {
+		// A monitor permit binds no authority, only containment (HR-184).
+		authority := ev.MonitorPermit() || (active && slices.Equal(current, ev.Chain.Versions()))
+		if w.Cont.Epoch != ev.Epoch || w.Cont.KillSwitch || !authority {
 			return finalize.ErrConflict
 		}
 	}

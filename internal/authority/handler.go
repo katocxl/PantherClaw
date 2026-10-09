@@ -59,6 +59,11 @@ var checklistStatus = map[pipeline.Status]pantherclawv1.ChecklistStatus{
 	pipeline.StatusNotApplicable: pantherclawv1.ChecklistStatus_CHECKLIST_STATUS_NOT_APPLICABLE,
 }
 
+// modeToProto maps a route mode; an empty mode (an M5 caller) is unspecified.
+var modeToProto = map[string]pantherclawv1.DispatchMode{
+	pipeline.ModeEnforce: pantherclawv1.DispatchMode_DISPATCH_MODE_ENFORCE, pipeline.ModeMonitor: pantherclawv1.DispatchMode_DISPATCH_MODE_MONITOR,
+}
+
 var decisionToProto = map[domain.Decision]pantherclawv1.Decision{
 	domain.Allow:                pantherclawv1.Decision_DECISION_ALLOW,
 	domain.AllowWithObligations: pantherclawv1.Decision_DECISION_ALLOW_WITH_OBLIGATIONS,
@@ -93,6 +98,7 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 		out.Reasons = append(out.Reasons, &pantherclawv1.Reason{Code: r.Code, Check: r.Check, Detail: r.Detail, Decisive: r.Decisive})
 	}
 	out.DecisionBasisDigest, out.Evaluation, out.Repeat = res.BasisDigest, int32(res.Evaluation), res.Repeat //nolint:gosec // at most 32
+	out.Mode, out.AccessMode = modeToProto[res.Mode], res.AccessMode
 	if res.EffectiveHash != "" && res.EffectiveHash != res.ActionHash {
 		out.EffectiveActionHash = res.EffectiveHash
 	}

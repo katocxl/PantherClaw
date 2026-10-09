@@ -91,6 +91,8 @@ type Result struct {
 	BasisDigest   string
 	Evaluation    int
 	Repeat        bool
+	// Mode is the route's mode and AccessMode the connection's (G0 M6).
+	Mode, AccessMode string
 }
 
 // Authorize decides on raw canonical ActionIR bytes sent with the
@@ -134,7 +136,7 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *
 		Decision: res.Decision, Reasons: res.Reasons, TransactionID: res.TransactionID, ActionHash: res.ActionHash,
 		Permit: res.Permit, PermitID: res.PermitID, Epoch: res.Epoch, Receipt: res.Receipt, Nonce: s.nonce(ctx, gw),
 		Checklist: res.Checklist, Obligations: res.Obligations, EffectiveHash: res.EffectiveHash, BasisDigest: res.BasisDigest,
-		Evaluation: res.Evaluation, Repeat: res.Repeat,
+		Evaluation: res.Evaluation, Repeat: res.Repeat, Mode: res.Mode, AccessMode: res.AccessMode,
 	}, nil
 }
 

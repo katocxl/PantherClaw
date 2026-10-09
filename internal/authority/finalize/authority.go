@@ -13,6 +13,7 @@ import (
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
+	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pdomain "github.com/katocxl/pantherclaw/internal/policy/domain"
@@ -66,6 +67,12 @@ type Result struct {
 	PermitID      ids.UUID
 	Epoch         int64
 	Receipt       string
+	// Mode is the route's mode (pipeline.ModeEnforce or ModeMonitor); in
+	// monitor mode the decision is hypothetical and a permit, when present,
+	// is what tells the gateway to dispatch (HR-184). AccessMode is how the
+	// connection's credential reaches the target, when the action names one.
+	Mode       string
+	AccessMode string
 	// Repeat is set when the answer is a stored decision (HR-005).
 	Repeat bool
 }
@@ -107,6 +114,7 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 				return repeat(*prev, req.Action.HashHex()), nil
 			}
 		}
+		req.Gateway = gw.ID // the certificate's gateway, never the request's
 		ev, err := a.Pipeline.Evaluate(ctx, req)
 		if err != nil {
 			return Result{}, err
@@ -161,10 +169,26 @@ func undecided(items []pipeline.Item) []pipeline.Item {
 	return out
 }
 
-// bind writes one evaluation.
+// monitorView is what a monitor-mode evaluation binds (HR-184): the
+// hypothetical decision and its explanation, but no reservation, so
+// nothing is reserved, counted or claimed.
+func monitorView(ev *pipeline.Evaluation) *pipeline.Evaluation {
+	out := *ev
+	out.Plan = gdomain.Plan{}
+	return &out
+}
+
+// bind writes one evaluation. A monitor-mode evaluation whose identity and
+// containment passed gets a permit whatever its (hypothetical) decision,
+// with nothing reserved, and closes its transaction so no second permit
+// can follow (HR-184).
 func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluation, prev *Stored) (Result, error) {
+	monitor := ev.MonitorPermit()
+	if monitor {
+		ev = monitorView(ev)
+	}
 	w := Write{
-		Eval: ev, Prev: prev, Final: Final(ev.Decision), Reason: ev.Decisive().Code, GatewayID: gw.ID,
+		Eval: ev, Prev: prev, Final: Final(ev.Decision) || monitor, Reason: ev.Decisive().Code, GatewayID: gw.ID,
 		TransactionID: ids.NewV7(), Evaluation: 1,
 	}
 	if prev != nil {
@@ -173,9 +197,19 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 	res := Result{
 		Decision: ev.Decision, TransactionID: w.TransactionID, Evaluation: w.Evaluation, ActionHash: ev.ActionHash,
 		EffectiveHash: ev.EffectiveHash, BasisDigest: ev.Basis.Digest(), Checklist: ev.Checklist,
-		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist),
+		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode,
 	}
-	if ev.Permits() {
+	if ev.Connection != nil {
+		res.AccessMode = ev.Connection.AccessMode
+	}
+	if monitor {
+		p, err := a.permit(gw, ev, w.TransactionID)
+		if err != nil {
+			return Result{}, err
+		}
+		w.Permit = p
+		res.Permit, res.PermitID, res.Epoch = p.JWS, p.ID, p.Epoch
+	} else if ev.Permits() {
 		rows, err := a.Store.Prepare(ctx, gw.Org, ev.Plan)
 		if err != nil {
 			return Result{}, err
