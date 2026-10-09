@@ -16,6 +16,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
+	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -45,9 +46,17 @@ type Config struct {
 	Authority         AuthorityConfig  `json:"authority"`
 	DevGateway        DevGatewayConfig `json:"dev_gateway"`
 	Auth              AuthConfig       `json:"auth"`
+	Identity          IdentityConfig   `json:"identity"`
 	// WebAuthn and Notifications are M5 part 1 (config_m5.go).
 	WebAuthn      WebAuthnConfig      `json:"webauthn"`
 	Notifications NotificationsConfig `json:"notifications"`
+}
+
+// IdentityConfig configures workload identity (M3).
+type IdentityConfig struct {
+	// KubernetesClusters are the clusters the Kubernetes L2 preset may call
+	// (founder decision 3: operator configuration only).
+	KubernetesClusters []kube.ClusterConfig `json:"kubernetes_clusters"`
 }
 
 // LogConfig configures logging.
@@ -120,6 +129,9 @@ func (c *Config) Validate() error {
 	}
 	if _, ok := pclog.ParseLevel(c.Log.Level); !ok {
 		errs = append(errs, errors.New("log.level must be debug, info, warn or error"))
+	}
+	if _, err := kube.NewDirectory(c.Identity.KubernetesClusters); err != nil {
+		errs = append(errs, fmt.Errorf("identity.kubernetes_clusters: %w", err))
 	}
 	if (c.HTTP.TLSCertFile == "") != (c.HTTP.TLSKeyFile == "") {
 		errs = append(errs, errors.New("http.tls_cert_file and http.tls_key_file must be set together"))

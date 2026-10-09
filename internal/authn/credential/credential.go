@@ -42,6 +42,9 @@ const (
 	DeviceCode   Kind = "pcd"
 	RefreshToken Kind = "pcr"
 	OAuthState   Kind = "pcs"
+	// EnrollmentToken is an owner's single-use agent enrollment token (PAP-1
+	// §3.2, M3).
+	EnrollmentToken Kind = "pce"
 	// Browser sign-in and sessions (G0 M5 part 1).
 	BrowserSession Kind = "pcb"
 	LoginState     Kind = "pcl"
@@ -194,7 +197,7 @@ func Secret() (string, error) {
 
 func (k Kind) valid() bool {
 	switch k {
-	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState:
+	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState, EnrollmentToken:
 		return true
 	case BrowserSession, LoginState:
 		return true

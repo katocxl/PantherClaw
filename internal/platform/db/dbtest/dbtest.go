@@ -8,8 +8,10 @@
 // (`task up PROFILE=test` starts one on 127.0.0.1:5433; CI uses a service
 // container). Roles are bootstrapped once per cluster with passwords derived
 // from the admin password, a migrated template database is built once per
-// schema fingerprint, and every test gets its own clone. Tests connect as
-// pc_app, never as a superuser, because superusers bypass RLS.
+// schema fingerprint, and every test gets its own clone. Templates of other
+// fingerprints are kept until nobody has used them for templateTTL, because
+// worktrees on branches with different migrations share one cluster. Tests
+// connect as pc_app, never as a superuser, because superusers bypass RLS.
 package dbtest
 
 import (
@@ -41,6 +43,18 @@ const (
 
 // templateLockKey serializes template creation across test processes.
 const templateLockKey = 0x70635f746d706c // "pc_tmpl"
+
+// templateTTL is how long a template of another schema fingerprint is kept
+// after a test process last started with it. Another worktree may still be
+// cloning it, and dropping it then fails that worktree's tests with "template
+// database does not exist". A test binary clones only while it runs, and
+// `go test` stops it after -timeout (10 minutes by default), so a template
+// nobody has started with for a day is no longer in use.
+const templateTTL = 24 * time.Hour
+
+// lastUsedPrefix starts the database comment that records when a test
+// process last started with a template; an RFC 3339 time follows it.
+const lastUsedPrefix = "pantherclaw dbtest template, last used "
 
 // DB is one disposable test database.
 type DB struct {
@@ -172,38 +186,101 @@ func setup(url string) (*cluster, error) {
 		return nil, err
 	}
 	c.template = "pc_tmpl_" + db.SchemaFingerprint()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(templateLockKey)); err != nil {
+	if err := prepareTemplate(ctx, conn, c, time.Now()); err != nil {
 		return nil, err
-	}
-	defer func() {
-		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", int64(templateLockKey))
-	}()
-	var exists bool
-	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_database WHERE datname = $1)", c.template).Scan(&exists); err != nil {
-		return nil, err
-	}
-	if !exists {
-		if err := buildTemplate(ctx, conn, c); err != nil {
-			dropDatabase(ctx, admin, c.template)
-			return nil, err
-		}
 	}
 	return c, nil
 }
 
+// prepareTemplate builds c.template if it is missing, records that it was
+// used at now, and drops the templates of other schema fingerprints that
+// nobody has used for templateTTL. A cluster-wide advisory lock serializes it
+// across test processes.
+func prepareTemplate(ctx context.Context, conn *pgx.Conn, c *cluster, now time.Time) error {
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(templateLockKey)); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", int64(templateLockKey))
+	}()
+	exists, err := databaseExists(ctx, conn, c.template)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if err := buildTemplate(ctx, conn, c); err != nil {
+			dropDatabase(ctx, c.admin, c.template)
+			return err
+		}
+	}
+	if err := markUsed(ctx, conn, c.template, now); err != nil {
+		return err
+	}
+	return dropStaleTemplates(ctx, conn, c, now)
+}
+
+// dropStaleTemplates drops the templates of other schema fingerprints whose
+// last use is more than templateTTL before now. A template without a
+// last-used mark (built before marks existed) gets one instead, so it is
+// dropped templateTTL later unless a test process uses it. Both steps are
+// best effort, like dropDatabase.
+func dropStaleTemplates(ctx context.Context, conn *pgx.Conn, c *cluster, now time.Time) error {
+	rows, err := conn.Query(ctx, `SELECT datname, coalesce(shobj_description(oid, 'pg_database'), '')
+		FROM pg_database WHERE datname LIKE 'pc\_tmpl\_%' AND datname <> $1`, c.template)
+	if err != nil {
+		return err
+	}
+	others, err := pgx.CollectRows(rows, pgx.RowToStructByPos[struct{ Name, Comment string }])
+	if err != nil {
+		return err
+	}
+	for _, o := range others {
+		last, ok := parseLastUsed(o.Comment)
+		switch {
+		case !ok:
+			_ = markUsed(ctx, conn, o.Name, now)
+		case now.Sub(last) > templateTTL:
+			dropDatabase(ctx, c.admin, o.Name)
+		}
+	}
+	return nil
+}
+
+// markUsed records in the comment of database name that a test process
+// started with it at t. COMMENT takes no parameters, so PostgreSQL's format()
+// quotes the name and the text.
+func markUsed(ctx context.Context, conn *pgx.Conn, name string, t time.Time) error {
+	var stmt string
+	if err := conn.QueryRow(ctx, "SELECT format('COMMENT ON DATABASE %I IS %L', $1::text, $2::text)",
+		name, lastUsedComment(t)).Scan(&stmt); err != nil {
+		return err
+	}
+	_, err := conn.Exec(ctx, stmt) // nosemgrep
+	return err
+}
+
+func lastUsedComment(t time.Time) string {
+	return lastUsedPrefix + t.UTC().Format(time.RFC3339)
+}
+
+// parseLastUsed returns the time in a comment written by markUsed, and false
+// for any other comment.
+func parseLastUsed(comment string) (time.Time, bool) {
+	s, ok := strings.CutPrefix(comment, lastUsedPrefix)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
+}
+
+func databaseExists(ctx context.Context, conn *pgx.Conn, name string) (bool, error) {
+	var exists bool
+	err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_database WHERE datname = $1)", name).Scan(&exists)
+	return exists, err
+}
+
 func buildTemplate(ctx context.Context, conn *pgx.Conn, c *cluster) error {
-	// Remove templates of older schema fingerprints.
-	rows, err := conn.Query(ctx, "SELECT datname FROM pg_database WHERE datname LIKE 'pc\\_tmpl\\_%' AND datname <> $1", c.template)
-	if err != nil {
-		return err
-	}
-	old, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return err
-	}
-	for _, n := range old {
-		dropDatabase(ctx, c.admin, n)
-	}
 	if err := execDDL(ctx, conn, "CREATE DATABASE %s", c.template); err != nil {
 		return fmt.Errorf("create template: %w", err)
 	}

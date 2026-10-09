@@ -24,6 +24,8 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/agents/adapters/agentsrpc"
+	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/accountrpc"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
@@ -38,6 +40,10 @@ import (
 	"github.com/katocxl/pantherclaw/internal/evidence/chainer"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/identity/adapters/identityrpc"
+	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
+	"github.com/katocxl/pantherclaw/internal/identity/adapters/workloadrpc"
+	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
 	"github.com/katocxl/pantherclaw/internal/keystore"
 	"github.com/katocxl/pantherclaw/internal/notifications/adapters/notificationsrpc"
 	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
@@ -52,6 +58,8 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/version"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
+	wapp "github.com/katocxl/pantherclaw/internal/waitlist/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -197,6 +205,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		clusters, err := kube.NewDirectory(cfg.Identity.KubernetesClusters)
+		if err != nil {
+			return err
+		}
 		idps, err := cfg.oidcProviders()
 		if err != nil {
 			return err
@@ -228,9 +240,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			apiKeyEnv: credential.Env(cfg.Auth.APIKeyEnv),
 			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
 				cfg.Auth.PublicURL, limiter),
-			device: device,
-			web:    web,
-			m5:     m5,
+			device:    device,
+			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters,
+			web: web,
+			m5:  m5,
 		})
 		if err != nil {
 			return err
@@ -344,6 +357,12 @@ type apiDeps struct {
 	apiKeyEnv credential.Env
 	oauth     *oauthhttp.Handler
 	device    *devicehttp.Handler
+	// publicURL is the server's external base URL (PAP/1 htu and token iss).
+	publicURL string
+	// clientIP resolves client addresses behind trusted proxies.
+	clientIP httpx.ClientIPFunc
+	// clusters are the configured Kubernetes clusters (identity.kubernetes_clusters).
+	clusters *kube.Directory
 	// M5 part 1: browser pages, accounts, notifications.
 	web *webhttp.Handler
 	m5  *m5Services
@@ -365,6 +384,11 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
 	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
 	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
+	pantherclawv1connect.RegisterAgentServiceHandler(rs, agentsrpc.NewAgents(aapp.NewInventory(pool, d.billing)))
+	pantherclawv1connect.RegisterWaitlistServiceHandler(rs, waitlistrpc.NewWaitlist(wapp.NewReader(pool)))
+	identity := iapp.New(pool, reg, d.publicURL, clock.System{})
+	pantherclawv1connect.RegisterIdentityServiceHandler(rs, identityrpc.NewIdentity(identity, d.clusters))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, d.publicURL, clock.System{}))
 	if d.m5 != nil {
 		pantherclawv1connect.RegisterAccountServiceHandler(rs, accountrpc.New(authnapp.NewAccount(pool, d.m5.webauthn, d.m5.notifications)))
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
@@ -404,7 +428,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		_, _ = w.Write(b)
 	})
-	return mux, nil
+	return workloadrpc.RawBody(mux, d.clientIP), nil
 }
 
 // startupActor records start-up actions in the audit log.
