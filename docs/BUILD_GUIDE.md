@@ -296,7 +296,7 @@ docs/                    this guide and companions
 | M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes`, `cli_sessions` (CLI refresh tokens), `auth_replay` (client-assertion `jti`s) |
 | M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
 | M4 | `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `envelopes`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `facts`, `policies`, `policy_versions`, `idempotency` (or columns on `transactions`) |
-| M5 | `sessions`, `webauthn_credentials`, `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
+| M5 | `sessions` (browser), `login_requests` (browser sign-ins in progress), `webauthn_credentials`, `webauthn_ceremonies` (pending registrations and assertions), `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
 | M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
 | M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
 | M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
@@ -377,7 +377,7 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Tests:** 12 invariant property tests; 1,000-goroutine budget race; delegation lattice properties; CEL fail-closed + mutation tests; canonicalizer fuzzing; golden tests for packages; the six policy scenario tests from F193.
 
 ### M5 — Human approvals, step-up & Agent Waitlist
-**Threat slice:** T-002, T-005, T-006, T-007, T-026, T-027 · **HR:** HR-030..039 · **F:** F139–F171 · **PN:** PN-004, PN-020.
+**Threat slice:** T-002, T-005, T-006, T-007, T-026, T-027, T-051..T-054 · **HR:** HR-030..039, HR-150..159 · **F:** F139–F171 · **PN:** PN-004, PN-020 · **G0:** part 1 (browser sessions, CSRF, WebAuthn, notifications) in [g0/M5.md](g0/M5.md); part 2 (approvals, transaction-bound step-up, approval page, Agent Waitlist) after M3 and M4 part 2.
 - Browser sessions (OIDC auth code + PKCE), CSRF defenses, WebAuthn registration/assertion, transaction-bound step-up.
 - Approval requests with binding hash, eligibility (role/scope/independence), two-person rule, expiry, invalidation (material change, role removal, revocation), decline with reason, request evidence, propose narrower action.
 - Minimal server-rendered approval page (template-only rendering, untrusted box, strict CSP) — the only HTML before the UI phase.
