@@ -23,6 +23,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/agents/adapters/agentsrpc"
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
@@ -31,8 +32,12 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/authn/token"
 	billing "github.com/katocxl/pantherclaw/internal/billing/domain"
+	defspg "github.com/katocxl/pantherclaw/internal/definitions/adapters/pgstore"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/grants/adapters/grantsrpc"
+	grantspg "github.com/katocxl/pantherclaw/internal/grants/adapters/pgstore"
+	grantsapp "github.com/katocxl/pantherclaw/internal/grants/app"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/identityrpc"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/workloadrpc"
 	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
@@ -106,11 +111,17 @@ func newStack(t *testing.T) *stack {
 		t.Fatal(err)
 	}
 	svc := iapp.New(pool, reg, ts.URL, clock.System{})
-	runs := runsapp.New(pool)
+	gstore := &grantspg.Store{Pool: pool}
+	grants := &grantsapp.Service{
+		Repo: gstore, Subjects: gstore, Defs: &defspg.Store{Pool: pool}, Authz: grantsapp.SubjectAuthorizer{},
+		Clock: clock.System{}, Listing: gstore,
+	}
+	runs := runsapp.New(pool).WithGrants(gstore)
 	pantherclawv1connect.RegisterRunServiceHandler(s, runsrpc.NewRuns(runs))
+	pantherclawv1connect.RegisterGrantServiceHandler(s, grantsrpc.NewGrants(grants))
 	pantherclawv1connect.RegisterAgentServiceHandler(s, agentsrpc.NewAgents(aapp.NewInventory(pool, unlimited{})))
 	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc, nil))
-	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, runs, ts.URL, clock.System{}))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, runs, ts.URL, clock.System{}).WithGrants(grants))
 	inner := http.NewServeMux()
 	rpc.Mount(inner, s)
 	mux.Handle("/", workloadrpc.RawBody(inner, nil))
@@ -180,7 +191,7 @@ func TestIntWorkloadEnrollAdmitAndToken(t *testing.T) {
 	team, env := ids.NewV7(), ids.NewV7()
 	s.exec(t, org, "INSERT INTO pc.teams (org_id, id, slug, name) VALUES ($1, $2, 'eng', 'Eng')", org, team)
 	s.exec(t, org, "INSERT INTO pc.environments (org_id, id, team_id, slug, name, kind) VALUES ($1, $2, $3, 'dev', 'Dev', 'DEVELOPMENT')", org, env, team)
-	owner, tok := s.login(t, org, td.RoleAgentOwner, td.RoleAgentAdmitter)
+	owner, tok := s.login(t, org, td.RoleAgentOwner, td.RoleAgentAdmitter, td.RoleGrantIssuer)
 	admin := s.connectClient(bearer{tok})
 	agents := pantherclawv1connect.NewAgentServiceClient(admin)
 	identity := pantherclawv1connect.NewIdentityServiceClient(admin)
@@ -282,6 +293,53 @@ func TestIntWorkloadEnrollAdmitAndToken(t *testing.T) {
 	_, err = workload.StartChildRun(ctx, &pantherclawv1.StartChildRunRequest{ParentRunId: root.GetRun().GetId(), AgentId: a.GetAgent().GetId()})
 	if connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "invalid_token") {
 		t.Errorf("child run without a workload token: %v", err)
+	}
+
+	// M4: a person issues a grant that allows one level of delegation and
+	// starts a run with it. The workload delegates a narrower part of it to a
+	// child run, never a wider one, and only once (HR-045, HR-047, HR-161).
+	runsClient := pantherclawv1connect.NewRunServiceClient(admin)
+	g, err := pantherclawv1connect.NewGrantServiceClient(admin).IssueGrant(ctx, &pantherclawv1.IssueGrantRequest{
+		AgentId: a.GetAgent().GetId(), Principal: &pantherclawv1.Actor{Kind: "user", Id: owner.String()},
+		ExpireTime: timestamppb.New(time.Now().Add(48 * time.Hour)),
+		Bounds:     []byte(`{"operations": ["payments.refund.create"], "targets": {"payments.charge": {"prefixes": ["ch_"]}}}`),
+		Delegation: &pantherclawv1.GrantDelegation{Depth: 1, MaxChildren: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := runsClient.StartRun(ctx, &pantherclawv1.StartRunRequest{
+		AgentId: a.GetAgent().GetId(), InstanceId: proto.String(enrolled.GetInstanceId()), GrantId: proto.String(g.GetGrant().GetId()),
+	})
+	if err != nil || granted.GetRun().GetGrantId() != g.GetGrant().GetId() {
+		t.Fatalf("StartRun with a grant = %v, %v", granted, err)
+	}
+	kid, err := withToken.StartChildRun(ctx, &pantherclawv1.StartChildRunRequest{ParentRunId: granted.GetRun().GetId(), AgentId: a.GetAgent().GetId()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := func(c pantherclawv1connect.WorkloadServiceClient, bounds string) (*pantherclawv1.DelegateGrantResponse, error) {
+		return c.DelegateGrant(ctx, &pantherclawv1.DelegateGrantRequest{
+			RunId: granted.GetRun().GetId(), ChildRunId: kid.GetRun().GetId(), Bounds: []byte(bounds),
+		})
+	}
+	_, err = delegate(withToken, `{"operations": ["payments.refund.create", "github.push"]}`)
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a wider delegation: %v", err)
+	}
+	d, err := delegate(withToken, `{"targets": {"payments.charge": {"prefixes": ["ch_1"]}}}`)
+	if err != nil || d.GetGrant().GetParentGrantId() != g.GetGrant().GetId() || d.GetGrant().GetDepth() != 1 ||
+		d.GetGrant().GetGrantor().GetKind() != "instance" || d.GetGrant().GetGrantor().GetId() != enrolled.GetInstanceId() {
+		t.Fatalf("DelegateGrant = %v, %v", d, err)
+	}
+	if got, err := runsClient.GetRun(ctx, &pantherclawv1.GetRunRequest{Id: kid.GetRun().GetId()}); err != nil || got.GetRun().GetGrantId() != d.GetGrant().GetId() {
+		t.Fatalf("the child run's grant: %v, %v", got, err)
+	}
+	if _, err := delegate(withToken, `{}`); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a second delegation to the same child: %v", err)
+	}
+	if _, err := delegate(workload, `{}`); connect.CodeOf(err) != connect.CodeUnauthenticated || !strings.Contains(err.Error(), "invalid_token") {
+		t.Errorf("delegation without a workload token: %v", err)
 	}
 }
 

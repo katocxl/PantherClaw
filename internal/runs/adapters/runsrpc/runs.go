@@ -81,7 +81,7 @@ func RunProto(r app.Run) *pantherclawv1.Run {
 		Launcher: actor(r.Launcher), Principal: actor(r.Principal), PrincipalSource: sourceToProto[r.PrincipalSource],
 		SubjectIssuer: r.SubjectIssuer, SubjectSubject: r.SubjectSubject, ParentRunId: optID(r.ParentRunID),
 		Depth: int32(r.Depth), TaskRef: r.TaskRef, State: stateToProto[r.State], EndReason: r.EndReason, //nolint:gosec // G115: at most 8
-		CreateTime: ts(r.CreatedAt), ExpireTime: ts(r.ExpiresAt),
+		CreateTime: ts(r.CreatedAt), ExpireTime: ts(r.ExpiresAt), GrantId: optID(r.GrantID),
 	}
 	for _, a := range r.ActorChain {
 		out.ActorChain = append(out.ActorChain, actor(a))
@@ -108,6 +108,13 @@ func (s *Runs) StartRun(ctx context.Context, req *pantherclawv1.StartRunRequest)
 			return nil, err
 		}
 		in.InstanceID = &id
+	}
+	if req.GrantId != nil {
+		id, err := ParseID(req.GetGrantId())
+		if err != nil {
+			return nil, err
+		}
+		in.GrantID = &id
 	}
 	r, err := s.svc.StartRun(ctx, in)
 	if err != nil {

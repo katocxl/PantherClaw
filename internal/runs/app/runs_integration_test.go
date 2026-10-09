@@ -18,6 +18,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
 	"github.com/katocxl/pantherclaw/internal/authn/oidctest"
 	billing "github.com/katocxl/pantherclaw/internal/billing/domain"
+	grantspg "github.com/katocxl/pantherclaw/internal/grants/adapters/pgstore"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
@@ -338,4 +339,88 @@ func TestHR146_SubjectTokensRepresentActiveUsersOnce(t *testing.T) {
 	if n := w.count(t, "SELECT count(*) FROM pc.runs WHERE org_id = $1 AND grant_id IS NOT NULL", w.org); n != 0 {
 		t.Errorf("%d runs carry a grant", n)
 	}
+}
+
+// grant inserts a grant for agent and principal user in the world's
+// environment: valid for the interval around now, pinned to instance when
+// it is not zero, delegated from parent when it is not zero, revoked when
+// revoked is set.
+func (w *world) grant(t *testing.T, agent, user, instance, parent ids.UUID, from, until string, revoked bool) ids.UUID {
+	t.Helper()
+	id := ids.NewV7()
+	var inst, par *ids.UUID
+	if !instance.IsZero() {
+		inst = &instance
+	}
+	depth, grantor := 0, "user"
+	if !parent.IsZero() {
+		par, depth, grantor = &parent, 1, "instance"
+	}
+	w.exec(t, `INSERT INTO pc.grants (org_id, id, agent_id, instance_id, principal_user_id, environment_id, parent_id, depth,
+		current_revision, grantor_kind, grantor_id, basis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $5, 'test')`,
+		w.org, id, agent, inst, user, w.env, par, depth, grantor)
+	w.exec(t, `INSERT INTO pc.grant_revisions (org_id, id, grant_id, revision, not_before, expires_at, bounds, requirements, limits,
+		delegation_depth, max_children, min_attestation, widens, created_by)
+		VALUES ($1, $2, $3, 1, now() + $4::interval, now() + $5::interval, convert_to('{"operations":["payments.refund.create"]}', 'UTF8'),
+		convert_to('[]', 'UTF8'), convert_to('{}', 'UTF8'), 0, 0, 0, false, 'test')`, w.org, ids.NewV7(), id, from, until)
+	w.exec(t, "INSERT INTO pc.grant_lineage (org_id, grant_id, ancestor_id, distance) VALUES ($1, $2, $2, 0)", w.org, id)
+	if revoked {
+		w.exec(t, "UPDATE pc.grants SET state = 'REVOKED', revoked_at = now(), revoke_reason = 'test' WHERE org_id = $1 AND id = $2", w.org, id)
+	}
+	return id
+}
+
+// TestHR022_StartRunBindsOnlyAMatchingRootGrant: a run gets authority only
+// from a root grant that is active, valid now, and meant for its agent,
+// instance, principal and environment; its expiry is cut to the grant's
+// (G0 M4 part 2, design decision 19; PN-002.5).
+func TestHR022_StartRunBindsOnlyAMatchingRootGrant(t *testing.T) {
+	w := newWorld(t)
+	w.svc.WithGrants(&grantspg.Store{Pool: w.pool})
+	agent, other := w.agent(t), w.agent(t)
+	inst := w.instance(t, agent, "ADMITTED")
+	bob := ids.NewV7()
+	w.exec(t, "INSERT INTO pc.users (org_id, id, issuer, subject) VALUES ($1, $2, 'https://idp.test', 'bob')", w.org, bob)
+	none := ids.UUID{}
+
+	g := w.grant(t, agent, w.owner, none, none, "-1 hour", "2 hours", false)
+	r, err := w.svc.StartRun(w.ownerCtx(), app.StartInput{AgentID: agent, GrantID: &g})
+	if err != nil || r.GrantID == nil || *r.GrantID != g || r.ExpiresAt.After(time.Now().Add(2*time.Hour+time.Minute)) {
+		t.Fatalf("bound run: %+v, %v", r, err)
+	}
+	if n := w.count(t, "SELECT count(*) FROM pc.runs WHERE org_id = $1 AND id = $2 AND grant_id = $3", w.org, r.ID, g); n != 1 {
+		t.Fatal("the run's grant was not stored")
+	}
+	pinned := w.grant(t, agent, w.owner, inst.Instance, none, "-1 hour", "2 hours", false)
+	if _, err := w.svc.StartRun(w.ownerCtx(), app.StartInput{AgentID: agent, InstanceID: &inst.Instance, GrantID: &pinned}); err != nil {
+		t.Fatalf("pinned grant with its instance: %v", err)
+	}
+	for name, c := range map[string]struct {
+		grant  ids.UUID
+		code   pcerr.Code
+		reason string
+	}{
+		"another agent's":   {w.grant(t, other, w.owner, none, none, "-1 hour", "2 hours", false), pcerr.FailedPrecondition, "GRANT_MISMATCH"},
+		"another principal": {w.grant(t, agent, bob, none, none, "-1 hour", "2 hours", false), pcerr.FailedPrecondition, "GRANT_MISMATCH"},
+		"an unpinned run":   {pinned, pcerr.FailedPrecondition, "GRANT_MISMATCH"},
+		"a delegated":       {w.grant(t, agent, w.owner, none, g, "-1 hour", "1 hour", false), pcerr.FailedPrecondition, "GRANT_MISMATCH"},
+		"a revoked":         {w.grant(t, agent, w.owner, none, none, "-1 hour", "2 hours", true), pcerr.FailedPrecondition, "GRANT_REVOKED"},
+		"an expired":        {w.grant(t, agent, w.owner, none, none, "-2 hours", "-1 hour", false), pcerr.FailedPrecondition, "GRANT_EXPIRED"},
+		"a future":          {w.grant(t, agent, w.owner, none, none, "1 hour", "2 hours", false), pcerr.FailedPrecondition, "GRANT_NOT_YET_VALID"},
+		"an unknown":        {ids.NewV7(), pcerr.NotFound, "GRANT_NOT_FOUND"},
+	} {
+		_, err := w.svc.StartRun(w.ownerCtx(), app.StartInput{AgentID: agent, GrantID: &c.grant})
+		wantCode(t, name+" grant", err, c.code, c.reason)
+	}
+	if n := w.count(t, "SELECT count(*) FROM pc.runs WHERE org_id = $1", w.org); n != 2 {
+		t.Errorf("%d runs, want only the two bound ones", n)
+	}
+	// Another org cannot name this org's grant, and a server without
+	// grants refuses to bind one.
+	o := newWorld(t)
+	o.svc.WithGrants(&grantspg.Store{Pool: o.pool})
+	_, err = o.svc.StartRun(o.ownerCtx(), app.StartInput{AgentID: o.agent(t), GrantID: &g})
+	wantCode(t, "another org's grant", err, pcerr.NotFound, "GRANT_NOT_FOUND")
+	_, err = app.New(w.pool).StartRun(w.ownerCtx(), app.StartInput{AgentID: agent, GrantID: &g})
+	wantCode(t, "no grants configured", err, pcerr.FailedPrecondition, "GRANTS_UNAVAILABLE")
 }

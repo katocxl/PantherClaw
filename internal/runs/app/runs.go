@@ -6,7 +6,9 @@
 // and bound to an agent, optionally one admitted instance, the launcher
 // and the represented principal. The principal is the launcher itself or,
 // for a child run, its parent's principal; a launcher can never name one.
-// M3 runs carry no grant: the run's authority arrives with M4.
+// Since M4 a run started by a person or a service account may be bound to
+// a root grant, which is then the only authority its actions can use
+// (HR-022, PN-002.5); a child run gets one only by delegation.
 package app
 
 import (
@@ -24,6 +26,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -58,12 +61,18 @@ var (
 		"the agent must be claimed and neither suspended nor retired")
 	ErrInstance = pcerr.New(pcerr.FailedPrecondition, "INSTANCE_STATE",
 		"the instance must be an admitted instance of the agent")
-	ErrRunState = pcerr.New(pcerr.FailedPrecondition, "RUN_STATE", "the run is not active")
-	ErrDepth    = pcerr.New(pcerr.FailedPrecondition, "RUN_DEPTH", "child runs nest at most 8 levels deep")
-	ErrLauncher = pcerr.New(pcerr.PermissionDenied, "LAUNCHER_KIND", "runs are started by users and service accounts")
-	ErrTaskRef  = pcerr.New(pcerr.InvalidArgument, "TASK_REF", "task_ref is at most 256 characters of valid UTF-8")
-	ErrTTL      = pcerr.New(pcerr.InvalidArgument, "RUN_TTL", "a run lasts at most 24 hours")
-	ErrReason   = pcerr.New(pcerr.InvalidArgument, "REASON", "the reason is 1 to 64 characters")
+	ErrRunState       = pcerr.New(pcerr.FailedPrecondition, "RUN_STATE", "the run is not active")
+	ErrDepth          = pcerr.New(pcerr.FailedPrecondition, "RUN_DEPTH", "child runs nest at most 8 levels deep")
+	ErrLauncher       = pcerr.New(pcerr.PermissionDenied, "LAUNCHER_KIND", "runs are started by users and service accounts")
+	ErrTaskRef        = pcerr.New(pcerr.InvalidArgument, "TASK_REF", "task_ref is at most 256 characters of valid UTF-8")
+	ErrTTL            = pcerr.New(pcerr.InvalidArgument, "RUN_TTL", "a run lasts at most 24 hours")
+	ErrReason         = pcerr.New(pcerr.InvalidArgument, "REASON", "the reason is 1 to 64 characters")
+	ErrGrantNotFound  = pcerr.New(pcerr.NotFound, "GRANT_NOT_FOUND", "grant not found")
+	ErrGrantDelegated = pcerr.New(pcerr.FailedPrecondition, gdomain.ReasonGrantMismatch,
+		"a delegated grant reaches its child run only through delegation")
+	ErrGrantMismatch = pcerr.New(pcerr.FailedPrecondition, gdomain.ReasonGrantMismatch,
+		"the grant is for another agent, instance, principal or environment")
+	ErrGrantsUnavailable = pcerr.New(pcerr.FailedPrecondition, "GRANTS_UNAVAILABLE", "this server cannot bind grants to runs")
 	// ErrSubjectToken is returned when no identity provider is configured
 	// for subject tokens (auth.oidc_providers[].subject_token_audience).
 	ErrSubjectToken = pcerr.New(pcerr.FailedPrecondition, "SUBJECT_TOKEN_UNAVAILABLE",
@@ -94,7 +103,10 @@ type Run struct {
 	ActorChain      []Actor
 	ParentRunID     *ids.UUID
 	Depth           int
-	TaskRef         string
+	// GrantID is the grant whose authority the run uses (nil: none, so its
+	// actions are denied NO_GRANT).
+	GrantID *ids.UUID
+	TaskRef string
 	// State is the effective state: an active run past its expiry reads
 	// EXPIRED.
 	State     string
@@ -121,7 +133,7 @@ func view(r dbq.PcRun, state string) (Run, error) {
 		ID: r.ID, AgentID: r.AgentID, InstanceID: r.InstanceID, EnvironmentID: r.EnvironmentID,
 		Launcher:        actorOf(r.LauncherUserID, r.LauncherSaID, r.LauncherInstanceID),
 		Principal:       actorOf(r.PrincipalUserID, r.PrincipalSaID, nil),
-		PrincipalSource: r.PrincipalSource, ParentRunID: r.ParentRunID, Depth: int(r.Depth), TaskRef: r.TaskRef,
+		PrincipalSource: r.PrincipalSource, ParentRunID: r.ParentRunID, Depth: int(r.Depth), GrantID: r.GrantID, TaskRef: r.TaskRef,
 		State: state, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, EndedAt: r.EndedAt,
 	}
 	if r.SubjectIssuer != nil {
@@ -141,6 +153,7 @@ type Service struct {
 	pool     *db.Pool
 	clk      clock.Clock
 	subjects SubjectVerifier
+	grants   Grants
 }
 
 // New returns the run use cases.
@@ -156,6 +169,8 @@ type StartInput struct {
 	TTL              time.Duration
 	SubjectToken     string
 	SubjectTokenType string
+	// GrantID, when set, binds the run to that root grant.
+	GrantID *ids.UUID
 }
 
 func checkLabel(taskRef string, ttl time.Duration) (int32, error) {
@@ -217,7 +232,8 @@ func launchable(ctx context.Context, c tenancy.Caller, q *dbq.Queries, in StartI
 // user a subject token proves (HR-145): presenting one needs run.represent,
 // the token is verified with the configured provider and accepted once,
 // and its (iss, sub) must be an active user of the org. The token grants
-// nothing: the run carries no grant in M3, whoever it represents. The
+// nothing: the run's only authority is the grant in.GrantID names, checked
+// against the run's agent, instance, principal and environment. The
 // agent must be usable and the instance, when given, one of its admitted
 // instances; without one, the run binds to the first admitted instance
 // that uses it.
@@ -288,6 +304,11 @@ func (s *Service) StartRun(ctx context.Context, in StartInput) (Run, error) {
 		}
 		if p.ActorChain, err = json.Marshal(chain); err != nil {
 			return err
+		}
+		if in.GrantID != nil {
+			if err := s.bindGrant(ctx, tx, c.Org, *in.GrantID, &p); err != nil {
+				return err
+			}
 		}
 		r, err := q.InsertRun(ctx, p)
 		if err != nil {
@@ -629,4 +650,75 @@ func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance 
 		}
 		return nil
 	})
+}
+
+// Grants loads grants inside a caller's transaction (the grants store).
+type Grants interface {
+	// GrantInTx returns the grant's current revision; found is false when
+	// the org has no such grant.
+	GrantInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, id gdomain.GrantID) (g gdomain.Grant, found bool, err error)
+}
+
+// WithGrants lets StartRun bind runs to grants (M4); without it a request
+// naming a grant is refused.
+func (s *Service) WithGrants(g Grants) *Service {
+	s.grants = g
+	return s
+}
+
+// bindGrant checks, in the run's own transaction, that the run may use a
+// root grant, and caps the run's expiry at the grant's (HR-022, PN-002.5;
+// G0 M4 part 2, design decision 19). The org containment row is taken FOR
+// SHARE before the grant is read, so a concurrent revocation is either seen
+// here or ordered after this run exists, and then revokes its authority
+// (design decision 8).
+func (s *Service) bindGrant(ctx context.Context, tx db.TenantTx, org ids.OrgID, id ids.UUID, p *dbq.InsertRunParams) error {
+	if s.grants == nil {
+		return ErrGrantsUnavailable
+	}
+	q := dbq.New(tx)
+	// The containment row is created on first use.
+	if err := q.InsertContainment(ctx, org); err != nil {
+		return err
+	}
+	if _, err := q.ShareContainment(ctx, org); err != nil {
+		return err
+	}
+	gid, err := gdomain.ParseGrantID(id.String())
+	if err != nil {
+		return ErrGrantNotFound
+	}
+	g, found, err := s.grants.GrantInTx(ctx, tx, org, gid)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrGrantNotFound
+	}
+	if !g.IsRoot() {
+		return ErrGrantDelegated
+	}
+	now, err := q.DBNow(ctx)
+	if err != nil {
+		return err
+	}
+	if code, ok := g.Usable(now); !ok {
+		return pcerr.New(pcerr.FailedPrecondition, code, "the grant cannot be used now")
+	}
+	var instance ids.UUID
+	if p.InstanceID != nil {
+		instance = *p.InstanceID
+	}
+	principal := gdomain.Principal{Kind: gdomain.PrincipalUser}
+	switch {
+	case p.PrincipalUserID != nil:
+		principal.ID = *p.PrincipalUserID
+	case p.PrincipalSaID != nil:
+		principal = gdomain.Principal{Kind: gdomain.PrincipalServiceAccount, ID: *p.PrincipalSaID}
+	}
+	if !g.Covers(p.AgentID, instance, principal, p.EnvironmentID) {
+		return ErrGrantMismatch
+	}
+	p.GrantID, p.NotAfter = &id, &g.ExpiresAt
+	return nil
 }

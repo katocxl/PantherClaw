@@ -427,14 +427,20 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	}
 	identity := iapp.New(pool, reg, d.publicURL, clock.System{}).WithAttestors(attestors)
 	pantherclawv1connect.RegisterIdentityServiceHandler(rs, identityrpc.NewIdentity(identity, d.clusters))
-	runs := runsapp.New(pool)
+	gstore := &grantspg.Store{Pool: pool}
+	grants := &grantsapp.Service{
+		Repo: gstore, Subjects: gstore, Defs: &defspg.Store{Pool: pool}, Authz: grantsapp.SubjectAuthorizer{},
+		Clock: clock.System{}, Listing: gstore,
+	}
+	runs := runsapp.New(pool).WithGrants(gstore)
 	if len(d.subjects) > 0 {
 		runs.WithSubjects(d.subjects)
 	}
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
 	d.authority.WithWorkloads(identity, runs)
-	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
-	if err := registerAuthorityAdmin(rs, d); err != nil {
+	pantherclawv1connect.RegisterWorkloadServiceHandler(rs,
+		workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}).WithGrants(grants))
+	if err := registerAuthorityAdmin(rs, d, grants); err != nil {
 		return nil, err
 	}
 	if d.m5 != nil {
@@ -646,14 +652,10 @@ func cmdKeys(args []string, stdout, stderr io.Writer) error {
 // guardrails, facts, packages and policies. Every one checks its caller's
 // permissions in its use cases; human-only steps refuse service accounts
 // and API keys (HR-161).
-func registerAuthorityAdmin(rs *connect.Server, d apiDeps) error {
+func registerAuthorityAdmin(rs *connect.Server, d apiDeps, grants *grantsapp.Service) error {
 	authz := grantsapp.SubjectAuthorizer{}
 	defs := &defspg.Store{Pool: d.pool}
 	facts := &factspg.Store{Pool: d.pool}
-	gstore := &grantspg.Store{Pool: d.pool}
-	grants := &grantsapp.Service{
-		Repo: gstore, Subjects: gstore, Defs: defs, Authz: authz, Clock: clock.System{}, Listing: gstore,
-	}
 	pantherclawv1connect.RegisterGrantServiceHandler(rs, grantsrpc.NewGrants(grants))
 	pantherclawv1connect.RegisterGuardrailServiceHandler(rs, grantsrpc.NewGuardrails(grants))
 	pantherclawv1connect.RegisterFactServiceHandler(rs, factsrpc.New(&factsapp.Service{Store: facts, Authz: authz, Reads: facts}))

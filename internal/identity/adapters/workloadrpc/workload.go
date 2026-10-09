@@ -29,10 +29,13 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/grants/adapters/grantsrpc"
+	grantsapp "github.com/katocxl/pantherclaw/internal/grants/app"
 	"github.com/katocxl/pantherclaw/internal/identity/app"
 	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
@@ -82,6 +85,7 @@ type Workload struct {
 	pantherclawv1connect.UnimplementedWorkloadServiceHandler
 	svc       *app.Service
 	runs      *runsapp.Service
+	grants    *grantsapp.Service
 	publicURL string
 	clk       clock.Clock
 }
@@ -288,3 +292,69 @@ func ts(t time.Time) *timestamppb.Timestamp {
 	}
 	return timestamppb.New(t)
 }
+
+// WithGrants lets workloads delegate grants (M4); without it DelegateGrant
+// is unimplemented.
+func (s *Workload) WithGrants(g *grantsapp.Service) *Workload {
+	s.grants = g
+	return s
+}
+
+// DelegateGrant implements WorkloadServiceHandler. The caller proves its
+// instance with a workload token and a proof (PAP-1 §4); it may give a
+// child run of its own active run part of that run's grant, never more
+// (HR-045, HR-047, HR-161).
+func (s *Workload) DelegateGrant(ctx context.Context, req *pantherclawv1.DelegateGrantRequest) (*pantherclawv1.DelegateGrantResponse, error) {
+	if s.grants == nil {
+		return nil, errNoDelegation
+	}
+	info, err := callInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	token, _ := strings.CutPrefix(info.RequestHeader().Get("Authorization"), "PAP ")
+	org := tokenOrg(token)
+	c, _, err := s.verify(ctx, info)
+	if err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	tok, ok := c.Token()
+	if !ok {
+		return nil, s.papError(ctx, info, org, pap.Err(pap.CodeInvalidToken))
+	}
+	org = tok.Instance.Org
+	if err := s.svc.Consume(ctx, org, c); err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	w := grantsapp.Workload{Org: org, InstanceID: tok.Instance.Instance}
+	if w.RunID, err = runsrpc.ParseID(req.GetRunId()); err != nil {
+		return nil, err
+	}
+	in := grantsapp.DelegateRequest{
+		TaskRef: req.GetTaskRef(), Delegation: grantsapp.Delegation(req.GetDelegation().GetDepth(), req.GetDelegation().GetMaxChildren()),
+		MinAttestation: int(req.GetMinAttestationLevel()),
+	}
+	if in.ChildRunID, err = runsrpc.ParseID(req.GetChildRunId()); err != nil {
+		return nil, err
+	}
+	if req.GetExpireTime() != nil {
+		in.ExpiresAt = req.GetExpireTime().AsTime()
+	}
+	t, err := grantsrpc.DecodeTerms(req.GetBounds(), req.GetRequirements(), req.GetLimits())
+	if err != nil {
+		return nil, err
+	}
+	in.Bounds, in.Requirements, in.Limits = t.Bounds, t.Requirements, t.Limits
+	g, err := s.grants.Delegate(ctx, w, in)
+	if err != nil {
+		return nil, s.papError(ctx, info, org, err)
+	}
+	out, err := grantsrpc.GrantProto(g)
+	if err != nil {
+		return nil, err
+	}
+	s.setNonce(ctx, info, org)
+	return &pantherclawv1.DelegateGrantResponse{Grant: out}, nil
+}
+
+var errNoDelegation = pcerr.New(pcerr.Unimplemented, "DELEGATION_UNAVAILABLE", "delegation is not available on this server")

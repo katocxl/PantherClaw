@@ -763,3 +763,17 @@ func (s *Store) ScopePath(ctx context.Context, org ids.OrgID, sc domain.Scope) (
 	})
 	return out, err
 }
+
+// GrantInTx returns a grant's current revision inside the caller's
+// transaction (runs/app Grants: binding a run at StartRun).
+func (s *Store) GrantInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, id domain.GrantID) (domain.Grant, bool, error) {
+	row, err := dbq.New(tx).GetGrant(ctx, org, id.UUID())
+	if db.IsNoRows(err) {
+		return domain.Grant{}, false, nil
+	}
+	if err != nil {
+		return domain.Grant{}, false, err
+	}
+	g, err := toGrant(org, fromGetGrant(row))
+	return g, err == nil, err
+}

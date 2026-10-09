@@ -177,13 +177,13 @@ const insertRun = `-- name: InsertRun :one
 
 INSERT INTO pc.runs (org_id, id, agent_id, instance_id, environment_id, launcher_user_id, launcher_sa_id,
     launcher_instance_id, principal_user_id, principal_sa_id, principal_source, subject_issuer, subject_subject,
-    actor_chain, parent_run_id, depth, task_ref, expires_at)
+    actor_chain, parent_run_id, depth, grant_id, task_ref, expires_at)
 VALUES ($1, $2, $3, $4, $5,
     $6, $7, $8, $9,
     $10, $11, $12, $13,
-    $14, $15, $16, $17,
-    LEAST(now() + make_interval(mins => $18::int),
-          coalesce($19::timestamptz, 'infinity'::timestamptz)))
+    $14, $15, $16, $17, $18,
+    LEAST(now() + make_interval(mins => $19::int),
+          coalesce($20::timestamptz, 'infinity'::timestamptz)))
 RETURNING org_id, id, agent_id, instance_id, environment_id, launcher_user_id, launcher_sa_id, launcher_instance_id, principal_user_id, principal_sa_id, principal_source, subject_issuer, subject_subject, actor_chain, parent_run_id, depth, grant_id, task_ref, state, end_reason, created_at, expires_at, ended_at
 `
 
@@ -204,6 +204,7 @@ type InsertRunParams struct {
 	ActorChain         []byte
 	ParentRunID        *ids.UUID
 	Depth              int16
+	GrantID            *ids.UUID
 	TaskRef            string
 	TtlMinutes         int32
 	NotAfter           *time.Time
@@ -236,6 +237,7 @@ func (q *Queries) InsertRun(ctx context.Context, arg InsertRunParams) (PcRun, er
 		arg.ActorChain,
 		arg.ParentRunID,
 		arg.Depth,
+		arg.GrantID,
 		arg.TaskRef,
 		arg.TtlMinutes,
 		arg.NotAfter,

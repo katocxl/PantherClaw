@@ -127,3 +127,8 @@ func maxTime(a, b time.Time) time.Time {
 	}
 	return b
 }
+
+// Delegation builds delegation settings from API values.
+func Delegation(depth, maxChildren int32) domain.Delegation {
+	return domain.Delegation{Depth: int(depth), MaxChildren: int(maxChildren)}
+}
