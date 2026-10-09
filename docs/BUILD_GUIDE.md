@@ -185,17 +185,16 @@ Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-know
 
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
-  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token
+  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
+  --workload-out deploy/dev/secrets/workload.json   # also an admitted PAP/1 workload with a run
 # copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
 # copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
 go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
-curl -s http://127.0.0.1:8090/v1/refunds -H 'PC-Dev-Workload: 01920000-0000-7000-8000-0000000000c1' \
-  -H "PC-Run-Id: $(uuidgen)" -H "PC-Action-Id: $(uuidgen)" \
-  -d '{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}'
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1 --duration 2s --warmup 0s
 ```
 
-The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. The `PC-Dev-*` headers are development-only stand-ins for PAP/1 workload tokens (M3).
+The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
 **Sign in and administer (M2):** people sign in through an OpenID provider; locally that is the Keycloak development realm in `deploy/keycloak` (users `alice` / `alice-dev-only` and `bob` / `bob-dev-only`, development only). The server is the relying party; `pclaw` never talks to the provider.
 
@@ -222,8 +221,7 @@ To let a service start runs on behalf of a signed-in user (M3), add `"subject_to
 **Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
 
 ```bash
-go run ./cmd/pantherclaw-sim load --workload 01920000-0000-7000-8000-0000000000c1 --rate 1000 --duration 30s --warmup 5s --out perf.json
-k6 run -e WORKLOAD=01920000-0000-7000-8000-0000000000c1 -e RATE=1000 test/load/refund.js   # Linux/nightly; thresholds are the SLOs
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1000 --duration 30s --warmup 5s --out perf.json
 ```
 
 Results and the machines they were measured on are recorded in `docs/perf/M1.5.md`.

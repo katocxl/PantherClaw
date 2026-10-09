@@ -25,15 +25,9 @@ import (
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
-)
-
-// Development-only workload headers (PAP/1 workload tokens replace them in M3).
-const (
-	HeaderDevWorkload = "PC-Dev-Workload"
-	HeaderRunID       = "PC-Run-Id"
-	HeaderActionID    = "PC-Action-Id"
 )
 
 // mockPayments pins the reviewed meaning of the single route.
@@ -51,7 +45,8 @@ type Gateway struct {
 	permits   *permitVerifier
 	egress    *http.Client
 	target    *url.URL
-	workloads map[string]bool
+	publicURL string
+	nonces    nonces
 	log       *slog.Logger
 }
 
@@ -98,20 +93,36 @@ func (t *timings) lap(w http.ResponseWriter, name string) {
 
 func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 	t := timings{start: time.Now(), mark: time.Now()}
-	agent := r.Header.Get(HeaderDevWorkload)
-	if !g.workloads[agent] {
-		reply(w, http.StatusUnauthorized, result{Error: "unknown_dev_workload"})
+	ctx := r.Context()
+	// The raw body is hashed before anything parses it (HR-091).
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
+	if err != nil || len(body) > 64<<10 {
+		reply(w, http.StatusRequestEntityTooLarge, result{Error: "body_too_large"})
+		return
+	}
+	sum := sha256.Sum256(body)
+	token, hasToken := strings.CutPrefix(r.Header.Get("Authorization"), "PAP ")
+	creds := &pb.WorkloadCredentials{
+		WorkloadToken: token, Proof: r.Header.Get(HeaderProof), BodySha256: sum[:], Htm: r.Method,
+		Htu: g.publicURL + r.URL.Path, ClientAddress: clientAddress(r),
+	}
+	switch {
+	case creds.Proof == "":
+		g.refusePAP(ctx, w, pap.CodeUseNonce, "")
+		return
+	case !hasToken:
+		g.reportUnknown(ctx, w, r, creds)
+		return
+	}
+	instance, env, ok := tokenSubject(token)
+	if !ok {
+		g.refusePAP(ctx, w, pap.CodeInvalidToken, "")
 		return
 	}
 	run, err1 := ids.ParseUUID(r.Header.Get(HeaderRunID))
 	act, err2 := ids.ParseUUID(r.Header.Get(HeaderActionID))
 	if err1 != nil || err2 != nil {
 		reply(w, http.StatusBadRequest, result{Error: "run_and_action_ids_required"})
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
-	if err != nil || len(body) > 64<<10 {
-		reply(w, http.StatusRequestEntityTooLarge, result{Error: "body_too_large"})
 		return
 	}
 	var in refundRequest
@@ -125,7 +136,7 @@ func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := actionir.Encode(actionir.ActionIR{
-		V: actionir.Version, Org: g.org, Env: DevEnv, RunID: run.String(), ActionID: act.String(), AgentInstance: agent,
+		V: actionir.Version, Org: g.org, Env: env, RunID: run.String(), ActionID: act.String(), AgentInstance: instance,
 		Operation: actionir.OpRefundCreate, Definition: mockPayments, Channel: "http", Route: "payments-refund",
 		Target: actionir.Target{Type: "payments.charge", ID: in.Charge}, Params: params,
 	})
@@ -138,12 +149,22 @@ func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 	}
 	t.lap(w, "build")
 
-	ctx := r.Context()
-	res, err := g.authority.Authorize(ctx, &pb.AuthorizeRequest{ActionIr: p.Canonical})
+	res, err := g.authority.Authorize(ctx, &pb.AuthorizeRequest{ActionIr: p.Canonical, Workload: creds})
 	t.lap(w, "authz")
 	if err != nil {
 		g.log.ErrorContext(ctx, "gateway.authority_unavailable", pclog.Err(err))
 		reply(w, http.StatusServiceUnavailable, result{Error: "authority_unavailable"})
+		return
+	}
+	g.nonces.set(res.GetNonce())
+	if n := res.GetNonce(); n != "" {
+		w.Header().Set(HeaderNonce, n)
+	}
+	if rs := res.GetReasons(); res.GetDecision() == pb.Decision_DECISION_CANNOT_AUTHORIZE && len(rs) > 0 &&
+		rs[0].GetCode() == "IDENTITY_UNVERIFIED" {
+		// The workload could not be verified: a PAP-Error, so it can retry
+		// with a fresh nonce or token (PAP-1 §12).
+		g.refusePAP(ctx, w, pap.Code(rs[0].GetDetail()), res.GetNonce())
 		return
 	}
 	if res.GetDecision() != pb.Decision_DECISION_ALLOW {

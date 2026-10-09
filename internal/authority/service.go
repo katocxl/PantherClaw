@@ -66,7 +66,6 @@ type Service struct {
 
 	workloads Workloads
 	runs      Runs
-	legacyDev bool
 }
 
 // Config configures the Service.
@@ -75,10 +74,6 @@ type Config struct {
 	Issuer    string
 	PermitTTL time.Duration
 	Logger    *slog.Logger
-	// LegacyDevWorkloads accepts actions without PAP/1 credentials, as in
-	// M1.5, for the development gateway until it forwards them (M3 slice
-	// 13 removes it). Never in production.
-	LegacyDevWorkloads bool
 }
 
 // New returns a Service.
@@ -91,7 +86,7 @@ func New(pool *db.Pool, reg *keys.Registry, cfg Config) *Service {
 	if issuer == "" {
 		issuer = "pantherclaw"
 	}
-	return &Service{pool: pool, reg: reg, grant: cfg.Grant, issuer: issuer, ttl: ttl, log: cfg.Logger, legacyDev: cfg.LegacyDevWorkloads}
+	return &Service{pool: pool, reg: reg, grant: cfg.Grant, issuer: issuer, ttl: ttl, log: cfg.Logger}
 }
 
 // Result is the answer to Authorize.
@@ -109,7 +104,7 @@ type Result struct {
 }
 
 // Authorize decides on raw canonical ActionIR bytes sent with the
-// workload's PAP/1 credentials (nil only on the legacy development path).
+// workload's PAP/1 credentials; without them it is CANNOT_AUTHORIZE.
 func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *Credentials) (Result, error) {
 	p, perr := actionir.Parse(raw)
 	if perr != nil {
@@ -666,9 +661,6 @@ func identityOutcome(d domain.Decision, code, detail string) domain.Outcome {
 // another. ok reports that the action may proceed to the grant.
 func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c *Credentials) (domain.Outcome, bool, error) {
 	if c == nil {
-		if s.legacyDev {
-			return domain.Outcome{}, true, nil
-		}
 		return identityOutcome(domain.CannotAuthorize, domain.ReasonIdentityUnverified, string(pap.CodeInvalidToken)), false, nil
 	}
 	if s.workloads == nil || s.runs == nil {

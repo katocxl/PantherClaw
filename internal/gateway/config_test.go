@@ -7,12 +7,13 @@ import "testing"
 
 const (
 	testOrg   = "01920000-0000-7000-8000-0000000000a1"
-	testAgent = "01920000-0000-7000-8000-0000000000c1"
+	testAgent = "01920000-0000-7000-8000-0000000000c1" // the instance id
+	testEnv   = "01920000-0000-7000-8000-0000000000e1"
 )
 
 func TestConfigValidation(t *testing.T) {
 	base := DefaultConfig()
-	base.Org, base.DevWorkloads = testOrg, []string{testAgent}
+	base.Org = testOrg
 	base.Authority.TokenFile, base.Target.URL = "t", "http://127.0.0.1:9090"
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid config refused: %v", err)
@@ -25,8 +26,8 @@ func TestConfigValidation(t *testing.T) {
 		"target userinfo": func(c *Config) { c.Target.URL = "http://u:p@127.0.0.1:9090" },
 		"target scheme":   func(c *Config) { c.Target.URL = "ftp://127.0.0.1" },
 		"bad prefix":      func(c *Config) { c.Target.AllowedPrefixes = []string{"127.0.0.1"} },
-		"no workloads":    func(c *Config) { c.DevWorkloads = nil },
-		"bad workload":    func(c *Config) { c.DevWorkloads = []string{"agent-1"} },
+		"no public url":   func(c *Config) { c.PublicURL = "" },
+		"public url path": func(c *Config) { c.PublicURL = "http://127.0.0.1:8090/gw" },
 		"no token":        func(c *Config) { c.Authority.TokenFile = "" },
 	} {
 		c := base
