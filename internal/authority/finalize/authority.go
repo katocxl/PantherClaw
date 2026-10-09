@@ -43,13 +43,16 @@ type Gateway struct {
 
 // Authority decides and binds actions.
 type Authority struct {
-	Pipeline  *pipeline.Pipeline
-	Store     Store
-	Receipts  Signer
-	Permits   Signer
-	Issuer    string
-	PermitTTL time.Duration
-	Log       *slog.Logger
+	Pipeline *pipeline.Pipeline
+	Store    Store
+	Receipts Signer
+	Permits  Signer
+	// ActionTokens signs the action tokens of target-enforced dispatches
+	// (HR-188); nil when none are configured.
+	ActionTokens Signer
+	Issuer       string
+	PermitTTL    time.Duration
+	Log          *slog.Logger
 }
 
 // Result is the answer to Authorize.
@@ -315,25 +318,46 @@ func (a *Authority) tampered(ctx context.Context, gw Gateway, req pipeline.Reque
 }
 
 // BeginDispatch is the commit point before the gateway sends anything
-// (HR-001). Any error means: do not dispatch.
-func (a *Authority) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64) error {
-	return a.Store.BeginDispatch(ctx, gw.Org, gw.ID, permit, epoch)
+// (HR-001, PAP-1 §7.3). Any error means: do not dispatch. It records the
+// outbound request the gateway built and, for a target-enforced
+// connection, returns the action token minted over its exact body
+// (HR-188); a token that cannot be minted leaves the permit unused.
+func (a *Authority) BeginDispatch(ctx context.Context, gw Gateway, permit ids.UUID, epoch int64, out Outbound) (string, error) {
+	if err := out.check(); err != nil {
+		return "", err
+	}
+	var token string
+	err := a.Store.BeginDispatch(ctx, gw.Org, gw.ID, permit, epoch, out, func(d Dispatching) (*ids.UUID, error) {
+		tok, jti, err := a.actionToken(d, out)
+		token = tok
+		return jti, err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // RecordExecution settles a dispatched permit (step 10) and returns the
-// signed execution receipt.
+// signed execution receipt. Delegated is for cooperative channels only
+// (HR-186): the agent performs the allowed action itself.
 func (a *Authority) RecordExecution(ctx context.Context, gw Gateway, e Execution) (string, error) {
-	if e.Outcome != Accepted && e.Outcome != Failed && e.Outcome != Unknown {
+	if e.Outcome != Accepted && e.Outcome != Failed && e.Outcome != Unknown && e.Outcome != Delegated {
 		return "", ErrOutcomeInvalid
 	}
-	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, e, func(txn ids.UUID, now time.Time) (Receipt, error) {
-		return a.executionReceipt(gw, e, txn, now)
+	return a.Store.RecordExecution(ctx, gw.Org, gw.ID, e, func(x Executed, now time.Time) (Receipt, error) {
+		return a.executionReceipt(gw, e, x, now)
 	})
 }
 
-// ErrOutcomeInvalid refuses an outcome other than accepted, failed or
-// unknown.
-var ErrOutcomeInvalid = pcerr.New(pcerr.InvalidArgument, "OUTCOME_INVALID", "unknown outcome")
+// Errors of RecordExecution.
+var (
+	ErrOutcomeInvalid = pcerr.New(pcerr.InvalidArgument, "OUTCOME_INVALID", "unknown outcome")
+	// ErrNotCooperative refuses delegated on a channel where the gateway
+	// dispatches (HR-186).
+	ErrNotCooperative = pcerr.New(pcerr.FailedPrecondition, "OUTCOME_NOT_DELEGABLE",
+		"only a cooperative channel (hook, sdk) reports delegated")
+)
 
 func (a *Authority) log(context.Context) *slog.Logger {
 	if a.Log == nil {
