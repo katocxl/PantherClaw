@@ -11,6 +11,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json/v2"
 	"strconv"
 	"time"
@@ -18,10 +20,12 @@ import (
 
 	agents "github.com/katocxl/pantherclaw/internal/agents/app"
 	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
+	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
+	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -60,10 +64,14 @@ var (
 	ErrTaskRef  = pcerr.New(pcerr.InvalidArgument, "TASK_REF", "task_ref is at most 256 characters of valid UTF-8")
 	ErrTTL      = pcerr.New(pcerr.InvalidArgument, "RUN_TTL", "a run lasts at most 24 hours")
 	ErrReason   = pcerr.New(pcerr.InvalidArgument, "REASON", "the reason is 1 to 64 characters")
-	// ErrSubjectToken is returned until subject tokens are verified (M3
-	// slice 11b).
+	// ErrSubjectToken is returned when no identity provider is configured
+	// for subject tokens (auth.oidc_providers[].subject_token_audience).
 	ErrSubjectToken = pcerr.New(pcerr.FailedPrecondition, "SUBJECT_TOKEN_UNAVAILABLE",
-		"subject tokens are not accepted by this server yet")
+		"this server accepts no subject tokens")
+	ErrSubjectType = pcerr.New(pcerr.InvalidArgument, "SUBJECT_TOKEN_TYPE",
+		"subject_token_type is an ID token or an access token")
+	ErrSubjectRejected = pcerr.New(pcerr.PermissionDenied, "SUBJECT_TOKEN",
+		"the subject token was not accepted: it must be a fresh, unused token from a configured provider for an active user of this organization")
 )
 
 // Actor is one link of a run's actor chain (F027).
@@ -130,11 +138,13 @@ func view(r dbq.PcRun, state string) (Run, error) {
 
 // Service serves the run use cases.
 type Service struct {
-	pool *db.Pool
+	pool     *db.Pool
+	clk      clock.Clock
+	subjects SubjectVerifier
 }
 
 // New returns the run use cases.
-func New(pool *db.Pool) *Service { return &Service{pool: pool} }
+func New(pool *db.Pool) *Service { return &Service{pool: pool, clk: clock.System{}} }
 
 // StartInput starts a run.
 type StartInput struct {
@@ -158,10 +168,59 @@ func checkLabel(taskRef string, ttl time.Duration) (int32, error) {
 	return int32(ttl / time.Minute), nil
 }
 
-// StartRun starts a run whose principal is the launcher (HR-146). The
-// launcher needs run.start where the agent lives; the agent must be usable
-// and the instance, when given, one of its admitted instances. Without an
-// instance, the run binds to the first admitted instance that uses it.
+// Subject token types (RFC 8693 subject_token_type).
+const (
+	SubjectIDToken     = "id_token"
+	SubjectAccessToken = "access_token"
+)
+
+// SubjectVerifier verifies subject tokens with the configured identity
+// providers (oidcrp.Subjects).
+type SubjectVerifier interface {
+	VerifySubject(ctx context.Context, raw string, accessToken bool, now time.Time) (authnapp.SubjectClaims, error)
+}
+
+// WithSubjects lets runs represent users proven by subject tokens; without
+// it every subject token is refused.
+func (s *Service) WithSubjects(v SubjectVerifier) *Service {
+	s.subjects = v
+	return s
+}
+
+// launchable loads the agent a caller may start a run of: usable, with
+// run.start (and run.represent for a subject token) where it lives, and
+// the instance, when given, one of its admitted instances.
+func launchable(ctx context.Context, c tenancy.Caller, q *dbq.Queries, in StartInput) (dbq.PcAgent, error) {
+	a, err := usableAgent(ctx, q, c.Org, in.AgentID)
+	if err != nil {
+		return a, err
+	}
+	path, err := agents.PathOf(ctx, q, a)
+	if err != nil {
+		return a, err
+	}
+	if err := c.Require(td.PermRunStart, path); err != nil {
+		return a, err
+	}
+	if in.SubjectToken != "" {
+		if err := c.Require(td.PermRunRepresent, path); err != nil {
+			return a, err
+		}
+	}
+	if in.InstanceID != nil {
+		return a, admittedInstance(ctx, q, c.Org, a.ID, *in.InstanceID)
+	}
+	return a, nil
+}
+
+// StartRun starts a run (HR-146). Its principal is the launcher, or the
+// user a subject token proves (HR-145): presenting one needs run.represent,
+// the token is verified with the configured provider and accepted once,
+// and its (iss, sub) must be an active user of the org. The token grants
+// nothing: the run carries no grant in M3, whoever it represents. The
+// agent must be usable and the instance, when given, one of its admitted
+// instances; without one, the run binds to the first admitted instance
+// that uses it.
 func (s *Service) StartRun(ctx context.Context, in StartInput) (Run, error) {
 	if in.TTL == 0 {
 		in.TTL = DefaultTTL
@@ -177,42 +236,58 @@ func (s *Service) StartRun(ctx context.Context, in StartInput) (Run, error) {
 	if c.Principal.Kind != td.KindUser && c.Principal.Kind != td.KindServiceAccount {
 		return Run{}, ErrLauncher
 	}
+	var subject *authnapp.SubjectClaims
 	if in.SubjectToken != "" {
-		return Run{}, ErrSubjectToken
+		if s.subjects == nil {
+			return Run{}, ErrSubjectToken
+		}
+		if in.SubjectTokenType != SubjectIDToken && in.SubjectTokenType != SubjectAccessToken {
+			return Run{}, ErrSubjectType
+		}
+		// The launcher's permissions are checked before the token is
+		// verified or consumed.
+		if err := s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+			_, err := launchable(ctx, c, dbq.New(tx), in)
+			return err
+		}); err != nil {
+			return Run{}, err
+		}
+		sc, err := s.subjects.VerifySubject(ctx, in.SubjectToken, in.SubjectTokenType == SubjectAccessToken, s.clk.Now())
+		if err != nil {
+			return Run{}, pcerr.Wrap(err, pcerr.PermissionDenied, ErrSubjectRejected.Reason(), ErrSubjectRejected.Message())
+		}
+		subject = &sc
 	}
 	var out Run
 	err = s.pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		a, err := usableAgent(ctx, q, c.Org, in.AgentID)
+		a, err := launchable(ctx, c, q, in)
 		if err != nil {
 			return err
-		}
-		path, err := agents.PathOf(ctx, q, a)
-		if err != nil {
-			return err
-		}
-		if err := c.Require(td.PermRunStart, path); err != nil {
-			return err
-		}
-		if in.InstanceID != nil {
-			if err := admittedInstance(ctx, q, c.Org, a.ID, *in.InstanceID); err != nil {
-				return err
-			}
 		}
 		launcher := Actor{Kind: string(c.Principal.Kind), ID: c.Principal.ID.String()}
-		chain, err := json.Marshal([]Actor{launcher})
-		if err != nil {
-			return err
-		}
+		chain := []Actor{launcher}
 		p := dbq.InsertRunParams{
 			OrgID: c.Org, ID: ids.NewV7(), AgentID: a.ID, InstanceID: in.InstanceID, EnvironmentID: *a.EnvironmentID,
-			PrincipalSource: SourceLauncher, ActorChain: chain, TaskRef: in.TaskRef, TtlMinutes: minutes,
+			PrincipalSource: SourceLauncher, TaskRef: in.TaskRef, TtlMinutes: minutes,
 		}
 		id := c.Principal.ID
 		if c.Principal.Kind == td.KindUser {
 			p.LauncherUserID, p.PrincipalUserID = &id, &id
 		} else {
 			p.LauncherSaID, p.PrincipalSaID = &id, &id
+		}
+		if subject != nil {
+			user, err := represented(ctx, q, c.Org, *subject, in.SubjectToken)
+			if err != nil {
+				return err
+			}
+			p.PrincipalUserID, p.PrincipalSaID, p.PrincipalSource = &user, nil, SourceSubjectToken
+			p.SubjectIssuer, p.SubjectSubject = &subject.Issuer, &subject.Subject
+			chain = []Actor{{Kind: string(td.KindUser), ID: user.String()}, launcher}
+		}
+		if p.ActorChain, err = json.Marshal(chain); err != nil {
+			return err
 		}
 		r, err := q.InsertRun(ctx, p)
 		if err != nil {
@@ -224,6 +299,34 @@ func (s *Service) StartRun(ctx context.Context, in StartInput) (Run, error) {
 		return record(ctx, tx, c.Actor(), "run.started", out)
 	})
 	return out, err
+}
+
+// represented returns the active user a verified subject token proves and
+// consumes the token (HR-145): auth_replay keeps hashes of the issuer and
+// of the jti (or of the token) until the token expires.
+func represented(ctx context.Context, q *dbq.Queries, org ids.OrgID, sc authnapp.SubjectClaims, token string) (ids.UUID, error) {
+	user, err := q.ActiveUserBySubject(ctx, org, sc.Issuer, sc.Subject)
+	if db.IsNoRows(err) {
+		return user, ErrSubjectRejected
+	} else if err != nil {
+		return user, err
+	}
+	key := "tok:" + token
+	if sc.JTI != "" {
+		key = "jti:" + sc.JTI
+	}
+	iss, jti := sha256.Sum256([]byte(sc.Issuer)), sha256.Sum256([]byte(key))
+	n, err := q.InsertAuthReplay(ctx, dbq.InsertAuthReplayParams{
+		OrgID: org, Issuer: "subject:" + base64.RawURLEncoding.EncodeToString(iss[:]),
+		Jti: base64.RawURLEncoding.EncodeToString(jti[:]), ExpiresAt: sc.ExpiresAt,
+	})
+	if err != nil {
+		return user, err
+	}
+	if n == 0 {
+		return user, ErrSubjectRejected
+	}
+	return user, nil
 }
 
 // ChildInput starts a child run for a workload.
@@ -491,4 +594,39 @@ func recordEnd(ctx context.Context, tx db.TenantTx, actor evdomain.Actor, r Run,
 		},
 	})
 	return err
+}
+
+// Bind checks that a request from instance of agent may use run (HR-022):
+// the run is active, of that agent, and bound to that instance, or unbound
+// and then bound to it by a conditional update, so concurrent first uses
+// bind exactly one instance. Anything else is run_mismatch.
+func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) error {
+	return s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		r, err := q.GetRun(ctx, org, run)
+		if db.IsNoRows(err) {
+			return pap.Err(pap.CodeRunMismatch)
+		} else if err != nil {
+			return err
+		}
+		if r.EffectiveState != "ACTIVE" || r.PcRun.AgentID != agent {
+			return pap.Err(pap.CodeRunMismatch)
+		}
+		if r.PcRun.InstanceID == nil {
+			n, err := q.BindRunInstance(ctx, &instance, org, run)
+			if err != nil {
+				return err
+			}
+			if n == 1 {
+				return nil
+			}
+			if r, err = q.GetRun(ctx, org, run); err != nil {
+				return err
+			}
+		}
+		if r.PcRun.InstanceID == nil || *r.PcRun.InstanceID != instance {
+			return pap.Err(pap.CodeRunMismatch)
+		}
+		return nil
+	})
 }

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -55,17 +56,13 @@ func New(cfg *Config, log *slog.Logger) (*Gateway, error) {
 		Timeout: cfg.Authority.Timeout.D(),
 		Wrap:    func(rt http.RoundTripper) http.RoundTripper { return bearer{token: token, base: rt} },
 	})
-	workloads := map[string]bool{}
-	for _, w := range cfg.DevWorkloads {
-		workloads[w] = true
-	}
 	return &Gateway{
 		org:       cfg.Org,
 		authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(authed, authURL.String()))),
 		permits:   newPermitVerifier(authURL.JoinPath(".well-known", "pantherclaw", "jwks.json").String(), control, cfg.GatewayID, cfg.Org),
 		egress:    httpx.NewEgressClient(httpx.EgressConfig{Timeout: cfg.Target.Timeout.D(), AllowedPrefixes: prefixes}),
 		target:    target,
-		workloads: workloads,
+		publicURL: strings.TrimSuffix(cfg.PublicURL, "/"),
 		log:       log,
 	}, nil
 }

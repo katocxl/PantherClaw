@@ -7,13 +7,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"strings"
 
 	"connectrpc.com/connect/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/authority/domain"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 )
@@ -84,13 +87,14 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 	if err != nil {
 		return nil, err
 	}
-	res, err := h.svc.Authorize(ctx, gw, req.GetActionIr())
+	creds := credentials(req.GetWorkload())
+	res, err := h.svc.Authorize(ctx, gw, req.GetActionIr(), creds)
 	if err != nil {
 		return nil, err
 	}
 	out := &pantherclawv1.AuthorizeResponse{
 		Decision: decisionToProto[res.Decision], ActionHash: res.ActionHash,
-		Permit: res.Permit, Epoch: res.Epoch, Receipt: res.Receipt,
+		Permit: res.Permit, Epoch: res.Epoch, Receipt: res.Receipt, Nonce: res.Nonce,
 	}
 	if !res.TransactionID.IsZero() {
 		out.TransactionId = res.TransactionID.String()
@@ -148,4 +152,56 @@ func (h *Handler) RecordExecution(ctx context.Context, req *pantherclawv1.Record
 		return nil, err
 	}
 	return &pantherclawv1.RecordExecutionResponse{Receipt: receipt}, nil
+}
+
+// GetNonce implements AuthorityServiceHandler.
+func (h *Handler) GetNonce(ctx context.Context, _ *pantherclawv1.GetNonceRequest) (*pantherclawv1.GetNonceResponse, error) {
+	gw, err := gateway(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, exp, err := h.svc.Nonce(ctx, gw)
+	if err != nil {
+		return nil, err
+	}
+	if n == "" {
+		return nil, connect.NewError(connect.CodeUnavailable, "workload identity is not configured")
+	}
+	return &pantherclawv1.GetNonceResponse{Nonce: n, ExpireTime: timestamppb.New(exp)}, nil
+}
+
+// credentials maps forwarded workload credentials; nil when absent.
+func credentials(w *pantherclawv1.WorkloadCredentials) *Credentials {
+	if w == nil {
+		return nil
+	}
+	c := &Credentials{
+		Token: w.GetWorkloadToken(), Proof: w.GetProof(), Method: w.GetHtm(), URL: w.GetHtu(), ClientAddress: w.GetClientAddress(),
+	}
+	copy(c.BodySHA256[:], w.GetBodySha256())
+	return c
+}
+
+// ReportUnknownWorkload implements AuthorityServiceHandler. A report whose
+// proof does not verify is refused with its PAP-Error code.
+func (h *Handler) ReportUnknownWorkload(ctx context.Context, req *pantherclawv1.ReportUnknownWorkloadRequest) (*pantherclawv1.ReportUnknownWorkloadResponse, error) {
+	gw, err := gateway(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c := credentials(req.GetWorkload())
+	if c == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "workload credentials are required")
+	}
+	id, err := h.svc.ReportUnknown(ctx, gw, UnknownWorkload{Credentials: *c, Route: req.GetRoute(), UserAgent: req.GetUserAgent()})
+	if code := pap.CodeOf(err); err != nil && errors.As(err, new(*pap.Error)) {
+		return nil, connect.NewError(connect.CodeUnauthenticated, "PAP/1: "+string(code))
+	} else if err != nil {
+		return nil, err
+	}
+	out := &pantherclawv1.ReportUnknownWorkloadResponse{Nonce: h.svc.nonce(ctx, gw)}
+	if !id.IsZero() {
+		out.DiscoveryId = id.String()
+	}
+	return out, nil
 }

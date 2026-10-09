@@ -47,6 +47,10 @@ var (
 		"EXPIRED":   pantherclawv1.RunState_RUN_STATE_EXPIRED,
 		"REVOKED":   pantherclawv1.RunState_RUN_STATE_REVOKED,
 	}
+	subjectTypes = map[pantherclawv1.SubjectTokenType]string{
+		pantherclawv1.SubjectTokenType_SUBJECT_TOKEN_TYPE_ID_TOKEN:     app.SubjectIDToken,
+		pantherclawv1.SubjectTokenType_SUBJECT_TOKEN_TYPE_ACCESS_TOKEN: app.SubjectAccessToken,
+	}
 	sourceToProto = map[string]pantherclawv1.PrincipalSource{
 		app.SourceLauncher:     pantherclawv1.PrincipalSource_PRINCIPAL_SOURCE_LAUNCHER,
 		app.SourceSubjectToken: pantherclawv1.PrincipalSource_PRINCIPAL_SOURCE_SUBJECT_TOKEN,
@@ -96,7 +100,7 @@ func (s *Runs) StartRun(ctx context.Context, req *pantherclawv1.StartRunRequest)
 	}
 	in := app.StartInput{
 		AgentID: agent, TaskRef: req.GetTaskRef(), TTL: time.Duration(req.GetTtlMinutes()) * time.Minute,
-		SubjectToken: req.GetSubjectToken(), SubjectTokenType: req.GetSubjectTokenType().String(),
+		SubjectToken: req.GetSubjectToken(), SubjectTokenType: subjectTypes[req.GetSubjectTokenType()],
 	}
 	if req.InstanceId != nil {
 		id, err := ParseID(req.GetInstanceId())

@@ -5,7 +5,9 @@
 // skeleton (ARCHITECTURE §6, ADR-0014): it decides on canonical actions,
 // finalizes allowed ones in one transaction (idempotency, containment epoch,
 // budget reservation, single-use permit, decision receipt), owns the
-// BeginDispatch commit point and records execution outcomes.
+// BeginDispatch commit point and records execution outcomes. Since M3 an
+// action is first tied to the verified workload that sent it and to a run
+// that workload may use (HR-021, HR-022).
 package authority
 
 import (
@@ -21,10 +23,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/domain"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/evidence/ledger"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
+	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -58,6 +63,9 @@ type Service struct {
 	issuer string
 	ttl    time.Duration
 	log    *slog.Logger
+
+	workloads Workloads
+	runs      Runs
 }
 
 // Config configures the Service.
@@ -91,10 +99,13 @@ type Result struct {
 	PermitID      ids.UUID
 	Epoch         int64
 	Receipt       string // decision receipt JWS
+	// Nonce is the org's current PAP/1 nonce, for the PAP-Nonce header.
+	Nonce string
 }
 
-// Authorize decides on raw canonical ActionIR bytes.
-func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte) (Result, error) {
+// Authorize decides on raw canonical ActionIR bytes sent with the
+// workload's PAP/1 credentials; without them it is CANNOT_AUTHORIZE.
+func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *Credentials) (Result, error) {
 	p, perr := actionir.Parse(raw)
 	if perr != nil {
 		// Unparseable input cannot be bound to an org or action id: the answer
@@ -110,6 +121,14 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte) (Result
 		return Result{Decision: domain.Deny, ActionHash: p.HashHex(), Reasons: []domain.Reason{{ //nolint:nilerr // decision, not a failure
 			Code: domain.ReasonOrgMismatch, Check: "identity", Decisive: true,
 		}}}, nil
+	}
+	o, ok, err := s.identify(ctx, gw, p, creds)
+	if err != nil {
+		return Result{}, err
+	}
+	if !ok {
+		s.log.InfoContext(ctx, "authz.decision", slog.String("decision", string(o.Decision)), slog.String("reason_code", o.Decisive()))
+		return Result{Decision: o.Decision, ActionHash: p.HashHex(), Reasons: o.Reasons, Nonce: s.nonce(ctx, gw)}, nil
 	}
 	run, _ := ids.ParseUUID(p.Action.RunID)
 	act, _ := ids.ParseUUID(p.Action.ActionID)
@@ -129,6 +148,7 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte) (Result
 	}
 	s.log.InfoContext(ctx, "authz.decision", slog.String("txn_id", res.TransactionID.String()),
 		slog.String("decision", string(res.Decision)), slog.String("reason_code", decisive(res.Reasons)))
+	res.Nonce = s.nonce(ctx, gw)
 	return res, nil
 }
 
@@ -595,4 +615,121 @@ type decisionPAP struct {
 	Amount    *amountJSON     `json:"amount,omitempty"`
 	Gateway   string          `json:"gateway"`
 	Simulated bool            `json:"simulated"`
+}
+
+// Workloads identifies the workload behind forwarded PAP/1 credentials and
+// serves nonces (identity app).
+type Workloads interface {
+	Identify(ctx context.Context, org ids.OrgID, in iapp.IdentifyInput) (iapp.Identified, error)
+	NonceExpiry(ctx context.Context, org ids.OrgID) (string, time.Time, error)
+	Discover(ctx context.Context, org ids.OrgID, in iapp.DiscoverInput) (ids.UUID, error)
+}
+
+// Runs checks and binds runs (runs app).
+type Runs interface {
+	Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) error
+}
+
+// WithWorkloads sets the workload identity and run checks (M3) and returns
+// s.
+func (s *Service) WithWorkloads(w Workloads, r Runs) *Service {
+	s.workloads, s.runs = w, r
+	return s
+}
+
+// Credentials are a workload request's PAP/1 credentials as the gateway
+// received them (WorkloadCredentials, PAP-1 §4).
+type Credentials struct {
+	Token      string
+	Proof      string
+	BodySHA256 [sha256.Size]byte
+	Method     string
+	URL        string
+	// ClientAddress is UNTRUSTED (HR-092 network alert only).
+	ClientAddress string
+}
+
+func identityOutcome(d domain.Decision, code, detail string) domain.Outcome {
+	return domain.Outcome{Decision: d, Reasons: []domain.Reason{{Code: code, Check: "identity", Detail: detail, Decisive: true}}}
+}
+
+// identify checks the workload behind an action before anything is decided
+// or recorded (PAP-1 §7.1; HR-021, HR-022): an unverifiable workload is
+// CANNOT_AUTHORIZE, a suspended or retired agent, an action naming another
+// instance or environment, and a run it may not use are DENY. None of them
+// is finalized, so a workload can never spend the (run, action) key of
+// another. ok reports that the action may proceed to the grant.
+func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c *Credentials) (domain.Outcome, bool, error) {
+	if c == nil {
+		return identityOutcome(domain.CannotAuthorize, domain.ReasonIdentityUnverified, string(pap.CodeInvalidToken)), false, nil
+	}
+	if s.workloads == nil || s.runs == nil {
+		return domain.Outcome{}, false, errors.New("authority: workload identity is not configured")
+	}
+	id, err := s.workloads.Identify(ctx, gw.Org, iapp.IdentifyInput{
+		Request: pap.Request{Method: c.Method, URL: c.URL, BodySHA256: c.BodySHA256, Token: c.Token},
+		Proof:   c.Proof, ClientAddress: c.ClientAddress,
+	})
+	var pe *pap.Error
+	switch {
+	case errors.As(err, &pe):
+		return identityOutcome(domain.CannotAuthorize, domain.ReasonIdentityUnverified, string(pe.Code)), false, nil
+	case err != nil:
+		return domain.Outcome{}, false, err
+	}
+	if !adomain.State(id.AgentState).Usable() {
+		return identityOutcome(domain.Deny, domain.ReasonAgentUnusable, "the agent is suspended or retired"), false, nil
+	}
+	if p.Action.AgentInstance != id.Instance.Instance.String() || p.Action.Env != id.Environment.String() {
+		s.log.WarnContext(ctx, "security.identity_mismatch", slog.String("gateway_id", gw.ID),
+			slog.String("instance_id", id.Instance.Instance.String()))
+		return identityOutcome(domain.Deny, domain.ReasonIdentityMismatch, "the action names another instance or environment"), false, nil
+	}
+	run, _ := ids.ParseUUID(p.Action.RunID)
+	if err := s.runs.Bind(ctx, gw.Org, run, id.Instance.Agent, id.Instance.Instance); errors.As(err, &pe) {
+		s.log.WarnContext(ctx, "security.run_mismatch", slog.String("gateway_id", gw.ID),
+			slog.String("instance_id", id.Instance.Instance.String()), slog.String("run_id", run.String()))
+		return identityOutcome(domain.Deny, domain.ReasonRunMismatch, string(pe.Code)), false, nil
+	} else if err != nil {
+		return domain.Outcome{}, false, err
+	}
+	return domain.Outcome{}, true, nil
+}
+
+// Nonce returns the org's current PAP/1 nonce and its expiry, or "" when
+// workload identity is not configured.
+func (s *Service) Nonce(ctx context.Context, gw Gateway) (string, time.Time, error) {
+	if s.workloads == nil {
+		return "", time.Time{}, nil
+	}
+	return s.workloads.NonceExpiry(ctx, gw.Org)
+}
+
+// nonce is Nonce for a response: a failure only leaves the header out.
+func (s *Service) nonce(ctx context.Context, gw Gateway) string {
+	n, _, err := s.Nonce(ctx, gw)
+	if err != nil {
+		s.log.WarnContext(ctx, "authz.nonce_unavailable", slog.String("gateway_id", gw.ID))
+	}
+	return n
+}
+
+// UnknownWorkload is a gateway's report of a request it could not tie to an
+// admitted instance (HR-148). The observations are UNTRUSTED.
+type UnknownWorkload struct {
+	Credentials
+	Route, UserAgent string
+}
+
+// ReportUnknown records the report as a discovery after verifying its
+// key-only proof; the request itself stays refused. The zero id means the
+// sighting was only counted.
+func (s *Service) ReportUnknown(ctx context.Context, gw Gateway, u UnknownWorkload) (ids.UUID, error) {
+	if s.workloads == nil {
+		return ids.UUID{}, errors.New("authority: workload identity is not configured")
+	}
+	return s.workloads.Discover(ctx, gw.Org, iapp.DiscoverInput{
+		Request: pap.Request{Method: u.Method, URL: u.URL, BodySHA256: u.BodySHA256, Token: u.Token},
+		Proof:   u.Proof, Gateway: gw.ID, Route: u.Route, ClientAddress: u.ClientAddress, UserAgent: u.UserAgent,
+	})
 }

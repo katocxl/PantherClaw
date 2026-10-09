@@ -52,6 +52,12 @@ const (
 	ReasonBudgetUnavailable   = "BUDGET_UNAVAILABLE"
 	ReasonActionTampered      = "ACTION_TAMPERED"
 	ReasonDuplicateRequest    = "DUPLICATE_REQUEST"
+	// Workload identity and run binding (M3; HR-021, HR-022). The detail of an
+	// identity reason is the PAP-Error code (PAP-1 §12).
+	ReasonIdentityUnverified = "IDENTITY_UNVERIFIED"
+	ReasonIdentityMismatch   = "IDENTITY_MISMATCH"
+	ReasonAgentUnusable      = "AGENT_UNUSABLE"
+	ReasonRunMismatch        = "RUN_MISMATCH"
 )
 
 // Outcome is the result of evaluating one action before finalization.

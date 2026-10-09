@@ -51,6 +51,9 @@ type Config struct {
 	// TrustEmail accepts the email claim without email_verified, for
 	// providers whose emails are administered (an enterprise directory).
 	TrustEmail bool
+	// SubjectTokenAudience, when set, lets runs present this provider's
+	// tokens as RFC 8693 subject tokens whose aud contains it (HR-145).
+	SubjectTokenAudience string
 	// AllowInsecureLoopback allows an http:// issuer on a loopback host
 	// (local Keycloak or a test provider). Never for production.
 	AllowInsecureLoopback bool
@@ -71,6 +74,8 @@ type Provider struct {
 type discovered struct {
 	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
+	// subject verifies subject tokens: aud is the subject token audience.
+	subject  *oidc.IDTokenVerifier
 	endpoint oauth2.Endpoint
 	issParam bool
 }
@@ -86,6 +91,9 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.ClientID == "" || len(cfg.ClientSecret.Reveal()) == 0 {
 		errs = append(errs, errors.New("client_id and a client secret are required"))
+	}
+	if len(cfg.SubjectTokenAudience) > 256 {
+		errs = append(errs, errors.New("subject_token_audience is at most 256 characters"))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("oidc provider %q: %w", cfg.Name, err)
@@ -169,6 +177,9 @@ func (p *Provider) load(ctx context.Context) (*discovered, error) {
 		verifier: prov.VerifierContext(octx, &oidc.Config{ClientID: p.cfg.ClientID, SupportedSigningAlgs: SigningAlgs}),
 		endpoint: oauth2.Endpoint{AuthURL: meta.AuthURL, TokenURL: meta.TokenURL, AuthStyle: oauth2.AuthStyleInHeader},
 		issParam: meta.IssParam,
+	}
+	if a := p.cfg.SubjectTokenAudience; a != "" {
+		p.disc.subject = prov.VerifierContext(octx, &oidc.Config{ClientID: a, SupportedSigningAlgs: SigningAlgs})
 	}
 	return p.disc, nil
 }
