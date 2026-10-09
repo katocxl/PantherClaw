@@ -142,7 +142,7 @@ enum DeliveryState {
   // Not sent: the channel's queue was full.
   DELIVERY_STATE_DROPPED = 6;
   // Not sent: the channel was deleted.
-  DELIVERY_STATE_CANCELLED = 7;
+  DELIVERY_STATE_CANCELED = 7;
 }
 
 // Delivery is one delivery of a notification.
