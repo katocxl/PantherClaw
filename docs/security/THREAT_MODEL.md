@@ -83,7 +83,7 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 
 | ID | Abuse case | Adv. | Entry | Consequence | Mitigations | MS |
 |---|---|---|---|---|---|---|
-| T-001 | Agent enlarges its own scope via task text or self-issued grant | A1 | TB1 | Unauthorized effects | Grants from trusted sources only; HR-022, HR-023, HR-151; no agent grant issuance | M4 |
+| T-001 | Agent enlarges its own scope via task text or self-issued grant | A1 | TB1 | Unauthorized effects | Grants from trusted sources only; HR-022, HR-023, HR-161; no agent grant issuance | M4 |
 | T-002 | Self-approval: agent uses a PantherClaw API key / connection to PantherClaw; developer approves own action | A1, A5 | TB4, TB2 | Bypass of human gate | HR-032, HR-036, HR-077; `pclaw scan` flags `pck_` keys; secret scanning pattern | M5 |
 | T-003 | Tenant escape (RLS gaps, pooled connection leaks, FK/unique existence oracles, sweeper context) | A8 | TB5/TB7 | Data leak / cross-tenant actions | HR-050..057; cross-tenant suite per table | M1 |
 | T-004 | Rogue instance admitted under a real agent's name | A4, A1 | Enrollment | Inherited authority | HR-094; no name-based inheritance (F034) | M3 |
@@ -133,7 +133,7 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | T-048 | Represented-principal spoofing: a launcher names a user it does not act for; a subject token from an unconfigured provider, for another audience, stale or replayed; a subject token used to gain authority | A5, A4 | TB4 | Actions attributed to, and authorized for, the wrong person | HR-145, HR-146 | M3 |
 | T-049 | Authority hopping: a new instance, a re-attestation, an ownership transfer or a reused agent name inherits another instance's runs or grants | A4, A1 | Enrollment | Inherited authority | HR-147, HR-022 | M3 |
 | T-050 | Discovery flooding or poisoning: random keys fill the unclaimed queue, or forged observed attributes lead an owner to admit a rogue key | A1, A8 | TB1 | Owner fatigue, rogue admission, storage exhaustion | HR-148, HR-094 | M3 |
-| T-051 | Forged or stale facts: an agent, a gateway or an unregistered source supplies a fact (charge refundable, branch protected, backup verified), or an old observation is presented as current | A1, A5 | Fact providers | A prohibition or requirement skipped on false evidence | HR-150 | M4 |
+| T-055 | Forged or stale facts: an agent, a gateway or an unregistered source supplies a fact (charge refundable, branch protected, backup verified), or an old observation is presented as current | A1, A5 | Fact providers | A prohibition or requirement skipped on false evidence | HR-160 | M4 |
 
 ## 8. Residual risks (accepted, owner: founder, reviewed quarterly)
 
@@ -161,4 +161,4 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | 2026-10-08 | v1.0 created from product spec, adversarial review and engineering review | G0 (M0) |
 | 2026-10-08 | M2: TB4 implemented for the CLI and services (OIDC relying party with PKCE, nonce and RFC 9207; server-mediated device flow; `private_key_jwt`; `pck_` API keys; per-request revocation checks). T-032, T-037, T-043 tested for their M2 parts. Residual risks R-13 (device-code phishing) and R-14 (CLI credentials file) accepted. TB8 gains the customer IdP as an OIDC provider (HTTPS only, discovered endpoints checked). | G0 (M2), ADR-0016 |
 | 2026-10-09 | M3 brief: ADR-0018 constraints become T-044..T-050 (issuer mis-scoping, key-source abuse, attestation replay, Kubernetes mis-binding, represented-principal spoofing, authority hopping, discovery flooding) with HR-140..148. New attack surfaces: trusted-issuer configuration, the workload enrollment and token endpoints, subject tokens at `StartRun`, gateway reports of unknown workloads. TB1 gains attestation by customer CI and cluster issuers; TB8 gains the OIDC provider as a source of subject tokens | G0 (M3), ADR-0018 |
-| 2026-10-09 | M4 part 2 brief: T-051 (forged or stale facts) with HR-150; T-001 also mitigated by HR-151 (workloads never issue or widen grants). New attack surfaces: grant issuance and delegation, guardrail changes, fact providers pushing facts. TB1 gains delegation by workloads, which can only narrow | G0 (M4 part 2) |
+| 2026-10-09 | M4 part 2 brief: T-055 (forged or stale facts) with HR-160; T-001 also mitigated by HR-161 (workloads never issue or widen grants). New attack surfaces: grant issuance and delegation, guardrail changes, fact providers pushing facts. TB1 gains delegation by workloads, which can only narrow | G0 (M4 part 2) |
