@@ -908,6 +908,25 @@ func (q *Queries) LockInstance(ctx context.Context, orgID ids.OrgID, iD ids.UUID
 	return i, err
 }
 
+const seeInstance = `-- name: SeeInstance :execrows
+UPDATE pc.agent_instances SET last_seen_at = now(), last_network = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'ADMITTED'
+  AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute'
+       OR last_network IS DISTINCT FROM $1)
+`
+
+// A verified request (Authorize): last seen moves at most once a minute and
+// the network only when it changed, so a busy instance does not serialize
+// on its row. No row means nothing changed, or a concurrent request
+// already recorded the change (and raised any network alert).
+func (q *Queries) SeeInstance(ctx context.Context, lastNetwork *string, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, seeInstance, lastNetwork, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const touchDiscovery = `-- name: TouchDiscovery :execrows
 UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now()
 WHERE org_id = $1 AND key_jkt = $2

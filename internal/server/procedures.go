@@ -28,6 +28,7 @@ var procedurePermissions = map[string]td.Permission{
 	pantherclawv1connect.AgentServiceCreateAgentProcedure:                      "agent.manage",
 	pantherclawv1connect.AgentServiceGetAgentProcedure:                         "agent.read",
 	pantherclawv1connect.AgentServiceListAgentChangesProcedure:                 "agent.read",
+	pantherclawv1connect.AgentServiceSubmitScanFindingsProcedure:               "agent.manage",
 	pantherclawv1connect.AgentServiceListAgentsProcedure:                       "agent.read",
 	pantherclawv1connect.AgentServiceRetireAgentProcedure:                      "agent.manage",
 	pantherclawv1connect.AgentServiceSuspendAgentProcedure:                     "agent.manage",

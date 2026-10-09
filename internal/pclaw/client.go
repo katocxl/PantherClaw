@@ -104,9 +104,13 @@ func (s *session) connect() *connect.Client {
 }
 
 type clients struct {
-	tenancy pantherclawv1connect.TenancyServiceClient
-	access  pantherclawv1connect.AccessServiceClient
-	sa      pantherclawv1connect.ServiceAccountServiceClient
+	tenancy  pantherclawv1connect.TenancyServiceClient
+	access   pantherclawv1connect.AccessServiceClient
+	sa       pantherclawv1connect.ServiceAccountServiceClient
+	agents   pantherclawv1connect.AgentServiceClient
+	identity pantherclawv1connect.IdentityServiceClient
+	waitlist pantherclawv1connect.WaitlistServiceClient
+	runs     pantherclawv1connect.RunServiceClient
 }
 
 func (a *app) clients() (clients, error) {
@@ -116,9 +120,13 @@ func (a *app) clients() (clients, error) {
 	}
 	c := s.connect()
 	return clients{
-		tenancy: pantherclawv1connect.NewTenancyServiceClient(c),
-		access:  pantherclawv1connect.NewAccessServiceClient(c),
-		sa:      pantherclawv1connect.NewServiceAccountServiceClient(c),
+		tenancy:  pantherclawv1connect.NewTenancyServiceClient(c),
+		access:   pantherclawv1connect.NewAccessServiceClient(c),
+		sa:       pantherclawv1connect.NewServiceAccountServiceClient(c),
+		agents:   pantherclawv1connect.NewAgentServiceClient(c),
+		identity: pantherclawv1connect.NewIdentityServiceClient(c),
+		waitlist: pantherclawv1connect.NewWaitlistServiceClient(c),
+		runs:     pantherclawv1connect.NewRunServiceClient(c),
 	}, nil
 }
 

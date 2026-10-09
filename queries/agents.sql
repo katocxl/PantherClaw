@@ -159,3 +159,17 @@ SELECT
       WHERE r.org_id = sqlc.arg(org_id) AND r.agent_id = sqlc.arg(agent_id) AND r.state = 'ACTIVE')::int AS active_runs,
     (SELECT count(*) FROM pc.waitlist_entries w
       WHERE w.org_id = sqlc.arg(org_id) AND w.agent_id = sqlc.arg(agent_id) AND w.state = 'OPEN')::int AS open_entries;
+
+-- Scan findings (PN-001.1, F015): a finding already submitted is only
+-- counted, with its latest observations.
+-- name: TouchScanDiscovery :execrows
+UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now(), observed = sqlc.arg(observed)
+WHERE org_id = sqlc.arg(org_id) AND scan_key = sqlc.arg(scan_key);
+
+-- name: InsertScanDiscovery :one
+INSERT INTO pc.discoveries (org_id, id, agent_id, source, scan_key, observed)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(agent_id), 'scan', sqlc.arg(scan_key), sqlc.arg(observed))
+RETURNING *;
+
+-- name: CountOpenDiscoveries :one
+SELECT count(*)::int FROM pc.discoveries WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN';

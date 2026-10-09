@@ -13,5 +13,5 @@
     "timeout": "10s",
     "allowed_prefixes": ["127.0.0.1/32"]
   },
-  "dev_workloads": ["01920000-0000-7000-8000-0000000000c1"]
+  "public_url": "http://127.0.0.1:8090"
 }

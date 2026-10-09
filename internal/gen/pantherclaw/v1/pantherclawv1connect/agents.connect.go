@@ -47,6 +47,9 @@ const (
 	// AgentServiceListAgentChangesProcedure is the procedure name of the AgentService's
 	// ListAgentChanges RPC.
 	AgentServiceListAgentChangesProcedure = "/pantherclaw.v1.AgentService/ListAgentChanges"
+	// AgentServiceSubmitScanFindingsProcedure is the procedure name of the AgentService's
+	// SubmitScanFindings RPC.
+	AgentServiceSubmitScanFindingsProcedure = "/pantherclaw.v1.AgentService/SubmitScanFindings"
 )
 
 var (
@@ -116,6 +119,13 @@ var (
 			IdempotencyLevel: connect.IdempotencyNoSideEffects,
 		}
 	})
+	agentServiceSubmitScanFindingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_agents_proto.Services().ByName("AgentService").Methods().ByName("SubmitScanFindings"),
+			Procedure:  AgentServiceSubmitScanFindingsProcedure,
+		}
+	})
 )
 
 // AgentServiceClient is a client for the pantherclaw.v1.AgentService service.
@@ -155,6 +165,12 @@ type AgentServiceClient interface {
 	// ListAgentChanges returns an agent's append-only change history (F024).
 	// permission: agent.read
 	ListAgentChanges(context.Context, *v1.ListAgentChangesRequest) (*v1.ListAgentChangesResponse, error)
+	// SubmitScanFindings records the findings of a local `pclaw scan` as
+	// DISCOVERED agents with ADMISSION entries (PN-001.1, F015); a finding
+	// submitted before is only counted. Findings are UNTRUSTED observations
+	// and grant nothing; credentials never leave the scanning machine.
+	// permission: agent.manage
+	SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error)
 }
 
 // NewAgentServiceClient constructs a client for the pantherclaw.v1.AgentService service. Multiple
@@ -200,6 +216,12 @@ type AgentServiceHandler interface {
 	// ListAgentChanges returns an agent's append-only change history (F024).
 	// permission: agent.read
 	ListAgentChanges(context.Context, *v1.ListAgentChangesRequest) (*v1.ListAgentChangesResponse, error)
+	// SubmitScanFindings records the findings of a local `pclaw scan` as
+	// DISCOVERED agents with ADMISSION entries (PN-001.1, F015); a finding
+	// submitted before is only counted. Findings are UNTRUSTED observations
+	// and grant nothing; credentials never leave the scanning machine.
+	// permission: agent.manage
+	SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error)
 }
 
 // RegisterAgentServiceHandler registers svc as the pantherclaw.v1.AgentService implementation on
@@ -216,6 +238,7 @@ func RegisterAgentServiceHandler(server *connect.Server, svc AgentServiceHandler
 		connect.Method{Spec: agentServiceSuspendAgentSpec(), Handler: adapter.suspendAgent},
 		connect.Method{Spec: agentServiceRetireAgentSpec(), Handler: adapter.retireAgent},
 		connect.Method{Spec: agentServiceListAgentChangesSpec(), Handler: adapter.listAgentChanges},
+		connect.Method{Spec: agentServiceSubmitScanFindingsSpec(), Handler: adapter.submitScanFindings},
 	)
 }
 
@@ -256,6 +279,10 @@ func (UnimplementedAgentServiceHandler) RetireAgent(context.Context, *v1.RetireA
 
 func (UnimplementedAgentServiceHandler) ListAgentChanges(context.Context, *v1.ListAgentChangesRequest) (*v1.ListAgentChangesResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AgentService.ListAgentChanges is not implemented")
+}
+
+func (UnimplementedAgentServiceHandler) SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AgentService.SubmitScanFindings is not implemented")
 }
 
 type agentServiceClient struct {
@@ -329,6 +356,14 @@ func (c *agentServiceClient) RetireAgent(ctx context.Context, req *v1.RetireAgen
 func (c *agentServiceClient) ListAgentChanges(ctx context.Context, req *v1.ListAgentChangesRequest) (*v1.ListAgentChangesResponse, error) {
 	var res v1.ListAgentChangesResponse
 	if err := c.client.CallUnary(ctx, agentServiceListAgentChangesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentServiceClient) SubmitScanFindings(ctx context.Context, req *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error) {
+	var res v1.SubmitScanFindingsResponse
+	if err := c.client.CallUnary(ctx, agentServiceSubmitScanFindingsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -438,6 +473,18 @@ func (h agentServiceHandler) listAgentChanges(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.ListAgentChanges(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentServiceHandler) submitScanFindings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubmitScanFindingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SubmitScanFindings(ctx, &req)
 	if err != nil {
 		return err
 	}

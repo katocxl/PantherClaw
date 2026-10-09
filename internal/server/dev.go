@@ -22,6 +22,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -47,8 +48,6 @@ func newAuthority(cfg *Config, pool *db.Pool, reg *keys.Registry, log *slog.Logg
 		},
 		PermitTTL: cfg.Authority.PermitTTL.D(),
 		Logger:    log,
-		// Until the development gateway forwards PAP/1 credentials (M3 slice 13).
-		LegacyDevWorkloads: true,
 	}), nil
 }
 
@@ -86,6 +85,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	limit := fs.String("budget-limit", "1000.00", "budget limit in the grant currency")
 	maxCount := fs.Int("max-count", 0, "optional limit on the number of committed actions (0 = none)")
 	tokenOut := fs.String("token-out", "", "write a new dev gateway token here (0600, never overwritten)")
+	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a run; write its key file here (0600, never overwritten)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -106,6 +106,11 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 		c := int32(min(*maxCount, 1<<30))
 		count = &c
 	}
+	if *workloadOut != "" {
+		if _, err := os.Stat(*workloadOut); err == nil {
+			return fmt.Errorf("dev seed: %s already exists", *workloadOut)
+		}
+	}
 	if *tokenOut != "" {
 		if err := writeDevToken(*tokenOut); err != nil {
 			return err
@@ -123,6 +128,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 
 	org := ids.New[ids.Org]()
 	budget := ids.NewV7()
+	var workload workloadclient.KeyFile
 	err = pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		if _, err := tx.Exec(ctx, "INSERT INTO pc.orgs (id, name) VALUES ($1, $2)", org, *name); err != nil {
 			return fmt.Errorf("dev seed: org: %w", err)
@@ -141,10 +147,15 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 		if count != nil {
 			details["max_count"] = strconv.Itoa(int(*count))
 		}
-		_, err := audit.Record(ctx, tx, audit.Event{
+		if _, err := audit.Record(ctx, tx, audit.Event{
 			Name: "dev.org_seeded", Actor: devSeedActor, Outcome: audit.Success,
 			Object: &audit.Object{Type: "org", ID: org.String()}, Details: details,
-		})
+		}); err != nil {
+			return err
+		}
+		if *workloadOut != "" {
+			workload, err = seedWorkload(ctx, tx, org, cfg.Auth.PublicURL)
+		}
 		return err
 	})
 	if err != nil {
@@ -154,6 +165,12 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	_, _ = fmt.Fprintf(stdout, "enable the development gateway in the server config:\n"+
 		"  \"dev_gateway\": {\"enabled\": true, \"org\": %q, \"gateway_id\": %q, \"token_file\": %q}\n",
 		org.String(), cfg.DevGateway.ID, *tokenOut)
+	if *workloadOut != "" {
+		if err := workloadclient.WriteKeyFile(*workloadOut, workload, false); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "seeded workload %s with run %s; key file %s\n", workload.Identifier, workload.RunID, *workloadOut)
+	}
 	return nil
 }
 

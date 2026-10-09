@@ -176,3 +176,13 @@ RETURNING *;
 UPDATE pc.agent_instances SET state = 'EXPIRED', updated_at = now()
 WHERE org_id = sqlc.arg(org_id) AND state = 'PENDING_ADMISSION' AND expires_at <= now()
 RETURNING id, agent_id;
+
+-- A verified request (Authorize): last seen moves at most once a minute and
+-- the network only when it changed, so a busy instance does not serialize
+-- on its row. No row means nothing changed, or a concurrent request
+-- already recorded the change (and raised any network alert).
+-- name: SeeInstance :execrows
+UPDATE pc.agent_instances SET last_seen_at = now(), last_network = sqlc.narg(last_network), updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ADMITTED'
+  AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute'
+       OR last_network IS DISTINCT FROM sqlc.narg(last_network));

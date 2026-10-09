@@ -27,7 +27,7 @@ const usage = `pantherclaw-sim — simulated targets and load driver (everything
 
 Usage:
   pantherclaw-sim payments [--addr 127.0.0.1:9090] [--latency 0s] [--decline-rate 0] [--hang-rate 0]
-  pantherclaw-sim load --workload ID [--gateway URL] [--rate 1000] [--duration 30s] [--warmup 5s] [--amount 1.00] [--out FILE]
+  pantherclaw-sim load --workload-file FILE [--token-file FILE] [--run ID] [--gateway URL] [--rate 1000] [--duration 30s] [--warmup 5s] [--amount 1.00] [--out FILE]
   pantherclaw-sim version
 `
 

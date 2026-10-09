@@ -8,11 +8,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 )
 
 func TestServerTimingParsing(t *testing.T) {
@@ -40,7 +43,8 @@ func TestLoadDrivesAtTheTargetRate(t *testing.T) {
 	var calls atomic.Int64
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.Header.Get("PC-Dev-Workload") != "w-1" || r.Header.Get("PC-Action-Id") == "" {
+		if r.Header.Get("Authorization") != "PAP tok-1" || r.Header.Get("PAP-Proof") == "" || r.Header.Get("PAP-Run-Id") != "run-1" ||
+			r.Header.Get("PC-Action-Id") == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -51,8 +55,9 @@ func TestLoadDrivesAtTheTargetRate(t *testing.T) {
 	}))
 	defer gw.Close()
 	out := filepath.Join(t.TempDir(), "summary.json")
+	keyFile, tokenFile := workloadFiles(t)
 	var stdout, stderr bytes.Buffer
-	args := []string{"load", "--gateway", gw.URL, "--workload", "w-1", "--rate", "200", "--duration", "1s", "--warmup", "200ms", "--out", out}
+	args := []string{"load", "--gateway", gw.URL, "--workload-file", keyFile, "--token-file", tokenFile, "--run", "run-1", "--rate", "200", "--duration", "1s", "--warmup", "200ms", "--out", out}
 	if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
 		t.Fatalf("load: %d %s", code, stderr.String())
 	}
@@ -78,7 +83,28 @@ func TestLoadRequiresAWorkload(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if code := Run(ctx, []string{"load", "--workload", "w", "--gateway", "http://127.0.0.1:1", "--rate", "1", "--duration", "10s"}, &stdout, &stderr); code != 1 {
+	keyFile, tokenFile := workloadFiles(t)
+	if code := Run(ctx, []string{
+		"load", "--workload-file", keyFile, "--token-file", tokenFile, "--gateway", "http://127.0.0.1:1", "--rate", "1", "--duration", "10s",
+	}, &stdout, &stderr); code != 1 {
 		t.Fatalf("canceled load = %d", code)
 	}
+}
+
+// workloadFiles writes a workload key file and a token file.
+func workloadFiles(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	kf, _, err := workloadclient.NewKeyFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile, tokenFile := filepath.Join(dir, "workload.json"), filepath.Join(dir, "token")
+	if err := workloadclient.WriteKeyFile(keyFile, kf, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenFile, []byte("tok-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return keyFile, tokenFile
 }
