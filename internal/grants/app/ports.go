@@ -135,14 +135,15 @@ type Repository interface {
 	// limits, and the child run having no grant yet.
 	Delegate(ctx context.Context, org ids.OrgID, child domain.Grant, parentRevision int, childRun ids.UUID, f Fanout, ev audit.Event) error
 	// Revise stores next, conditional on the current revision being
-	// next.Revision-1.
-	Revise(ctx context.Context, org ids.OrgID, next domain.Grant, ev audit.Event) error
+	// next.Revision-1; widens is recorded on the revision.
+	Revise(ctx context.Context, org ids.OrgID, next domain.Grant, widens bool, ev audit.Event) error
 	// Revoke revokes the grant and every descendant in one transaction and
 	// returns the ids it revoked.
 	Revoke(ctx context.Context, org ids.OrgID, id domain.GrantID, ev audit.Event) ([]domain.GrantID, error)
 	// PutEnvelope stores e, conditional on the scope's current revision
-	// being e.Revision-1 (0: no envelope yet).
-	PutEnvelope(ctx context.Context, org ids.OrgID, e domain.Envelope, ev audit.Event) error
+	// being e.Revision-1 (0: no envelope yet); widens is recorded on the
+	// revision.
+	PutEnvelope(ctx context.Context, org ids.OrgID, e domain.Envelope, widens bool, ev audit.Event) error
 }
 
 // scopesFor returns the envelope scopes that apply to an agent's grant.
