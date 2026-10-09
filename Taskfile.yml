@@ -115,6 +115,11 @@ tasks:
     cmds:
       - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M4"}}
 
+  land:
+    desc: Land this branch's pull request on main once every check passes on the result of merging main (docs/PARALLEL_WORK.md)
+    cmds:
+      - bash tools/scripts/land.sh {{.CLI_ARGS}}
+
   license:check:
     desc: Verify SPDX + copyright headers on every source file
     cmds:
