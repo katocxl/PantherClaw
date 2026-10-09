@@ -214,6 +214,22 @@ go run ./cmd/pclaw sa create --name ci && go run ./cmd/pclaw sa key-generate <sa
 go run ./cmd/pclaw sa token --key-file ci-key.json                          # private_key_jwt client credentials
 ```
 
+**Agents and workloads (M3):** an owner registers an agent, and its workload proves who it is with its own key (PAP/1). The workload commands run inside the workload and use only its key file.
+
+```bash
+go run ./cmd/pclaw agent create --name coder --team <team id> --env <env id> --owner <user id> --context ci
+go run ./cmd/pclaw agent enroll-token <agent id> --out enroll.token   # single use, 15 minutes
+# inside the workload:
+go run ./cmd/pclaw workload init --key-file workload.json
+go run ./cmd/pclaw workload enroll --key-file workload.json --server http://127.0.0.1:8080 --enrollment-token-file enroll.token
+# the owner compares the printed fingerprint, then:
+go run ./cmd/pclaw instance admit <instance id> --fingerprint <fingerprint>
+go run ./cmd/pclaw run start <agent id> --instance <instance id> --task "nightly refunds"
+go run ./cmd/pclaw workload token --key-file workload.json             # a workload token, valid 10 minutes
+```
+
+CI jobs and pods can attest instead of using an enrollment token: an admin proposes a trusted-issuer entry (`pclaw issuer propose-github …` or `pclaw issuer propose-kubernetes …`), a person with the Identity Publisher role activates it (`pclaw issuer activate ENTRY REVISION`), and the workload enrolls with `--github` (an Actions job with `id-token: write`) or `--kubernetes-token FILE` (a projected service-account token with audience `pantherclaw:<org id>`). Unknown keys that reach the gateway show up as discovered agents: `pclaw agent list --state discovered`, then `pclaw agent claim` or `pclaw agent retire`. `pclaw scan` looks for shadow agents on a machine: the MCP servers configured for Claude Desktop, Claude Code, Cursor and VS Code, agent-framework projects under `--path`, and credentials in the environment (shown redacted). Results stay local; `--submit` adds the MCP servers and agent projects to the discovered agents (credentials are never sent).
+
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
 
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.

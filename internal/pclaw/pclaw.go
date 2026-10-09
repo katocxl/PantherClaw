@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-// Package pclaw implements the pclaw command-line interface (M2: login and
-// tenancy administration). cmd/pclaw only wires the process.
+// Package pclaw implements the pclaw command-line interface: login and
+// tenancy administration (M2); agents, instances, trusted-issuer entries,
+// runs and the waitlist, and the workload side of PAP/1 (M3). cmd/pclaw
+// only wires the process.
 //
 // Authentication: `pclaw login` stores a CLI session (ADR-0016); every
 // command refreshes the access token when needed, signing the refresh with
 // the device key. Automation can instead set PANTHERCLAW_SERVER and
-// PANTHERCLAW_API_KEY (a pck_ key).
+// PANTHERCLAW_API_KEY (a pck_ key). The `workload` commands run
+// inside a workload and authenticate with its key file (PAP/1), never with
+// a user session.
 package pclaw
 
 import (

@@ -1918,6 +1918,190 @@ func (x *ListAgentChangesResponse) GetNextPageToken() string {
 	return ""
 }
 
+// ScanFinding is one finding of a local scan.
+type ScanFinding struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "mcp_server" or "agent_project".
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Stable key of the finding on the scanning machine (hex SHA-256), so a
+	// later scan of the same thing is only counted.
+	Key string `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	// UNTRUSTED attributes (client, config, name, command, path, frameworks).
+	Attributes    map[string]string `protobuf:"bytes,3,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanFinding) Reset() {
+	*x = ScanFinding{}
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanFinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanFinding) ProtoMessage() {}
+
+func (x *ScanFinding) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanFinding.ProtoReflect.Descriptor instead.
+func (*ScanFinding) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_agents_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ScanFinding) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ScanFinding) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ScanFinding) GetAttributes() map[string]string {
+	if x != nil {
+		return x.Attributes
+	}
+	return nil
+}
+
+// SubmitScanFindingsRequest submits findings.
+type SubmitScanFindingsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The findings.
+	Findings []*ScanFinding `protobuf:"bytes,1,rep,name=findings,proto3" json:"findings,omitempty"`
+	// UNTRUSTED name of the scanned machine.
+	Host          string `protobuf:"bytes,2,opt,name=host,proto3" json:"host,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitScanFindingsRequest) Reset() {
+	*x = SubmitScanFindingsRequest{}
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitScanFindingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitScanFindingsRequest) ProtoMessage() {}
+
+func (x *SubmitScanFindingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitScanFindingsRequest.ProtoReflect.Descriptor instead.
+func (*SubmitScanFindingsRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_agents_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SubmitScanFindingsRequest) GetFindings() []*ScanFinding {
+	if x != nil {
+		return x.Findings
+	}
+	return nil
+}
+
+func (x *SubmitScanFindingsRequest) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+// SubmitScanFindingsResponse counts what was recorded.
+type SubmitScanFindingsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// New discovered agents.
+	Created int32 `protobuf:"varint,1,opt,name=created,proto3" json:"created,omitempty"`
+	// Findings already known (only counted).
+	Counted int32 `protobuf:"varint,2,opt,name=counted,proto3" json:"counted,omitempty"`
+	// Findings dropped because the org already has 200 open discoveries.
+	Dropped       int32 `protobuf:"varint,3,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitScanFindingsResponse) Reset() {
+	*x = SubmitScanFindingsResponse{}
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitScanFindingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitScanFindingsResponse) ProtoMessage() {}
+
+func (x *SubmitScanFindingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_agents_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitScanFindingsResponse.ProtoReflect.Descriptor instead.
+func (*SubmitScanFindingsResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_agents_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SubmitScanFindingsResponse) GetCreated() int32 {
+	if x != nil {
+		return x.Created
+	}
+	return 0
+}
+
+func (x *SubmitScanFindingsResponse) GetCounted() int32 {
+	if x != nil {
+		return x.Counted
+	}
+	return 0
+}
+
+func (x *SubmitScanFindingsResponse) GetDropped() int32 {
+	if x != nil {
+		return x.Dropped
+	}
+	return 0
+}
+
 var File_pantherclaw_v1_agents_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_agents_proto_rawDesc = "" +
@@ -2074,7 +2258,24 @@ const file_pantherclaw_v1_agents_proto_rawDesc = "" +
 	"page_token\x18\x03 \x01(\tB\x19\xbaH\x16r\x14\x18@2\x10^[A-Za-z0-9_-]*$R\tpageToken\"y\n" +
 	"\x18ListAgentChangesResponse\x125\n" +
 	"\achanges\x18\x01 \x03(\v2\x1b.pantherclaw.v1.AgentChangeR\achanges\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\x86\x02\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x9d\x02\n" +
+	"\vScanFinding\x124\n" +
+	"\x04kind\x18\x01 \x01(\tB \xbaH\x1dr\x1bR\n" +
+	"mcp_serverR\ragent_projectR\x04kind\x12'\n" +
+	"\x03key\x18\x02 \x01(\tB\x15\xbaH\x12r\x102\x0e^[0-9a-f]{64}$R\x03key\x12p\n" +
+	"\n" +
+	"attributes\x18\x03 \x03(\v2+.pantherclaw.v1.ScanFinding.AttributesEntryB#\xbaH \x9a\x01\x1d\x10\x10\"\x12r\x102\x0e^[a-z_]{1,32}$*\x05r\x03\x18\x80\x02R\n" +
+	"attributes\x1a=\n" +
+	"\x0fAttributesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x7f\n" +
+	"\x19SubmitScanFindingsRequest\x12D\n" +
+	"\bfindings\x18\x01 \x03(\v2\x1b.pantherclaw.v1.ScanFindingB\v\xbaH\b\x92\x01\x05\b\x01\x10\xc8\x01R\bfindings\x12\x1c\n" +
+	"\x04host\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x04host\"j\n" +
+	"\x1aSubmitScanFindingsResponse\x12\x18\n" +
+	"\acreated\x18\x01 \x01(\x05R\acreated\x12\x18\n" +
+	"\acounted\x18\x02 \x01(\x05R\acounted\x12\x18\n" +
+	"\adropped\x18\x03 \x01(\x05R\adropped*\x86\x02\n" +
 	"\n" +
 	"AgentState\x12\x1b\n" +
 	"\x17AGENT_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
@@ -2096,7 +2297,7 @@ const file_pantherclaw_v1_agents_proto_rawDesc = "" +
 	"\x1bACTIVITY_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cACTIVITY_STATUS_NO_INSTANCES\x10\x01\x12'\n" +
 	"#ACTIVITY_STATUS_VERIFIED_NO_ACTIONS\x10\x02\x12\x1a\n" +
-	"\x16ACTIVITY_STATUS_ACTIVE\x10\x032\xca\x06\n" +
+	"\x16ACTIVITY_STATUS_ACTIVE\x10\x032\xb7\a\n" +
 	"\fAgentService\x12V\n" +
 	"\vCreateAgent\x12\".pantherclaw.v1.CreateAgentRequest\x1a#.pantherclaw.v1.CreateAgentResponse\x12R\n" +
 	"\bGetAgent\x12\x1f.pantherclaw.v1.GetAgentRequest\x1a .pantherclaw.v1.GetAgentResponse\"\x03\x90\x02\x01\x12X\n" +
@@ -2108,7 +2309,8 @@ const file_pantherclaw_v1_agents_proto_rawDesc = "" +
 	"ClaimAgent\x12!.pantherclaw.v1.ClaimAgentRequest\x1a\".pantherclaw.v1.ClaimAgentResponse\x12Y\n" +
 	"\fSuspendAgent\x12#.pantherclaw.v1.SuspendAgentRequest\x1a$.pantherclaw.v1.SuspendAgentResponse\x12V\n" +
 	"\vRetireAgent\x12\".pantherclaw.v1.RetireAgentRequest\x1a#.pantherclaw.v1.RetireAgentResponse\x12j\n" +
-	"\x10ListAgentChanges\x12'.pantherclaw.v1.ListAgentChangesRequest\x1a(.pantherclaw.v1.ListAgentChangesResponse\"\x03\x90\x02\x01B\xc4\x01\n" +
+	"\x10ListAgentChanges\x12'.pantherclaw.v1.ListAgentChangesRequest\x1a(.pantherclaw.v1.ListAgentChangesResponse\"\x03\x90\x02\x01\x12k\n" +
+	"\x12SubmitScanFindings\x12).pantherclaw.v1.SubmitScanFindingsRequest\x1a*.pantherclaw.v1.SubmitScanFindingsResponseB\xc4\x01\n" +
 	"\x12com.pantherclaw.v1B\vAgentsProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -2124,55 +2326,59 @@ func file_pantherclaw_v1_agents_proto_rawDescGZIP() []byte {
 }
 
 var file_pantherclaw_v1_agents_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_pantherclaw_v1_agents_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_pantherclaw_v1_agents_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_pantherclaw_v1_agents_proto_goTypes = []any{
-	(AgentState)(0),                   // 0: pantherclaw.v1.AgentState
-	(ExecutionContext)(0),             // 1: pantherclaw.v1.ExecutionContext
-	(ActivityStatus)(0),               // 2: pantherclaw.v1.ActivityStatus
-	(*Agent)(nil),                     // 3: pantherclaw.v1.Agent
-	(*Discovery)(nil),                 // 4: pantherclaw.v1.Discovery
-	(*AgentSummary)(nil),              // 5: pantherclaw.v1.AgentSummary
-	(*AgentChange)(nil),               // 6: pantherclaw.v1.AgentChange
-	(*CreateAgentRequest)(nil),        // 7: pantherclaw.v1.CreateAgentRequest
-	(*CreateAgentResponse)(nil),       // 8: pantherclaw.v1.CreateAgentResponse
-	(*GetAgentRequest)(nil),           // 9: pantherclaw.v1.GetAgentRequest
-	(*GetAgentResponse)(nil),          // 10: pantherclaw.v1.GetAgentResponse
-	(*ListAgentsRequest)(nil),         // 11: pantherclaw.v1.ListAgentsRequest
-	(*ListAgentsResponse)(nil),        // 12: pantherclaw.v1.ListAgentsResponse
-	(*UpdateAgentRequest)(nil),        // 13: pantherclaw.v1.UpdateAgentRequest
-	(*UpdateAgentResponse)(nil),       // 14: pantherclaw.v1.UpdateAgentResponse
-	(*TransferOwnershipRequest)(nil),  // 15: pantherclaw.v1.TransferOwnershipRequest
-	(*TransferOwnershipResponse)(nil), // 16: pantherclaw.v1.TransferOwnershipResponse
-	(*ClaimAgentRequest)(nil),         // 17: pantherclaw.v1.ClaimAgentRequest
-	(*ClaimDetails)(nil),              // 18: pantherclaw.v1.ClaimDetails
-	(*ClaimAgentResponse)(nil),        // 19: pantherclaw.v1.ClaimAgentResponse
-	(*SuspendAgentRequest)(nil),       // 20: pantherclaw.v1.SuspendAgentRequest
-	(*SuspendAgentResponse)(nil),      // 21: pantherclaw.v1.SuspendAgentResponse
-	(*RetireAgentRequest)(nil),        // 22: pantherclaw.v1.RetireAgentRequest
-	(*RetireAgentResponse)(nil),       // 23: pantherclaw.v1.RetireAgentResponse
-	(*ListAgentChangesRequest)(nil),   // 24: pantherclaw.v1.ListAgentChangesRequest
-	(*ListAgentChangesResponse)(nil),  // 25: pantherclaw.v1.ListAgentChangesResponse
-	nil,                               // 26: pantherclaw.v1.Discovery.UntrustedObservedEntry
-	nil,                               // 27: pantherclaw.v1.AgentChange.DetailsEntry
-	(*timestamppb.Timestamp)(nil),     // 28: google.protobuf.Timestamp
+	(AgentState)(0),                    // 0: pantherclaw.v1.AgentState
+	(ExecutionContext)(0),              // 1: pantherclaw.v1.ExecutionContext
+	(ActivityStatus)(0),                // 2: pantherclaw.v1.ActivityStatus
+	(*Agent)(nil),                      // 3: pantherclaw.v1.Agent
+	(*Discovery)(nil),                  // 4: pantherclaw.v1.Discovery
+	(*AgentSummary)(nil),               // 5: pantherclaw.v1.AgentSummary
+	(*AgentChange)(nil),                // 6: pantherclaw.v1.AgentChange
+	(*CreateAgentRequest)(nil),         // 7: pantherclaw.v1.CreateAgentRequest
+	(*CreateAgentResponse)(nil),        // 8: pantherclaw.v1.CreateAgentResponse
+	(*GetAgentRequest)(nil),            // 9: pantherclaw.v1.GetAgentRequest
+	(*GetAgentResponse)(nil),           // 10: pantherclaw.v1.GetAgentResponse
+	(*ListAgentsRequest)(nil),          // 11: pantherclaw.v1.ListAgentsRequest
+	(*ListAgentsResponse)(nil),         // 12: pantherclaw.v1.ListAgentsResponse
+	(*UpdateAgentRequest)(nil),         // 13: pantherclaw.v1.UpdateAgentRequest
+	(*UpdateAgentResponse)(nil),        // 14: pantherclaw.v1.UpdateAgentResponse
+	(*TransferOwnershipRequest)(nil),   // 15: pantherclaw.v1.TransferOwnershipRequest
+	(*TransferOwnershipResponse)(nil),  // 16: pantherclaw.v1.TransferOwnershipResponse
+	(*ClaimAgentRequest)(nil),          // 17: pantherclaw.v1.ClaimAgentRequest
+	(*ClaimDetails)(nil),               // 18: pantherclaw.v1.ClaimDetails
+	(*ClaimAgentResponse)(nil),         // 19: pantherclaw.v1.ClaimAgentResponse
+	(*SuspendAgentRequest)(nil),        // 20: pantherclaw.v1.SuspendAgentRequest
+	(*SuspendAgentResponse)(nil),       // 21: pantherclaw.v1.SuspendAgentResponse
+	(*RetireAgentRequest)(nil),         // 22: pantherclaw.v1.RetireAgentRequest
+	(*RetireAgentResponse)(nil),        // 23: pantherclaw.v1.RetireAgentResponse
+	(*ListAgentChangesRequest)(nil),    // 24: pantherclaw.v1.ListAgentChangesRequest
+	(*ListAgentChangesResponse)(nil),   // 25: pantherclaw.v1.ListAgentChangesResponse
+	(*ScanFinding)(nil),                // 26: pantherclaw.v1.ScanFinding
+	(*SubmitScanFindingsRequest)(nil),  // 27: pantherclaw.v1.SubmitScanFindingsRequest
+	(*SubmitScanFindingsResponse)(nil), // 28: pantherclaw.v1.SubmitScanFindingsResponse
+	nil,                                // 29: pantherclaw.v1.Discovery.UntrustedObservedEntry
+	nil,                                // 30: pantherclaw.v1.AgentChange.DetailsEntry
+	nil,                                // 31: pantherclaw.v1.ScanFinding.AttributesEntry
+	(*timestamppb.Timestamp)(nil),      // 32: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_agents_proto_depIdxs = []int32{
 	1,  // 0: pantherclaw.v1.Agent.execution_context:type_name -> pantherclaw.v1.ExecutionContext
 	0,  // 1: pantherclaw.v1.Agent.state:type_name -> pantherclaw.v1.AgentState
 	0,  // 2: pantherclaw.v1.Agent.suspended_from:type_name -> pantherclaw.v1.AgentState
-	28, // 3: pantherclaw.v1.Agent.create_time:type_name -> google.protobuf.Timestamp
-	28, // 4: pantherclaw.v1.Agent.update_time:type_name -> google.protobuf.Timestamp
-	28, // 5: pantherclaw.v1.Agent.claim_time:type_name -> google.protobuf.Timestamp
-	28, // 6: pantherclaw.v1.Agent.retire_time:type_name -> google.protobuf.Timestamp
-	28, // 7: pantherclaw.v1.Discovery.first_seen_time:type_name -> google.protobuf.Timestamp
-	28, // 8: pantherclaw.v1.Discovery.last_seen_time:type_name -> google.protobuf.Timestamp
-	26, // 9: pantherclaw.v1.Discovery.untrusted_observed:type_name -> pantherclaw.v1.Discovery.UntrustedObservedEntry
+	32, // 3: pantherclaw.v1.Agent.create_time:type_name -> google.protobuf.Timestamp
+	32, // 4: pantherclaw.v1.Agent.update_time:type_name -> google.protobuf.Timestamp
+	32, // 5: pantherclaw.v1.Agent.claim_time:type_name -> google.protobuf.Timestamp
+	32, // 6: pantherclaw.v1.Agent.retire_time:type_name -> google.protobuf.Timestamp
+	32, // 7: pantherclaw.v1.Discovery.first_seen_time:type_name -> google.protobuf.Timestamp
+	32, // 8: pantherclaw.v1.Discovery.last_seen_time:type_name -> google.protobuf.Timestamp
+	29, // 9: pantherclaw.v1.Discovery.untrusted_observed:type_name -> pantherclaw.v1.Discovery.UntrustedObservedEntry
 	3,  // 10: pantherclaw.v1.AgentSummary.agent:type_name -> pantherclaw.v1.Agent
 	2,  // 11: pantherclaw.v1.AgentSummary.activity:type_name -> pantherclaw.v1.ActivityStatus
-	28, // 12: pantherclaw.v1.AgentSummary.last_verify_time:type_name -> google.protobuf.Timestamp
+	32, // 12: pantherclaw.v1.AgentSummary.last_verify_time:type_name -> google.protobuf.Timestamp
 	4,  // 13: pantherclaw.v1.AgentSummary.discovery:type_name -> pantherclaw.v1.Discovery
-	27, // 14: pantherclaw.v1.AgentChange.details:type_name -> pantherclaw.v1.AgentChange.DetailsEntry
-	28, // 15: pantherclaw.v1.AgentChange.create_time:type_name -> google.protobuf.Timestamp
+	30, // 14: pantherclaw.v1.AgentChange.details:type_name -> pantherclaw.v1.AgentChange.DetailsEntry
+	32, // 15: pantherclaw.v1.AgentChange.create_time:type_name -> google.protobuf.Timestamp
 	1,  // 16: pantherclaw.v1.CreateAgentRequest.execution_context:type_name -> pantherclaw.v1.ExecutionContext
 	3,  // 17: pantherclaw.v1.CreateAgentResponse.agent:type_name -> pantherclaw.v1.Agent
 	5,  // 18: pantherclaw.v1.GetAgentResponse.summary:type_name -> pantherclaw.v1.AgentSummary
@@ -2186,29 +2392,33 @@ var file_pantherclaw_v1_agents_proto_depIdxs = []int32{
 	3,  // 26: pantherclaw.v1.SuspendAgentResponse.agent:type_name -> pantherclaw.v1.Agent
 	3,  // 27: pantherclaw.v1.RetireAgentResponse.agent:type_name -> pantherclaw.v1.Agent
 	6,  // 28: pantherclaw.v1.ListAgentChangesResponse.changes:type_name -> pantherclaw.v1.AgentChange
-	7,  // 29: pantherclaw.v1.AgentService.CreateAgent:input_type -> pantherclaw.v1.CreateAgentRequest
-	9,  // 30: pantherclaw.v1.AgentService.GetAgent:input_type -> pantherclaw.v1.GetAgentRequest
-	11, // 31: pantherclaw.v1.AgentService.ListAgents:input_type -> pantherclaw.v1.ListAgentsRequest
-	13, // 32: pantherclaw.v1.AgentService.UpdateAgent:input_type -> pantherclaw.v1.UpdateAgentRequest
-	15, // 33: pantherclaw.v1.AgentService.TransferOwnership:input_type -> pantherclaw.v1.TransferOwnershipRequest
-	17, // 34: pantherclaw.v1.AgentService.ClaimAgent:input_type -> pantherclaw.v1.ClaimAgentRequest
-	20, // 35: pantherclaw.v1.AgentService.SuspendAgent:input_type -> pantherclaw.v1.SuspendAgentRequest
-	22, // 36: pantherclaw.v1.AgentService.RetireAgent:input_type -> pantherclaw.v1.RetireAgentRequest
-	24, // 37: pantherclaw.v1.AgentService.ListAgentChanges:input_type -> pantherclaw.v1.ListAgentChangesRequest
-	8,  // 38: pantherclaw.v1.AgentService.CreateAgent:output_type -> pantherclaw.v1.CreateAgentResponse
-	10, // 39: pantherclaw.v1.AgentService.GetAgent:output_type -> pantherclaw.v1.GetAgentResponse
-	12, // 40: pantherclaw.v1.AgentService.ListAgents:output_type -> pantherclaw.v1.ListAgentsResponse
-	14, // 41: pantherclaw.v1.AgentService.UpdateAgent:output_type -> pantherclaw.v1.UpdateAgentResponse
-	16, // 42: pantherclaw.v1.AgentService.TransferOwnership:output_type -> pantherclaw.v1.TransferOwnershipResponse
-	19, // 43: pantherclaw.v1.AgentService.ClaimAgent:output_type -> pantherclaw.v1.ClaimAgentResponse
-	21, // 44: pantherclaw.v1.AgentService.SuspendAgent:output_type -> pantherclaw.v1.SuspendAgentResponse
-	23, // 45: pantherclaw.v1.AgentService.RetireAgent:output_type -> pantherclaw.v1.RetireAgentResponse
-	25, // 46: pantherclaw.v1.AgentService.ListAgentChanges:output_type -> pantherclaw.v1.ListAgentChangesResponse
-	38, // [38:47] is the sub-list for method output_type
-	29, // [29:38] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	31, // 29: pantherclaw.v1.ScanFinding.attributes:type_name -> pantherclaw.v1.ScanFinding.AttributesEntry
+	26, // 30: pantherclaw.v1.SubmitScanFindingsRequest.findings:type_name -> pantherclaw.v1.ScanFinding
+	7,  // 31: pantherclaw.v1.AgentService.CreateAgent:input_type -> pantherclaw.v1.CreateAgentRequest
+	9,  // 32: pantherclaw.v1.AgentService.GetAgent:input_type -> pantherclaw.v1.GetAgentRequest
+	11, // 33: pantherclaw.v1.AgentService.ListAgents:input_type -> pantherclaw.v1.ListAgentsRequest
+	13, // 34: pantherclaw.v1.AgentService.UpdateAgent:input_type -> pantherclaw.v1.UpdateAgentRequest
+	15, // 35: pantherclaw.v1.AgentService.TransferOwnership:input_type -> pantherclaw.v1.TransferOwnershipRequest
+	17, // 36: pantherclaw.v1.AgentService.ClaimAgent:input_type -> pantherclaw.v1.ClaimAgentRequest
+	20, // 37: pantherclaw.v1.AgentService.SuspendAgent:input_type -> pantherclaw.v1.SuspendAgentRequest
+	22, // 38: pantherclaw.v1.AgentService.RetireAgent:input_type -> pantherclaw.v1.RetireAgentRequest
+	24, // 39: pantherclaw.v1.AgentService.ListAgentChanges:input_type -> pantherclaw.v1.ListAgentChangesRequest
+	27, // 40: pantherclaw.v1.AgentService.SubmitScanFindings:input_type -> pantherclaw.v1.SubmitScanFindingsRequest
+	8,  // 41: pantherclaw.v1.AgentService.CreateAgent:output_type -> pantherclaw.v1.CreateAgentResponse
+	10, // 42: pantherclaw.v1.AgentService.GetAgent:output_type -> pantherclaw.v1.GetAgentResponse
+	12, // 43: pantherclaw.v1.AgentService.ListAgents:output_type -> pantherclaw.v1.ListAgentsResponse
+	14, // 44: pantherclaw.v1.AgentService.UpdateAgent:output_type -> pantherclaw.v1.UpdateAgentResponse
+	16, // 45: pantherclaw.v1.AgentService.TransferOwnership:output_type -> pantherclaw.v1.TransferOwnershipResponse
+	19, // 46: pantherclaw.v1.AgentService.ClaimAgent:output_type -> pantherclaw.v1.ClaimAgentResponse
+	21, // 47: pantherclaw.v1.AgentService.SuspendAgent:output_type -> pantherclaw.v1.SuspendAgentResponse
+	23, // 48: pantherclaw.v1.AgentService.RetireAgent:output_type -> pantherclaw.v1.RetireAgentResponse
+	25, // 49: pantherclaw.v1.AgentService.ListAgentChanges:output_type -> pantherclaw.v1.ListAgentChangesResponse
+	28, // 50: pantherclaw.v1.AgentService.SubmitScanFindings:output_type -> pantherclaw.v1.SubmitScanFindingsResponse
+	41, // [41:51] is the sub-list for method output_type
+	31, // [31:41] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_agents_proto_init() }
@@ -2230,7 +2440,7 @@ func file_pantherclaw_v1_agents_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_agents_proto_rawDesc), len(file_pantherclaw_v1_agents_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   25,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

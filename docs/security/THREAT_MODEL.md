@@ -152,6 +152,8 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | R-12 | Public source can be copied | Business choice | BSL, private enterprise repo, signed roots, detection |
 | R-13 | Device-code phishing: a person can be talked into confirming a code someone else started, giving that CLI their session | Device flow is the only browserless CLI login (ADR-0016) | Confirmation page shows device name, address and time with an explicit warning; same-origin POST; 10-minute codes, 5 attempts; each session is tied to the requesting device key, audited (`authn.login`) and revocable (logout, user disable) |
 | R-14 | A local attacker who copies `credentials.json` gets the CLI session (the device key is in the same file) | Founder decision 4 (ADR-0016): private file now, OS keychain later | Mode 0600 in the user profile; 15-minute access tokens; 8-hour absolute sessions; refresh rotation with reuse detection; immediate server-side revocation |
+| R-15 | The Kubernetes reviewer credential (TokenReview and pod reads) is read when the server starts; a rotated token needs a restart | M3 keeps cluster access in operator configuration (founder decision 3) | Least-privilege RBAC from the workload-identity runbook (TokenReview plus `get` on pods in pinned namespaces); short-lived reviewer tokens; any failed cluster call refuses the attestation (fail closed) |
+| R-16 | Before verification, an attestation's audience picks which org's nonce and replay store a request uses | Enrollment without an enrollment token must find the org from the attestation (PAP-1 §3.2) | The verified audience must name the same org (HR-143); the proof is checked against that org's live nonces; a mismatch only costs one refused request |
 
 ## 9. Change log
 
