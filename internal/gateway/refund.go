@@ -23,6 +23,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
@@ -42,15 +43,16 @@ var chargePattern = regexp.MustCompile(`^ch_[A-Za-z0-9]{1,64}$`)
 
 // Gateway serves the walking-skeleton route.
 type Gateway struct {
-	org       string
-	run       func(ctx context.Context) error
-	authority pantherclawv1connect.AuthorityServiceClient
-	permits   *permitVerifier
-	egress    *http.Client
-	target    *url.URL
-	publicURL string
-	nonces    nonces
-	log       *slog.Logger
+	org         string
+	run         []func(ctx context.Context) error
+	containment Containment
+	authority   pantherclawv1connect.AuthorityServiceClient
+	permits     *permitVerifier
+	egress      *http.Client
+	target      *url.URL
+	publicURL   string
+	nonces      nonces
+	log         *slog.Logger
 }
 
 // Handler returns the gateway's HTTP handler.
@@ -94,9 +96,24 @@ func (t *timings) lap(w http.ResponseWriter, name string) {
 	t.mark = now
 }
 
+// refuseContained answers when containment forbids dispatch (HR-010): a
+// stale view or a revoked gateway cannot enforce (503); the kill switch is
+// a decision of the org (403).
+func refuseContained(w http.ResponseWriter, err error) {
+	status := http.StatusServiceUnavailable
+	if errors.Is(err, control.ErrKillSwitch) {
+		status = http.StatusForbidden
+	}
+	reply(w, status, result{Error: err.Error()})
+}
+
 func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 	t := timings{start: time.Now(), mark: time.Now()}
 	ctx := r.Context()
+	if _, err := g.containment.Check(); err != nil {
+		refuseContained(w, err)
+		return
+	}
 	// The raw body is hashed before anything parses it (HR-091).
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
 	if err != nil || len(body) > 64<<10 {
@@ -192,6 +209,16 @@ func (g *Gateway) refund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.lap(w, "verify")
+	// Containment may have changed while the Authority decided: a permit
+	// from an older epoch, or a view gone stale, dispatches nothing.
+	// BeginDispatch stays the authoritative check (HR-001).
+	if epoch, err := g.containment.Check(); err != nil {
+		refuseContained(w, err)
+		return
+	} else if want.Epoch < epoch {
+		reply(w, http.StatusConflict, result{Error: "dispatch_refused", Reasons: []string{"EPOCH_STALE"}, TransactionID: want.Txn})
+		return
+	}
 	if _, err := g.authority.BeginDispatch(ctx, &pb.BeginDispatchRequest{PermitId: want.PermitID, Epoch: want.Epoch}); err != nil {
 		reply(w, http.StatusConflict, result{Error: "dispatch_refused", Reasons: []string{connect.CodeOf(err).String()}, TransactionID: want.Txn})
 		return

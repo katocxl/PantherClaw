@@ -213,17 +213,48 @@ func (s authSnap) outcome() pb.Outcome {
 }
 
 type harness struct {
-	auth   *fakeAuthority
-	target *fakeTarget
-	gw     *Gateway
-	url    string
+	auth        *fakeAuthority
+	target      *fakeTarget
+	containment *fakeContainment
+	gw          *Gateway
+	url         string
 }
+
+// fakeContainment is a containment view the test sets.
+type fakeContainment struct {
+	mu    sync.Mutex
+	epoch int64
+	err   error
+	ready chan struct{}
+	// after, when set, applies once the first check passed (containment
+	// changing while the Authority decides).
+	after func(*fakeContainment)
+}
+
+func newFakeContainment() *fakeContainment {
+	ready := make(chan struct{})
+	close(ready)
+	return &fakeContainment{epoch: 1, ready: ready}
+}
+
+func (f *fakeContainment) Check() (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, err := f.epoch, f.err
+	if f.after != nil && err == nil {
+		f.after(f)
+		f.after = nil
+	}
+	return e, err
+}
+
+func (f *fakeContainment) Ready() <-chan struct{} { return f.ready }
 
 // setup starts the fakes and the gateway; opts configure the fakes before
 // any server goroutine starts.
 func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 	t.Helper()
-	h := &harness{auth: newFakeAuthority(t), target: &fakeTarget{status: http.StatusOK}}
+	h := &harness{auth: newFakeAuthority(t), target: &fakeTarget{status: http.StatusOK}, containment: newFakeContainment()}
 	for _, o := range opts {
 		o(h)
 	}
@@ -260,7 +291,7 @@ func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 	h.gw, err = newGateway(&cfg, Deps{
 		Org: testOrg, GatewayID: "gw-test",
 		Authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(hc, as.URL))),
-		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc,
+		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc, Containment: h.containment,
 	}, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)

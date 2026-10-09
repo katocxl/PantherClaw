@@ -210,7 +210,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
-	m6, err := newM6(cfg, pool, reg)
+	m6, err := newM6(cfg, pool, reg, log)
 	if err != nil {
 		return err
 	}

@@ -69,7 +69,7 @@ func newM6Env(t *testing.T) *m6Env {
 	}
 	cfg := DefaultConfig()
 	cfg.GatewayAPI = GatewayAPIConfig{Addr: ln.Addr().String(), Hostnames: []string{"127.0.0.1"}, URL: "https://" + ln.Addr().String()}
-	m6, err := newM6(&cfg, pool, reg)
+	m6, err := newM6(&cfg, pool, reg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +195,74 @@ func TestHR181_TheGatewayListenerAcceptsOnlyLiveGatewayCertificates(t *testing.T
 // the gateway listener runs as the certificate's gateway and org (the
 // Authority answers, so authentication passed), and refuses a client
 // without one.
+// TestHR010_TheContainmentStreamSendsASnapshotThenChanges: over the mTLS
+// listener a gateway gets a snapshot first, an epoch change within a
+// second, heartbeats while nothing changes, and its own revocation.
+func TestHR010_TheContainmentStreamSendsASnapshotThenChanges(t *testing.T) {
+	e := newM6Env(t)
+	cert, gw := e.identity(t, "edge")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	hc := e.client(cert)
+	st, err := hc.WatchContainment(ctx, &pantherclawv1.WatchContainmentRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	recv := func() *pantherclawv1.WatchContainmentResponse {
+		t.Helper()
+		m, err := st.Receive()
+		if err != nil {
+			t.Fatalf("receive: %v", err)
+		}
+		return m
+	}
+	first := recv()
+	if first.GetKind() != pantherclawv1.ContainmentStateKind_CONTAINMENT_STATE_KIND_SNAPSHOT || !first.GetGatewayActive() {
+		t.Fatalf("first message %v", first)
+	}
+	if hb := recv(); hb.GetKind() != pantherclawv1.ContainmentStateKind_CONTAINMENT_STATE_KIND_HEARTBEAT || hb.GetEpoch() != first.GetEpoch() {
+		t.Fatalf("expected a heartbeat, got %v", hb)
+	}
+	if err := e.pool.InTenantTx(ctx, e.org, func(ctx context.Context, tx db.TenantTx) error {
+		if _, err := tx.Exec(ctx, "INSERT INTO pc.org_containment (org_id) VALUES ($1) ON CONFLICT DO NOTHING", e.org); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "UPDATE pc.org_containment SET epoch = epoch + 5 WHERE org_id = $1", e.org)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for {
+		m := recv()
+		if m.GetEpoch() > first.GetEpoch() {
+			if m.GetKind() != pantherclawv1.ContainmentStateKind_CONTAINMENT_STATE_KIND_CHANGE {
+				t.Fatalf("an epoch change sent as %v", m.GetKind())
+			}
+			break
+		}
+		if time.Since(start) > time.Second {
+			t.Fatal("the epoch change took more than a second")
+		}
+	}
+	if _, err := e.m6.gateways.RevokeGateway(e.admin, gw, "lost"); err != nil {
+		t.Fatal(err)
+	}
+	for start = time.Now(); ; {
+		m, err := st.Receive()
+		if err != nil {
+			break // the stream may end once the revoked certificate is refused
+		}
+		if !m.GetGatewayActive() {
+			break
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Fatal("the revocation did not reach the stream")
+		}
+	}
+}
+
 func TestHR020_TheAuthoritySeesTheOrgOfTheCertificate(t *testing.T) {
 	e := newM6Env(t)
 	cert, _ := e.identity(t, "edge")

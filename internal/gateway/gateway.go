@@ -6,15 +6,27 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 )
+
+// Containment is the gateway's view of its org's containment (HR-010):
+// control.Containment, fed by the WatchContainment stream.
+type Containment interface {
+	// Check reports whether dispatch is allowed now, with the current epoch.
+	Check() (int64, error)
+	// Ready closes when the first snapshot arrived.
+	Ready() <-chan struct{}
+}
 
 // Deps are what the gateway takes from the control plane. New builds them
 // over mutual TLS from the gateway's identity; tests build them directly.
@@ -25,10 +37,12 @@ type Deps struct {
 	Authority pantherclawv1connect.AuthorityServiceClient
 	// JWKSURL and JWKSClient fetch the permit keys (from the gateway
 	// listener, over mTLS).
-	JWKSURL    string
-	JWKSClient *http.Client
-	// Run is background work (certificate renewal); nil for none.
-	Run func(ctx context.Context) error
+	JWKSURL     string
+	JWKSClient  *http.Client
+	Containment Containment
+	// Run is background work (certificate renewal, the containment stream);
+	// nil for none.
+	Run []func(ctx context.Context) error
 }
 
 // New builds a Gateway for an enrolled identity.
@@ -37,14 +51,16 @@ func New(cfg *Config, id *control.Identity, log *slog.Logger) (*Gateway, error) 
 		return nil, err
 	}
 	ctl := control.NewClient(id, cfg.Control.IdentityDir, cfg.Control.GatewayURL, cfg.Control.Timeout.D(), log)
+	k := control.NewContainment(ctl, log)
 	return newGateway(cfg, Deps{
 		Org: id.Org.String(), GatewayID: id.Gateway.String(), Authority: ctl.Authority,
-		JWKSURL: ctl.BaseURL() + "/.well-known/pantherclaw/jwks.json", JWKSClient: ctl.HTTPClient(), Run: ctl.Run,
+		JWKSURL: ctl.BaseURL() + "/.well-known/pantherclaw/jwks.json", JWKSClient: ctl.HTTPClient(),
+		Containment: k, Run: []func(context.Context) error{ctl.Run, k.Run},
 	}, log)
 }
 
 func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
-	if d.Org == "" || d.GatewayID == "" || d.Authority == nil || d.JWKSClient == nil {
+	if d.Org == "" || d.GatewayID == "" || d.Authority == nil || d.JWKSClient == nil || d.Containment == nil {
 		return nil, errors.New("gateway: incomplete control-plane dependencies")
 	}
 	target, err := baseURL(cfg.Target.URL)
@@ -56,7 +72,7 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 		return nil, err
 	}
 	return &Gateway{
-		org: d.Org, authority: d.Authority, run: d.Run,
+		org: d.Org, authority: d.Authority, run: d.Run, containment: d.Containment,
 		permits:   newPermitVerifier(d.JWKSURL, d.JWKSClient, d.GatewayID, d.Org),
 		egress:    httpx.NewEgressClient(httpx.EgressConfig{Timeout: cfg.Target.Timeout.D(), AllowedPrefixes: prefixes}),
 		target:    target,
@@ -67,13 +83,25 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 
 // Run does the gateway's background work until ctx ends.
 func (g *Gateway) Run(ctx context.Context) error {
-	if g.run == nil {
-		<-ctx.Done()
-		return nil
+	eg, ctx := errgroup.WithContext(ctx)
+	for _, f := range g.run {
+		eg.Go(func() error { return f(ctx) })
 	}
-	return g.run(ctx)
+	eg.Go(func() error { <-ctx.Done(); return nil })
+	return eg.Wait()
 }
 
-// WaitReady returns when the gateway may serve. (The containment snapshot
-// arrives in a later slice; until then the gateway is ready at once.)
-func (g *Gateway) WaitReady(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+// WaitReady returns once the first containment snapshot arrived: the
+// gateway serves nothing before (HR-010).
+func (g *Gateway) WaitReady(ctx context.Context, timeout time.Duration) error {
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-g.containment.Ready():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return fmt.Errorf("gateway: no containment snapshot from the server within %s", timeout)
+	}
+}

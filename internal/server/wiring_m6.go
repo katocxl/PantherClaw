@@ -37,14 +37,18 @@ type m6Services struct {
 	reg      *keys.Registry
 	ca       *ca.Authority
 	gateways *gwapp.Service
+	// hub feeds the containment streams (HR-010).
+	hub *gwapp.Hub
 }
 
-func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry) (*m6Services, error) {
+func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry, log *slog.Logger) (*m6Services, error) {
 	authority, err := ca.New(reg)
 	if err != nil {
 		return nil, err
 	}
-	return &m6Services{reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{})}, nil
+	return &m6Services{
+		reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{}), hub: gwapp.NewHub(pool, log),
+	}, nil
 }
 
 // registerPublic adds gateway administration and gateway enrollment to the
@@ -67,7 +71,7 @@ func (m *m6Services) gatewayHandler(svc *authority.Service, log *slog.Logger) (h
 		return nil, err
 	}
 	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
-	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
+	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways).WithHub(m.hub))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	// Gateways verify permits with the JWKS, fetched here over mTLS.
@@ -81,7 +85,7 @@ func (m *m6Services) gatewayHandler(svc *authority.Service, log *slog.Logger) (h
 		w.Header().Set("Cache-Control", "private, max-age=60")
 		_, _ = w.Write(b)
 	})
-	return gatewaysrpc.TLSIdentity(mux), nil
+	return gatewaysrpc.TLSIdentity(gatewaysrpc.StreamDeadlines(mux)), nil
 }
 
 // listenerCerts serves the gateway listener's own certificate from the
@@ -162,6 +166,8 @@ func (m *m6Services) serveGateways(ctx context.Context, g *errgroup.Group, cfg *
 		}
 		return nil
 	})
+	// The containment streams' early wake-ups; stopping it ends the streams.
+	g.Go(func() error { return m.hub.Run(ctx) })
 	g.Go(func() error {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
