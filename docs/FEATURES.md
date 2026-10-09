@@ -44,7 +44,7 @@ Milestone numbers are identifiers, not delivery order. Delivery order ([ADR-0017
 
 **Component**
 
-Every pillar belongs to one of seven product components (Agent Identity, Task Access, Policy & Limits, Agent Firewall, Credential Custody, Detect & Respond, Proof) or to the Platform. Each pillar heading names its component. The components are how PantherClaw is explained and sold; they change no behaviour. See [PRODUCT.md](PRODUCT.md).
+Every pillar belongs to one of seven product components (Badge, Pass, Guardrails, Checkpoint, Stash, Reflex, Trail) or to Root, the platform. Each pillar heading names its component. The components are how PantherClaw is explained and sold; they change no behaviour. See [PRODUCT.md](PRODUCT.md).
 
 **IDs**
 
@@ -85,7 +85,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 1. Agent Inventory
 
-**Component:** Agent Identity.
+**Component:** Badge.
 
 **Why customers buy this:** You cannot govern agents you cannot name. PantherClaw keeps one accountable record per agent (owner, purpose, environment, authority and open issues), so every action traces back to someone responsible.
 
@@ -103,7 +103,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 2. Discovery (shadow agents)
 
-**Component:** Agent Identity (credential-reach findings, F048, are shown under Credential Custody).
+**Component:** Badge (credential-reach findings, F048, are shown under Stash).
 
 **Why customers buy this:** Much agent risk sits in agents nobody registered. Discovery finds MCP configs, agent frameworks, CI workflows and stray keys on developer machines and in GitHub. It queues each finding for an owner before that agent can hold governed authority.
 
@@ -121,7 +121,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 3. Lifecycle
 
-**Component:** Agent Identity.
+**Component:** Badge.
 
 **Why customers buy this:** Agents get promoted, suspended and retired, and authority must follow those changes instead of lingering. Lifecycle states make every transition explicit and attributable, and a suspended agent can resume only through governed restoration.
 
@@ -141,7 +141,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 4. Identity & Authority Protocol (PAP/1)
 
-**Component:** Agent Identity.
+**Component:** Badge.
 
 **Why customers buy this:** Model names, display names and shared API keys are not identity. PAP/1 proves which workload instance is acting, for whom and in which run, using bound keys that resist replay. It is an open spec, so targets and auditors can verify it themselves.
 
@@ -166,13 +166,13 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 5. Authorization (task grants & policy)
 
-**Components:** Task Access (5A), Policy & Limits (5B, 5C) and Platform (5D).
+**Components:** Pass (5A), Guardrails (5B, 5C) and Root (platform, 5D).
 
 **Why customers buy this:** Agents should hold exactly the authority a task needs, for as long as it needs it. Task grants, inherited guardrails and a deterministic CEL policy engine decide every covered action and explain exactly why. This pillar is the authority core, so it is split into four sub-tables.
 
 ### 5A. Task grants & delegation
 
-**Component:** Task Access.
+**Component:** Pass.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -188,7 +188,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 5B. Decision pipeline & policy engine
 
-**Component:** Policy & Limits.
+**Component:** Guardrails.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -206,7 +206,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 5C. Policy lifecycle
 
-**Component:** Policy & Limits.
+**Component:** Guardrails.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -226,7 +226,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 5D. Governed automations
 
-**Component:** Platform.
+**Component:** Root (platform).
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -246,13 +246,13 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 6. Non-bypassable Transaction Boundary
 
-**Components:** Agent Firewall (6A, 6C, 6D) and Credential Custody (6B).
+**Components:** Checkpoint (6A, 6C, 6D) and Stash (6B).
 
 **Why customers buy this:** A decision only matters if the action cannot route around it. The gateway holds credentials, re-serialises exactly what was authorized and commits dispatch on the server side. Anything it cannot mediate is labelled as partial coverage rather than counted as protected.
 
 ### 6A. Gateway & dispatch
 
-**Component:** Agent Firewall.
+**Component:** Checkpoint.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -275,7 +275,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 6B. Credential custody
 
-**Component:** Credential Custody.
+**Component:** Stash.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -287,7 +287,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 6C. Connections & connectors
 
-**Component:** Agent Firewall.
+**Component:** Checkpoint.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -300,7 +300,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ### 6D. Reviewed tool packages & action meaning (ActionIR)
 
-**Component:** Agent Firewall.
+**Component:** Checkpoint.
 
 | ID | Feature | What the backend delivers | Phase | Edition | Milestone | Source |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -316,7 +316,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 7. Agent Waitlist
 
-**Component:** Task Access.
+**Component:** Pass.
 
 **Why customers buy this:** Some decisions need a human, and agents need a predictable way to wait for them. The Agent Waitlist puts every pending decision into one deadline-driven queue with cryptographically bound approvals: admissions, access requests, held actions, tool reviews, restorations and reconciliations.
 
@@ -345,7 +345,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 8. Agent Controls (budgets, limits, sequences, constraints)
 
-**Component:** Policy & Limits.
+**Component:** Guardrails.
 
 **Why customers buy this:** Per-call checks miss damage done in aggregate. Budgets, counts, rates, sequences and safe constraints bound what an agent can do across a task, a run tree or a time period, without race conditions.
 
@@ -365,7 +365,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 9. Sessions (runs)
 
-**Component:** Detect & Respond.
+**Component:** Reflex.
 
 **Why customers buy this:** Runs are where intent becomes action. The session record shows a run end to end (task, authority, decisions, approvals, budget and effects) without needing transcripts or the model's reasoning.
 
@@ -387,7 +387,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 10. Containment
 
-**Component:** Detect & Respond (the containment sandbox, PN-008.1, is sold with Agent Firewall).
+**Component:** Reflex (the containment sandbox, PN-008.1, is sold with Checkpoint).
 
 **Why customers buy this:** When something goes wrong, responders need narrow, fast, confirmed stops, plus a big red button for the whole org. Containment ranges from denying one action to an org-wide kill switch. It tracks confirmation path by path instead of assuming success.
 
@@ -414,7 +414,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 11. Monitoring
 
-**Component:** Detect & Respond.
+**Component:** Reflex.
 
 **Why customers buy this:** Security teams need signal, not call logs. Monitoring surfaces what needs attention, with freshness and gaps made explicit. New routes run in monitor mode first, and the event stream feeds the customer's SIEM.
 
@@ -437,7 +437,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 12. Threat Detection
 
-**Component:** Detect & Respond.
+**Component:** Reflex.
 
 **Why customers buy this:** Agent attacks look like legitimate tool use until you see the sequence. Detections over decisions, dispatches and tool definitions catch tool poisoning, rug pulls, exfiltration patterns and authority abuse, mapped to MITRE ATLAS and the OWASP agentic risks.
 
@@ -455,7 +455,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 13. Investigation
 
-**Component:** Detect & Respond.
+**Component:** Reflex.
 
 **Why customers buy this:** After an alert, teams must answer what happened, under whose authority, and what else is affected. Investigation turns any action into an evidence-linked case, backed by permission-safe search and graph data.
 
@@ -480,7 +480,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 14. Breach Radius
 
-**Component:** Detect & Respond.
+**Component:** Reflex.
 
 **Why customers buy this:** Before and during an incident, the question is how far an agent could reach. Breach radius separates what actually happened, what grants allow, and what raw credentials allow, and it drives remediation.
 
@@ -500,7 +500,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 15. Proof (evidence)
 
-**Component:** Proof.
+**Component:** Trail.
 
 **Why customers buy this:** Auditors, insurers and incident reviewers need evidence that stands on its own. Linked signed receipts, a transparency-anchored chain and offline verification prove what was decided, dispatched and observed, and each states its own limits.
 
@@ -533,7 +533,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 16. Coverage & Bypass Resistance
 
-**Component:** Agent Firewall.
+**Component:** Checkpoint.
 
 **Why customers buy this:** A firewall that can be bypassed is just a log. Coverage records prove, per workload, target and effect, whether every equivalent route is mediated, and they downgrade automatically when that proof expires.
 
@@ -557,7 +557,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 17. Adversarial Sandbox
 
-**Component:** Proof.
+**Component:** Trail.
 
 **Why customers buy this:** Customers need to know their configuration holds before an attacker tests it. The adversarial range runs realistic agent attacks against the tenant's real policies on simulated targets, and gates CI on regressions.
 
@@ -573,7 +573,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 18. Deployments
 
-**Component:** Platform.
+**Component:** Root (platform).
 
 **Why customers buy this:** Buyers differ on where control and credentials may live. PantherClaw runs self-hosted, with a customer-run gateway, hybrid or as SaaS, and it tracks where each agent is actually deployed.
 
@@ -592,7 +592,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 19. Performance
 
-**Component:** Platform.
+**Component:** Root (platform).
 
 **Why customers buy this:** Authorization in the hot path has to be fast enough that teams leave it switched on. PantherClaw publishes and tests its latency, propagation and concurrency SLOs, and defines safe degraded behaviour.
 
@@ -607,7 +607,7 @@ Every pillar belongs to one of seven product components (Agent Identity, Task Ac
 
 ## 20. Management (teams, admin, commercial, installation)
 
-**Component:** Platform.
+**Component:** Root (platform).
 
 **Why customers buy this:** Adoption depends on installing in minutes and administering at scale. Management covers tenancy, roles, licensing, metering, support access and onboarding, plus the API contract the later UI will build on.
 
@@ -664,27 +664,27 @@ These boundaries constrain every pillar above. A feature request that conflicts 
 
 | Sales term | Component | Pillar | Anchor features | Claim boundary |
 | --- | --- | --- | --- | --- |
-| Inventory of agents | Agent Identity | 1 | F003, F016, F017, PN-010.5 | Covers discovered and enrolled agents only |
-| Effortless installation | Platform | 20 | PN-012.6, PN-010.1, F322, F325 | The 30-minute target is measured, not guaranteed |
-| Lifecycle | Agent Identity | 3 | F020, F023, F563 | Restoring is a governed action, never automatic |
-| Agent controls | Policy & Limits | 8 | F110, F114, F120, F104 | Enforced on mediated routes |
-| Discovery | Agent Identity | 2 | PN-001.1, PN-001.2, F015 | "Not observed" is not "absent" |
-| Containment | Detect & Respond | 10 | PN-005, F547, F288, PN-008.1 | Confirmed per path; in-flight requests complete |
-| Monitoring | Detect & Respond | 11 | PN-013, F211, F215, PN-018 | Monitor mode never claims prevention |
-| Threat detection | Detect & Respond | 12 | PN-006.1–PN-006.5 | Detections are inference, labelled as such |
-| Authorisation | Task Access, Policy & Limits | 5 | F038, F081, F092, F179 | Decisions apply to covered actions |
-| Investigation | Detect & Respond | 13 | F237, F244, F306 | Answers link to evidence or are not given |
-| Concrete identity & authority protocol | Agent Identity | 4 | PN-002.1–PN-002.8 | Attestation level is always stated |
-| Non-bypassable transaction boundary | Agent Firewall, Credential Custody | 6 | PN-003.1–PN-003.5, PN-015.1, F416 | Only where pillar 16 shows `ENFORCED` |
-| Proof | Proof | 15 | PN-007.1–PN-007.4, F461 | Integrity ≠ completeness ≠ business effect |
-| Breach radius | Detect & Respond | 14 | F253, F256, F262 | Possible reach is kept separate from observed impact |
-| Waitlist | Task Access | 7 | PN-004.1–PN-004.5, PN-020.1 | Expiry means deny |
-| Deployed | Platform | 18 | PN-010.1–PN-010.7 | Hybrid and SaaS are post-1.0 |
-| Session | Detect & Respond | 9 | F224, F284, PN-002.5 | No transcripts required |
-| Performance | Platform | 19 | PN-011.1–PN-011.5 | SLOs are published with their test conditions |
-| Management | Platform | 20 | PN-012.1–PN-012.5, F573, F581 | Licence expiry never disables enforcement |
-| Bypass-resistant enforcement | Agent Firewall | 16 (with 6, 10) | F435, F443, PN-008.2 | Per route, with current, expiring evidence |
-| Adversarial sandbox | Proof | 17 | PN-009.1–PN-009.5 | Simulated targets only; separate from the containment sandbox (PN-008) |
+| Inventory of agents | Badge | 1 | F003, F016, F017, PN-010.5 | Covers discovered and enrolled agents only |
+| Effortless installation | Root | 20 | PN-012.6, PN-010.1, F322, F325 | The 30-minute target is measured, not guaranteed |
+| Lifecycle | Badge | 3 | F020, F023, F563 | Restoring is a governed action, never automatic |
+| Agent controls | Guardrails | 8 | F110, F114, F120, F104 | Enforced on mediated routes |
+| Discovery | Badge | 2 | PN-001.1, PN-001.2, F015 | "Not observed" is not "absent" |
+| Containment | Reflex | 10 | PN-005, F547, F288, PN-008.1 | Confirmed per path; in-flight requests complete |
+| Monitoring | Reflex | 11 | PN-013, F211, F215, PN-018 | Monitor mode never claims prevention |
+| Threat detection | Reflex | 12 | PN-006.1–PN-006.5 | Detections are inference, labelled as such |
+| Authorisation | Pass, Guardrails | 5 | F038, F081, F092, F179 | Decisions apply to covered actions |
+| Investigation | Reflex | 13 | F237, F244, F306 | Answers link to evidence or are not given |
+| Concrete identity & authority protocol | Badge | 4 | PN-002.1–PN-002.8 | Attestation level is always stated |
+| Non-bypassable transaction boundary | Checkpoint, Stash | 6 | PN-003.1–PN-003.5, PN-015.1, F416 | Only where pillar 16 shows `ENFORCED` |
+| Proof | Trail | 15 | PN-007.1–PN-007.4, F461 | Integrity ≠ completeness ≠ business effect |
+| Breach radius | Reflex | 14 | F253, F256, F262 | Possible reach is kept separate from observed impact |
+| Waitlist | Pass | 7 | PN-004.1–PN-004.5, PN-020.1 | Expiry means deny |
+| Deployed | Root | 18 | PN-010.1–PN-010.7 | Hybrid and SaaS are post-1.0 |
+| Session | Reflex | 9 | F224, F284, PN-002.5 | No transcripts required |
+| Performance | Root | 19 | PN-011.1–PN-011.5 | SLOs are published with their test conditions |
+| Management | Root | 20 | PN-012.1–PN-012.5, F573, F581 | Licence expiry never disables enforcement |
+| Bypass-resistant enforcement | Checkpoint | 16 (with 6, 10) | F435, F443, PN-008.2 | Per route, with current, expiring evidence |
+| Adversarial sandbox | Trail | 17 | PN-009.1–PN-009.5 | Simulated targets only; separate from the containment sandbox (PN-008) |
 
 ## Traceability
 

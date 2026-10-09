@@ -66,7 +66,7 @@ Rules for the AI implementer:
 
 **Twenty commercial pillars** ([FEATURES.md](FEATURES.md)): Inventory · Discovery · Lifecycle · Identity & Authority Protocol · Authorization · Non-bypassable Transaction Boundary · Agent Waitlist · Agent Controls · Sessions · Containment · Monitoring · Threat Detection · Investigation · Breach Radius · Proof · Coverage & Bypass Resistance · Adversarial Sandbox · Deployments · Performance · Management.
 
-**Seven product components** ([PRODUCT.md](PRODUCT.md)), the way buyers see the pillars: Agent Identity · Task Access · Policy & Limits · Agent Firewall · Credential Custody · Detect & Respond · Proof, on a shared Platform.
+**Seven product components** ([PRODUCT.md](PRODUCT.md)), the way buyers see the pillars: **Badge** (know every agent) · **Pass** (grant temporary access) · **Guardrails** (set the boundaries) · **Checkpoint** (control every action) · **Stash** (keep credentials safe) · **Reflex** (stop threats) · **Trail** (prove what happened), on **Root**, the platform (manage it all).
 
 **First market** ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)): coding and DevOps agents. The v0.1.0 preview proves enforced coverage for a coding agent ("three routes, three stops"); refunds stay the engine's test harness and become the second market.
 

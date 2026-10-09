@@ -8,15 +8,16 @@ PantherClaw gives every AI agent a verified identity, only the access its curren
 
 ## What's inside
 
-| Component | What it does |
-|---|---|
-| **Agent Identity** | Finds every agent, gives it an owner, and verifies which workload is acting and for whom, using the identities you already have (your IdP, GitHub Actions, Kubernetes) |
-| **Task Access** | Just enough access for one task, for a limited time, with exact human approvals |
-| **Policy & Limits** | Org rules, budgets and sequence limits that hold across parallel agents and sub-agents |
-| **Agent Firewall** | A gateway for MCP and API calls plus a containment sandbox, with per-route proof that there is no way around it |
-| **Credential Custody** | Agents never hold your keys; credentials are used only for authorized actions |
-| **Detect & Respond** | Spot misuse, see the blast radius, stop a run, an agent or the whole org in under a second |
-| **Proof** | Signed decision, execution and effect receipts you can verify offline, plus a red-team range for your own policies |
+| Component | Tagline | What it does |
+|---|---|---|
+| **Badge** | Know every agent | Finds every agent, gives it an owner, and verifies which workload is acting and for whom, using the identities you already have (your IdP, GitHub Actions, Kubernetes) |
+| **Pass** | Grant temporary access | Just enough access for one task, for a limited time, with exact human approvals |
+| **Guardrails** | Set the boundaries | Org rules, budgets and sequence limits that hold across parallel agents and sub-agents |
+| **Checkpoint** | Control every action | An agent firewall: a gateway for MCP and API calls plus a containment sandbox, with per-route proof that there is no way around it |
+| **Stash** | Keep credentials safe | Agents never hold your keys; credentials are used only for authorized actions |
+| **Reflex** | Stop threats instantly | Spot misuse, see the blast radius, and stop a run, an agent or the whole org, with every gateway reached within a second |
+| **Trail** | Prove what happened | Signed decision, execution and effect receipts you can verify offline, plus a red-team range for your own policies |
+| **Root** | Manage it all | The platform: self-hosted or hybrid deployment, administration, automations and licensing |
 
 Details: [docs/PRODUCT.md](docs/PRODUCT.md).
 
