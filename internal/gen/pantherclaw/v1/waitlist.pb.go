@@ -366,7 +366,7 @@ func (x *ListWaitlistEntriesRequest) GetAgentId() string {
 // ListWaitlistEntriesResponse is one page.
 type ListWaitlistEntriesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Entries, earliest deadline first.
+	// Entries, oldest first.
 	Entries []*WaitlistEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	// Token for the next page; empty on the last page.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
