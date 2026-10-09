@@ -36,9 +36,11 @@ import (
 var ErrUnmapped = errors.New("mapping: no reviewed mapping for this call")
 
 // Context carries the fields that never come from the agent: they are
-// established by the gateway and the Authority (org, run, instance).
+// established by the gateway and the Authority (org, run, instance, and the
+// connection the call came through).
 type Context struct {
 	Org, Env, RunID, ActionID, AgentInstance string
+	Connection                               string
 }
 
 // Mapper maps calls for one package.
@@ -302,7 +304,7 @@ func (m *Mapper) run(ctx context.Context, tc Context, c *compiled, vars map[stri
 		return actionir.Parsed{}, err
 	}
 	return actionir.Encode(actionir.ActionIR{
-		V: actionir.Version, Org: tc.Org, Env: tc.Env, RunID: tc.RunID, ActionID: tc.ActionID, AgentInstance: tc.AgentInstance,
+		V: actionir.Version, Org: tc.Org, Env: tc.Env, RunID: tc.RunID, ActionID: tc.ActionID, AgentInstance: tc.AgentInstance, Connection: tc.Connection,
 		Operation:  c.def.Operation,
 		Definition: actionir.Definition{Package: m.pkg.Name, Version: m.pkg.Version, Digest: c.def.Digest},
 		Channel:    string(c.m.Channel), Route: c.m.Route, Target: target, Params: params,
