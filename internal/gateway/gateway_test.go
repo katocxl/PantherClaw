@@ -4,7 +4,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json/v2"
 	"io"
 	"net"
@@ -52,6 +55,10 @@ type fakeAuthority struct {
 	records   []*pb.RecordExecutionRequest
 	txn       string
 	auth      string
+	// identity, when set, is the PAP-Error code of an unverifiable workload.
+	identity string
+	creds    *pb.WorkloadCredentials
+	reports  int
 }
 
 func newFakeAuthority(t *testing.T) *fakeAuthority {
@@ -78,8 +85,14 @@ func (f *fakeAuthority) Authorize(ctx context.Context, req *pb.AuthorizeRequest)
 	defer f.mu.Unlock()
 	f.authorize++
 	f.auth = info.RequestHeader().Get("Authorization")
+	f.creds = req.GetWorkload()
+	if f.identity != "" {
+		return &pb.AuthorizeResponse{Decision: pb.Decision_DECISION_CANNOT_AUTHORIZE, Nonce: "nonce-2", Reasons: []*pb.Reason{{
+			Code: "IDENTITY_UNVERIFIED", Detail: f.identity, Decisive: true,
+		}}}, nil
+	}
 	f.txn = ids.NewV7().String()
-	res := &pb.AuthorizeResponse{Decision: f.decision, TransactionId: f.txn, ActionHash: p.HashHex()}
+	res := &pb.AuthorizeResponse{Decision: f.decision, TransactionId: f.txn, ActionHash: p.HashHex(), Nonce: "nonce-1"}
 	if f.decision != pb.Decision_DECISION_ALLOW {
 		res.Reasons = []*pb.Reason{{Code: "GRANT_AMOUNT_EXCEEDED", Decisive: true}}
 		return res, nil
@@ -102,6 +115,18 @@ func (f *fakeAuthority) Authorize(ctx context.Context, req *pb.AuthorizeRequest)
 	}
 	res.Permit, _ = s.Sign(permitType, b)
 	return res, nil
+}
+
+func (f *fakeAuthority) GetNonce(context.Context, *pb.GetNonceRequest) (*pb.GetNonceResponse, error) {
+	return &pb.GetNonceResponse{Nonce: "nonce-0"}, nil
+}
+
+func (f *fakeAuthority) ReportUnknownWorkload(_ context.Context, req *pb.ReportUnknownWorkloadRequest) (*pb.ReportUnknownWorkloadResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports++
+	f.creds = req.GetWorkload()
+	return &pb.ReportUnknownWorkloadResponse{DiscoveryId: ids.NewV7().String(), Nonce: "nonce-3"}, nil
 }
 
 func (f *fakeAuthority) BeginDispatch(context.Context, *pb.BeginDispatchRequest) (*pb.BeginDispatchResponse, error) {
@@ -159,15 +184,19 @@ func (ft *fakeTarget) req(i int) (string, http.Header) {
 }
 
 type authSnap struct {
-	authorize, begins int
-	records           []*pb.RecordExecutionRequest
-	txn, auth         string
+	authorize, begins, reports int
+	records                    []*pb.RecordExecutionRequest
+	txn, auth                  string
+	creds                      *pb.WorkloadCredentials
 }
 
 func (f *fakeAuthority) snap() authSnap {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return authSnap{authorize: f.authorize, begins: f.begins, records: append([]*pb.RecordExecutionRequest(nil), f.records...), txn: f.txn, auth: f.auth}
+	return authSnap{
+		authorize: f.authorize, begins: f.begins, reports: f.reports, records: append([]*pb.RecordExecutionRequest(nil), f.records...),
+		txn: f.txn, auth: f.auth, creds: f.creds,
+	}
 }
 
 func (s authSnap) outcome() pb.Outcome {
@@ -219,7 +248,7 @@ func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 		t.Fatal(err)
 	}
 	cfg := DefaultConfig()
-	cfg.GatewayID, cfg.Org, cfg.DevWorkloads = "gw-test", testOrg, []string{testAgent}
+	cfg.GatewayID, cfg.Org = "gw-test", testOrg
 	cfg.Authority.URL, cfg.Authority.TokenFile = as.URL, tok
 	cfg.Target.URL, cfg.Target.AllowedPrefixes = targetURL, []string{"127.0.0.1/32"}
 	cfg.Target.Timeout = config.Duration(500 * time.Millisecond)
@@ -238,7 +267,8 @@ const inbound = `{ "reason":"duplicate",  "currency":"USD","amount":"30.00","cha
 func (h *harness) post(t *testing.T, body string, hdr map[string]string) (int, result, http.Header) {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, h.url+"/v1/refunds", strings.NewReader(body))
-	req.Header.Set(HeaderDevWorkload, testAgent)
+	req.Header.Set("Authorization", "PAP "+testWorkloadToken())
+	req.Header.Set(HeaderProof, "proof-not-checked-by-the-gateway")
 	req.Header.Set(HeaderRunID, ids.NewV7().String())
 	req.Header.Set(HeaderActionID, ids.NewV7().String())
 	for k, v := range hdr {
@@ -263,7 +293,7 @@ func (h *harness) post(t *testing.T, body string, hdr map[string]string) (int, r
 
 func TestHR075_OutboundIsReSerialized(t *testing.T) {
 	h := setup(t, "")
-	code, r, hdr := h.post(t, inbound, map[string]string{"X-Forward-Me": "1", "Authorization": "Bearer agent-secret"})
+	code, r, hdr := h.post(t, inbound, map[string]string{"X-Forward-Me": "1"})
 	if code != http.StatusOK || r.Outcome != "ACCEPTED" || r.Receipt != "receipt-jws" {
 		t.Fatalf("refund = %d %+v", code, r)
 	}
@@ -271,7 +301,7 @@ func TestHR075_OutboundIsReSerialized(t *testing.T) {
 	if body != `{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}` {
 		t.Fatalf("outbound body %q is not the re-serialized action", body)
 	}
-	for _, name := range []string{"X-Forward-Me", "Authorization", HeaderDevWorkload, HeaderRunID, HeaderActionID} {
+	for _, name := range []string{"X-Forward-Me", "Authorization", HeaderProof, HeaderRunID, HeaderActionID} {
 		if v := sent.Get(name); v != "" {
 			t.Errorf("inbound header %s forwarded: %q", name, v)
 		}
@@ -381,18 +411,64 @@ func TestNothingDispatchedWithoutACommit(t *testing.T) {
 	}
 }
 
-func TestDevWorkloadHeadersRequired(t *testing.T) {
+// testWorkloadToken is a token-shaped string naming testAgent in testEnv.
+// The gateway reads it without verifying; the Authority verifies it.
+func testWorkloadToken() string {
+	enc := base64.RawURLEncoding.EncodeToString
+	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + testAgent +
+		`","pap":{"v":1,"env":"` + testEnv + `"}}`
+	return enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(payload)) + ".sig"
+}
+
+// TestHR091_GatewayForwardsPAPCredentials: the gateway hashes the raw body,
+// forwards token, proof, method and its configured URL, and puts the
+// token's instance and environment in the action; the Authority decides.
+func TestHR091_GatewayForwardsPAPCredentials(t *testing.T) {
 	h := setup(t, "")
-	for hdr, want := range map[string]int{HeaderDevWorkload: http.StatusUnauthorized, HeaderRunID: http.StatusBadRequest, HeaderActionID: http.StatusBadRequest} {
-		if code, _, _ := h.post(t, inbound, map[string]string{hdr: ""}); code != want {
-			t.Errorf("without %s: %d, want %d", hdr, code, want)
+	code, _, hdr := h.post(t, inbound, nil)
+	if code != http.StatusOK || hdr.Get(HeaderNonce) != "nonce-1" {
+		t.Fatalf("refund = %d, nonce %q", code, hdr.Get(HeaderNonce))
+	}
+	c := h.auth.snap().creds
+	sum := sha256.Sum256([]byte(inbound))
+	if c.GetWorkloadToken() != testWorkloadToken() || c.GetProof() == "" || !bytes.Equal(c.GetBodySha256(), sum[:]) ||
+		c.GetHtm() != "POST" || c.GetHtu() != "http://127.0.0.1:8090/v1/refunds" {
+		t.Fatalf("forwarded credentials: %+v", c)
+	}
+	// An unverifiable workload gets a PAP-Error and a fresh nonce.
+	h.auth.mu.Lock()
+	h.auth.identity = "use_nonce"
+	h.auth.mu.Unlock()
+	code, _, hdr = h.post(t, inbound, nil)
+	if code != http.StatusUnauthorized || hdr.Get(HeaderError) != "use_nonce" || hdr.Get(HeaderNonce) != "nonce-2" {
+		t.Fatalf("unverified = %d %q %q", code, hdr.Get(HeaderError), hdr.Get(HeaderNonce))
+	}
+}
+
+// TestHR148_GatewayRefusesWithoutPAP: no proof is use_nonce; a key-only
+// proof is reported as an unknown workload; a malformed token and missing
+// run or action ids never reach Authorize.
+func TestHR148_GatewayRefusesWithoutPAP(t *testing.T) {
+	h := setup(t, "")
+	code, _, hdr := h.post(t, inbound, map[string]string{HeaderProof: ""})
+	if code != http.StatusUnauthorized || hdr.Get(HeaderError) != "use_nonce" || hdr.Get(HeaderNonce) != "nonce-0" {
+		t.Errorf("no proof = %d %q %q", code, hdr.Get(HeaderError), hdr.Get(HeaderNonce))
+	}
+	code, _, hdr = h.post(t, inbound, map[string]string{"Authorization": ""})
+	if code != http.StatusUnauthorized || hdr.Get(HeaderError) != "instance_not_admitted" || h.auth.snap().reports != 1 {
+		t.Errorf("key-only = %d %q, reports %d", code, hdr.Get(HeaderError), h.auth.snap().reports)
+	}
+	if code, _, hdr := h.post(t, inbound, map[string]string{"Authorization": "PAP not-a-token"}); code != http.StatusUnauthorized ||
+		hdr.Get(HeaderError) != "invalid_token" {
+		t.Errorf("malformed token = %d %q", code, hdr.Get(HeaderError))
+	}
+	for _, hdr := range []string{HeaderRunID, HeaderActionID} {
+		if code, _, _ := h.post(t, inbound, map[string]string{hdr: ""}); code != http.StatusBadRequest {
+			t.Errorf("without %s: %d", hdr, code)
 		}
 	}
-	if code, _, _ := h.post(t, inbound, map[string]string{HeaderDevWorkload: ids.NewV7().String()}); code != http.StatusUnauthorized {
-		t.Errorf("unlisted workload: %d", code)
-	}
 	if h.auth.snap().authorize != 0 {
-		t.Fatal("unauthenticated request reached the Authority")
+		t.Fatal("an unidentified request reached Authorize")
 	}
 }
 

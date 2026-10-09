@@ -28,6 +28,7 @@ import (
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
@@ -54,6 +55,8 @@ import (
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
+	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
+	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
@@ -72,7 +75,7 @@ Usage:
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
-  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
+  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE] [--workload-out FILE]
                                                      DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
 
@@ -203,9 +206,17 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
-		idps, err := cfg.oidcProviders()
+		provs, err := cfg.oidcProviders()
 		if err != nil {
 			return err
+		}
+		idps := make([]authnapp.IdP, 0, len(provs))
+		var subjects oidcrp.Subjects
+		for i, p := range provs {
+			idps = append(idps, p)
+			if cfg.Auth.OIDCProviders[i].SubjectTokenAudience != "" {
+				subjects = append(subjects, p)
+			}
 		}
 		limiter := httpx.NewLimiter(oauthRateLimit, time.Minute, nil)
 		proxies, err := cfg.trustedProxies()
@@ -230,7 +241,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			oauth: oauthhttp.New(authnapp.NewOAuth(pool, tokens, cfg.Auth.PublicURL, clock.System{}, log),
 				cfg.Auth.PublicURL, limiter),
 			device:    device,
-			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters,
+			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters, subjects: subjects,
 		})
 		if err != nil {
 			return err
@@ -273,10 +284,14 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
 			return err
 		}
+		if err := iapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
-			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
-			Logger:       log,
+			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
+				iapp.JanitorPeriodicJobs()),
+			Logger: log,
 		})
 		if err != nil {
 			return err
@@ -346,6 +361,8 @@ type apiDeps struct {
 	clientIP httpx.ClientIPFunc
 	// clusters are the configured Kubernetes clusters (identity.kubernetes_clusters).
 	clusters *kube.Directory
+	// subjects are the providers configured for subject tokens (HR-145).
+	subjects oidcrp.Subjects
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -372,7 +389,13 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	}
 	identity := iapp.New(pool, reg, d.publicURL, clock.System{}).WithAttestors(attestors)
 	pantherclawv1connect.RegisterIdentityServiceHandler(rs, identityrpc.NewIdentity(identity, d.clusters))
-	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, d.publicURL, clock.System{}))
+	runs := runsapp.New(pool)
+	if len(d.subjects) > 0 {
+		runs.WithSubjects(d.subjects)
+	}
+	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
+	d.authority.WithWorkloads(identity, runs)
+	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)

@@ -11,6 +11,11 @@
 //
 // Thresholds are the SLOs: Authorize p99 <= 25 ms and gateway overhead p99 <=
 // 35 ms at 1,000 requests per second. No remote modules are imported.
+//
+// Since M3 the gateway accepts only PAP/1-signed requests (an Ed25519 proof
+// over every request), which k6 cannot produce; `pantherclaw-sim load` signs
+// them and is the load driver from M3 on. This script records how the M1.5
+// baseline in docs/perf/M1.5.md was measured.
 import http from 'k6/http';
 import crypto from 'k6/crypto';
 import { check } from 'k6';

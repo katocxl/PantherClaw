@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"net/netip"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
@@ -60,6 +61,7 @@ type Service struct {
 	issuer string
 	clk    clock.Clock
 	att    Attestors
+	floods floods
 }
 
 // New returns the identity use cases. issuer is the server's public URL,
@@ -79,11 +81,19 @@ func (s *Service) Issuer() string { return s.issuer }
 // Nonce returns org's current nonce, creating the nonce of the current
 // minute (database clock) on first use (HR-091).
 func (s *Service) Nonce(ctx context.Context, org ids.OrgID) (string, error) {
+	n, _, err := s.NonceExpiry(ctx, org)
+	return n, err
+}
+
+// NonceExpiry returns org's current nonce and when it stops being
+// accepted: 6 minutes after the start of its minute.
+func (s *Service) NonceExpiry(ctx context.Context, org ids.OrgID) (string, time.Time, error) {
 	var out string
+	var minute int64
 	err := s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		minute, err := q.CurrentMinute(ctx)
-		if err != nil {
+		var err error
+		if minute, err = q.CurrentMinute(ctx); err != nil {
 			return err
 		}
 		if out, err = q.GetNonceForMinute(ctx, org, minute); err == nil {
@@ -101,7 +111,7 @@ func (s *Service) Nonce(ctx context.Context, org ids.OrgID) (string, error) {
 		out, err = q.GetNonceForMinute(ctx, org, minute)
 		return err
 	})
-	return out, err
+	return out, time.Unix((minute+6)*60, 0), err
 }
 
 // Consume records a verified proof (PAP-1 §4 steps 5–6): its nonce must be

@@ -12,6 +12,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -28,7 +29,13 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	"github.com/katocxl/pantherclaw/internal/gateway"
+	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
+	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
@@ -38,8 +45,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/server"
 	"github.com/katocxl/pantherclaw/internal/sim/payments"
 )
-
-const agent = "01920000-0000-7000-8000-0000000000c1"
 
 func noEnv(string) (string, bool) { return "", false }
 
@@ -52,6 +57,11 @@ type stack struct {
 	simCalls *atomic.Int64
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
+
+	// The seeded PAP/1 workload: its key, its workload token and its run.
+	key   ed25519.PrivateKey
+	token string
+	run   string
 }
 
 type options struct {
@@ -102,6 +112,8 @@ func start(t *testing.T, o options) *stack {
 		},
 		"kek_files": []string{kek}, "worker_concurrency": 2,
 	}
+	// Workload proofs name the address they are sent to.
+	cfg["auth"] = map[string]any{"public_url": "http://" + apiAddr}
 	write := func(name string) string {
 		b, err := json.Marshal(cfg)
 		if err != nil {
@@ -110,8 +122,11 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
-	token := filepath.Join(dir, "gateway-token")
-	args := []string{"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token}
+	token, keyFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json")
+	args := []string{
+		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token,
+		"--workload-out", keyFile,
+	}
 	if o.maxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
 	}
@@ -145,6 +160,7 @@ func start(t *testing.T, o options) *stack {
 		}
 	})
 	waitReady(t, "http://"+apiAddr, &logs)
+	s.workload(t, keyFile)
 
 	s.sim = payments.New(o.faults, pclog.Discard())
 	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,8 +170,9 @@ func start(t *testing.T, o options) *stack {
 	simSrv := httptest.NewServer(counted)
 	t.Cleanup(simSrv.Close)
 
+	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
-	gc.Org, gc.DevWorkloads = s.org.String(), []string{agent}
+	gc.Org, gc.PublicURL = s.org.String(), "http://"+gs.Listener.Addr().String()
 	gc.Authority.URL, gc.Authority.TokenFile = "http://"+apiAddr, token
 	gc.Target.URL, gc.Target.AllowedPrefixes = simSrv.URL, []string{"127.0.0.1/32"}
 	if o.timeout > 0 {
@@ -165,7 +182,8 @@ func start(t *testing.T, o options) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := httptest.NewServer(g.Handler())
+	gs.Config.Handler = g.Handler()
+	gs.Start()
 	t.Cleanup(gs.Close)
 	s.gateway = gs.URL
 	return s
@@ -220,23 +238,26 @@ type reply struct {
 	Receipt       string   `json:"receipt"`
 }
 
-func (s *stack) refund(t *testing.T, run, act ids.UUID, amount string) (int, reply) {
+func (s *stack) refund(t *testing.T, act ids.UUID, amount string) (int, reply) {
 	t.Helper()
-	code, r, err := s.tryRefund(run, act, amount)
+	code, r, err := s.tryRefund(act, amount)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return code, r
 }
 
-// tryRefund is safe to call from any goroutine.
-func (s *stack) tryRefund(run, act ids.UUID, amount string) (int, reply, error) {
+// tryRefund sends a refund as the seeded workload, in its run, signed with
+// PAP/1. It is safe to call from any goroutine.
+func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	body := `{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
-	req.Header.Set(gateway.HeaderDevWorkload, agent)
-	req.Header.Set(gateway.HeaderRunID, run.String())
+	req.Header.Set(gateway.HeaderRunID, s.run)
 	req.Header.Set(gateway.HeaderActionID, act.String())
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{
+		Key: s.key, Token: func() string { return s.token }, Base: http.DefaultTransport,
+	}}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, reply{}, err
 	}
@@ -271,8 +292,8 @@ func (s *stack) budget(t *testing.T, txn string) (reserved, spent, permit string
 // ($125 over the grant → DENY, nothing reserved or sent).
 func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
 	s := start(t, options{budget: "1000.00"})
-	run, act := ids.NewV7(), ids.NewV7()
-	code, r := s.refund(t, run, act, "30.00")
+	act := ids.NewV7()
+	code, r := s.refund(t, act, "30.00")
 	if code != http.StatusOK || r.Outcome != "ACCEPTED" || r.Receipt == "" {
 		t.Fatalf("S01: %d %+v", code, r)
 	}
@@ -280,14 +301,14 @@ func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
 		t.Fatalf("S01 budget reserved=%s spent=%s permit=%s", reserved, spent, permit)
 	}
 	// The agent retries the same action: no second permit, no second refund.
-	if code, r2 := s.refund(t, run, act, "30.00"); code != http.StatusConflict || r2.TransactionID != r.TransactionID {
+	if code, r2 := s.refund(t, act, "30.00"); code != http.StatusConflict || r2.TransactionID != r.TransactionID {
 		t.Fatalf("S01 retry: %d %+v", code, r2)
 	}
 	if st := s.sim.Stats(); st.Refunds != 1 || st.Replays != 0 {
 		t.Fatalf("S01 target stats %+v", st)
 	}
 
-	code, r = s.refund(t, run, ids.NewV7(), "125.00")
+	code, r = s.refund(t, ids.NewV7(), "125.00")
 	if code != http.StatusForbidden || r.Decision != "DENY" || len(r.Reasons) == 0 || r.Reasons[0] != "GRANT_AMOUNT_EXCEEDED" {
 		t.Fatalf("S03: %d %+v", code, r)
 	}
@@ -299,12 +320,11 @@ func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
 // S06: two concurrent refunds against a one-refund budget: exactly one.
 func TestS06_ConcurrentRefundsAgainstOneRefundBudget(t *testing.T) {
 	s := start(t, options{budget: "1000.00", maxCount: 1})
-	run := ids.NewV7()
 	var wg sync.WaitGroup
 	codes := make([]int, 8)
 	errs := make([]error, len(codes))
 	for i := range codes {
-		wg.Go(func() { codes[i], _, errs[i] = s.tryRefund(run, ids.NewV7(), "30.00") })
+		wg.Go(func() { codes[i], _, errs[i] = s.tryRefund(ids.NewV7(), "30.00") })
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
@@ -328,7 +348,7 @@ func TestS06_ConcurrentRefundsAgainstOneRefundBudget(t *testing.T) {
 // S07: the target never answers: UNKNOWN, reservation held, no retry.
 func TestS07_TargetTimeoutIsUnknownAndHeld(t *testing.T) {
 	s := start(t, options{budget: "1000.00", faults: payments.Faults{HangRate: 1, HangFor: time.Minute}, timeout: 500 * time.Millisecond})
-	code, r := s.refund(t, ids.NewV7(), ids.NewV7(), "30.00")
+	code, r := s.refund(t, ids.NewV7(), "30.00")
 	if code != http.StatusGatewayTimeout || r.Outcome != "UNKNOWN" {
 		t.Fatalf("S07: %d %+v", code, r)
 	}
@@ -350,8 +370,27 @@ func TestS09_AuthorityUnavailableDispatchesNothing(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("server did not stop")
 	}
-	code, r := s.refund(t, ids.NewV7(), ids.NewV7(), "30.00")
+	code, r := s.refund(t, ids.NewV7(), "30.00")
 	if code != http.StatusServiceUnavailable || r.Error != "authority_unavailable" || s.simCalls.Load() != 0 {
 		t.Fatalf("S09: %d %+v, target calls %d", code, r, s.simCalls.Load())
 	}
+}
+
+// workload loads the seeded workload and gets its token from the server.
+func (s *stack) workload(t *testing.T, keyFile string) {
+	t.Helper()
+	kf, err := workloadclient.ReadKeyFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.key, err = kf.Key(); err != nil {
+		t.Fatal(err)
+	}
+	wc := pantherclawv1connect.NewWorkloadServiceClient(connect.NewClient(connecthttp.NewTransport(
+		&http.Client{Timeout: 10 * time.Second, Transport: &workloadclient.Transport{Key: s.key}}, kf.Server)))
+	res, err := wc.IssueToken(context.Background(), &pantherclawv1.IssueTokenRequest{Identifier: kf.Identifier})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	s.token, s.run = res.GetWorkloadToken(), kf.RunID
 }

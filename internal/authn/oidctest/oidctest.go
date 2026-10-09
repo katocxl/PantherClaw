@@ -227,3 +227,23 @@ func (p *Provider) idToken(g grant) string {
 	out, _ := obj.CompactSerialize()
 	return out
 }
+
+// Token signs claims with the provider's key (RS256, kid k1), with the JWS
+// typ header when typ is not empty: for subject tokens (HR-145).
+func (p *Provider) Token(claims map[string]any, typ string) string {
+	opts := (&jose.SignerOptions{}).WithHeader("kid", "k1")
+	if typ != "" {
+		opts = opts.WithType(jose.ContentType(typ))
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: p.key}, opts)
+	if err != nil {
+		panic(err)
+	}
+	payload, _ := json.Marshal(claims)
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		panic(err)
+	}
+	out, _ := obj.CompactSerialize()
+	return out
+}
