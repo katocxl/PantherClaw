@@ -126,6 +126,13 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 | T-041 | Log injection / sensitive data in logs or traces | A1 | Logging | Leak, forged audit lines | SB-4 redaction types, JSON encoding, field caps | M1 |
 | T-042 | Permission-unsafe search/graph/count inference | A5, A8 | TB4/TB7 | Hidden record disclosure | Permission filters before aggregation; tests (F300, F320) | M10 |
 | T-043 | Customer admin abuses platform admin to read payloads or approve | A7 | TB4 | Privacy breach | Admin ≠ approver ≠ evidence reader (F583); audited restricted access | M2/M5 |
+| T-044 | Trusted-issuer mis-scoping: an entry bound by names or broad claims (any repository of an owner, any namespace), or silently widened, lets unintended workloads attest as an agent | A5, A7 | Attestation configuration | Impersonation, rogue admission | HR-140, HR-141 | M3 |
+| T-045 | Issuer key source abuse: a tenant-supplied issuer or key URL used for SSRF, a poisoned or stale key cache, unknown-`kid` refetch amplification | A8, A9 | Attestation | Internal network access, forged attestation, outage | HR-142, HR-071 | M3 |
+| T-046 | Attestation token replay or cross-org use (a token copied from CI logs, or minted for another org's audience, enrolls a rogue instance) | A4 | Enrollment | Rogue instance at L2 | HR-143, HR-093 | M3 |
+| T-047 | Kubernetes mis-binding and digest spoofing: a service account deleted and recreated with the same name, another namespace, a deleted pod's token, a swapped image, or a workload reporting a trusted image digest it does not run | A4, A5 | Attestation | Impersonation; a false `attested` release | HR-144 | M3 |
+| T-048 | Represented-principal spoofing: a launcher names a user it does not act for; a subject token from an unconfigured provider, for another audience, stale or replayed; a subject token used to gain authority | A5, A4 | TB4 | Actions attributed to, and authorized for, the wrong person | HR-145, HR-146 | M3 |
+| T-049 | Authority hopping: a new instance, a re-attestation, an ownership transfer or a reused agent name inherits another instance's runs or grants | A4, A1 | Enrollment | Inherited authority | HR-147, HR-022 | M3 |
+| T-050 | Discovery flooding or poisoning: random keys fill the unclaimed queue, or forged observed attributes lead an owner to admit a rogue key | A1, A8 | TB1 | Owner fatigue, rogue admission, storage exhaustion | HR-148, HR-094 | M3 |
 
 ## 8. Residual risks (accepted, owner: founder, reviewed quarterly)
 
@@ -152,3 +159,4 @@ Connect APIs (gRPC/JSON) · MCP endpoint (Streamable HTTP, two spec versions) ·
 |---|---|---|
 | 2026-10-08 | v1.0 created from product spec, adversarial review and engineering review | G0 (M0) |
 | 2026-10-08 | M2: TB4 implemented for the CLI and services (OIDC relying party with PKCE, nonce and RFC 9207; server-mediated device flow; `private_key_jwt`; `pck_` API keys; per-request revocation checks). T-032, T-037, T-043 tested for their M2 parts. Residual risks R-13 (device-code phishing) and R-14 (CLI credentials file) accepted. TB8 gains the customer IdP as an OIDC provider (HTTPS only, discovered endpoints checked). | G0 (M2), ADR-0016 |
+| 2026-10-09 | M3 brief: ADR-0018 constraints become T-044..T-050 (issuer mis-scoping, key-source abuse, attestation replay, Kubernetes mis-binding, represented-principal spoofing, authority hopping, discovery flooding) with HR-140..148. New attack surfaces: trusted-issuer configuration, the workload enrollment and token endpoints, subject tokens at `StartRun`, gateway reports of unknown workloads. TB1 gains attestation by customer CI and cluster issuers; TB8 gains the OIDC provider as a source of subject tokens | G0 (M3), ADR-0018 |
