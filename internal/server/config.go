@@ -18,7 +18,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/kube"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
-	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 )
@@ -41,11 +40,10 @@ type Config struct {
 	KEKFiles    []string `json:"kek_files" env:"PC_KEK_FILES"`
 	LicenceFile string   `json:"licence_file" env:"PC_LICENCE_FILE"`
 	// WorkerConcurrency is the number of concurrent jobs per worker process.
-	WorkerConcurrency int              `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
-	Authority         AuthorityConfig  `json:"authority"`
-	DevGateway        DevGatewayConfig `json:"dev_gateway"`
-	Auth              AuthConfig       `json:"auth"`
-	Identity          IdentityConfig   `json:"identity"`
+	WorkerConcurrency int             `json:"worker_concurrency" env:"PC_WORKER_CONCURRENCY"`
+	Authority         AuthorityConfig `json:"authority"`
+	Auth              AuthConfig      `json:"auth"`
+	Identity          IdentityConfig  `json:"identity"`
 	// WebAuthn and Notifications are M5 part 1 (config_m5.go).
 	WebAuthn      WebAuthnConfig      `json:"webauthn"`
 	Notifications NotificationsConfig `json:"notifications"`
@@ -112,9 +110,8 @@ func DefaultConfig() Config {
 			GrantMaxPerAction: "100", GrantCurrency: "USD", BudgetName: "dev-refunds",
 			PermitTTL: config.Duration(5 * time.Second), StaleDispatch: config.Duration(30 * time.Second),
 		},
-		DevGateway: DevGatewayConfig{ID: "gw-dev-1"},
-		Auth:       AuthConfig{PublicURL: "http://127.0.0.1:8080", APIKeyEnv: string(credential.EnvLive)},
-		WebAuthn:   WebAuthnConfig{RPName: "PantherClaw"},
+		Auth:     AuthConfig{PublicURL: "http://127.0.0.1:8080", APIKeyEnv: string(credential.EnvLive)},
+		WebAuthn: WebAuthnConfig{RPName: "PantherClaw"},
 		Notifications: NotificationsConfig{
 			Concurrency: 5,
 			SMTP:        SMTPConfig{Port: 587, TLS: "starttls"},
@@ -192,16 +189,6 @@ type AuthorityConfig struct {
 	StaleDispatch     config.Duration `json:"stale_dispatch_after" env:"PC_AUTHORITY_STALE_DISPATCH"`
 }
 
-// DevGatewayConfig enables the single development gateway authenticated by
-// a static token. DEVELOPMENT ONLY (until gateway mTLS, M6): refused unless
-// the API listens on loopback.
-type DevGatewayConfig struct {
-	Enabled   bool   `json:"enabled" env:"PC_DEV_GATEWAY_ENABLED"`
-	TokenFile string `json:"token_file" env:"PC_DEV_GATEWAY_TOKEN_FILE"`
-	Org       string `json:"org" env:"PC_DEV_GATEWAY_ORG"`
-	ID        string `json:"gateway_id" env:"PC_DEV_GATEWAY_ID"`
-}
-
 func (c *Config) validateAuthority() []error {
 	var errs []error
 	if m, err := money.ParseMoney(c.Authority.GrantMaxPerAction, c.Authority.GrantCurrency); err != nil {
@@ -217,18 +204,6 @@ func (c *Config) validateAuthority() []error {
 	}
 	if c.Authority.StaleDispatch.D() < 30*time.Second {
 		errs = append(errs, errors.New("authority.stale_dispatch_after must be at least 30s (the sweep lister looks for dispatches older than 30s)"))
-	}
-	if !c.DevGateway.Enabled {
-		return errs
-	}
-	if c.DevGateway.TokenFile == "" || c.DevGateway.ID == "" {
-		errs = append(errs, errors.New("dev_gateway.token_file and dev_gateway.gateway_id are required when enabled"))
-	}
-	if _, err := ids.Parse[ids.Org](c.DevGateway.Org); err != nil {
-		errs = append(errs, errors.New("dev_gateway.org must be the org id printed by `dev seed`"))
-	}
-	if !loopback(c.HTTP.Addr) || c.HTTP.PlaintextBehindProxy {
-		errs = append(errs, errors.New("dev_gateway is development-only: the API must listen on loopback"))
 	}
 	return errs
 }

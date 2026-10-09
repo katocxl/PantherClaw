@@ -183,17 +183,17 @@ go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
 
 Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
 
-**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+**Gateway (M6):** gateways reach `AuthorityService` only on the server's mTLS gateway listener (`gateway_api`), with a 24-hour certificate from PantherClaw's internal CA. A gateway gets its first certificate with a single-use enrollment token and pins the CA by its SHA-256. The public API refuses every gateway call. For development, `dev seed --gateway-out` (or `dev gateway --org ID --out FILE` for an existing org) writes an enrollment file holding the API URL, the token (valid 15 minutes) and the CA pin. The gateway enrolls from it on first start, keeps its identity in `control.identity_dir`, and renews the certificate itself.
 
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
-  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
+  --org-name acme --budget-limit 1000.00 --gateway-out deploy/dev/secrets/gateway-enroll.json \
   --workload-out deploy/dev/secrets/workload.json \
-  --facts-key-out deploy/dev/secrets/facts.key   # a workload with a grant and a run, and a fact provider's API key
-# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+  --facts-key-out deploy/dev/secrets/facts.key   # a gateway to enroll, a workload with a grant and a run, a fact provider's API key
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json   # API on :8080, gateway listener on :8443
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
-# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
-go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+# within 15 minutes of dev seed (or run dev gateway again):
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.example.json --enroll-file deploy/dev/secrets/gateway-enroll.json
 # since M4 a refund needs a fresh payments.charge.refundable fact about its charge (at most 5 minutes old);
 # "value" is base64 of {"bool":true}
 curl -s -H "Authorization: Bearer $(cat deploy/dev/secrets/facts.key)" -H 'Content-Type: application/json' \

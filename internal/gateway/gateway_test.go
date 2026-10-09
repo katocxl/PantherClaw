@@ -13,8 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -33,9 +31,17 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 )
 
-const (
-	testToken = "dev-gateway-token-for-unit-tests-only-0001"
-)
+// gatewayMark marks control-plane calls made by the gateway under test.
+const gatewayMark = "Test gw-test"
+
+// marked adds gatewayMark as the Authorization header the fake records.
+type marked struct{ base http.RoundTripper }
+
+func (m marked) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", gatewayMark)
+	return m.base.RoundTrip(r)
+}
 
 // fakeAuthority signs real permits with a real key registry.
 type fakeAuthority struct {
@@ -243,16 +249,19 @@ func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 		t.Cleanup(ts.Close)
 		targetURL = ts.URL
 	}
-	tok := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tok, []byte(testToken+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := DefaultConfig()
-	cfg.GatewayID, cfg.Org = "gw-test", testOrg
-	cfg.Authority.URL, cfg.Authority.TokenFile = as.URL, tok
+	cfg.Control.IdentityDir = t.TempDir()
 	cfg.Target.URL, cfg.Target.AllowedPrefixes = targetURL, []string{"127.0.0.1/32"}
 	cfg.Target.Timeout = config.Duration(500 * time.Millisecond)
-	h.gw, err = New(&cfg, pclog.Discard())
+	// The control plane is reached over mTLS in production (internal/gateway/
+	// control and the end-to-end tests); here the fakes take plain calls,
+	// marked so that the test can tell they came from the gateway.
+	hc := &http.Client{Timeout: 5 * time.Second, Transport: marked{http.DefaultTransport}}
+	h.gw, err = newGateway(&cfg, Deps{
+		Org: testOrg, GatewayID: "gw-test",
+		Authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(hc, as.URL))),
+		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc,
+	}, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +315,8 @@ func TestHR075_OutboundIsReSerialized(t *testing.T) {
 			t.Errorf("inbound header %s forwarded: %q", name, v)
 		}
 	}
-	if h.auth.snap().auth != "Bearer "+testToken {
-		t.Error("dev gateway token not presented to the Authority")
+	if h.auth.snap().auth != gatewayMark {
+		t.Error("the Authority was not called through the gateway's control client")
 	}
 	if !strings.Contains(strings.Join(hdr.Values("Server-Timing"), ","), "authz;dur=") {
 		t.Errorf("Server-Timing = %v", hdr.Values("Server-Timing"))

@@ -34,6 +34,7 @@ import (
 // m6Services are the M6 services (G0 M6): the internal CA and gateway
 // identity.
 type m6Services struct {
+	reg      *keys.Registry
 	ca       *ca.Authority
 	gateways *gwapp.Service
 }
@@ -43,7 +44,7 @@ func newM6(cfg *Config, pool *db.Pool, reg *keys.Registry) (*m6Services, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &m6Services{ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{})}, nil
+	return &m6Services{reg: reg, ca: authority, gateways: gwapp.New(pool, authority, cfg.GatewayAPI.URL, clock.System{})}, nil
 }
 
 // registerPublic adds gateway administration and gateway enrollment to the
@@ -69,6 +70,17 @@ func (m *m6Services) gatewayHandler(svc *authority.Service, log *slog.Logger) (h
 	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
+	// Gateways verify permits with the JWKS, fetched here over mTLS.
+	mux.HandleFunc("GET /.well-known/pantherclaw/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		b, err := m.reg.JWKS()
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/jwk-set+json")
+		w.Header().Set("Cache-Control", "private, max-age=60")
+		_, _ = w.Write(b)
+	})
 	return gatewaysrpc.TLSIdentity(mux), nil
 }
 

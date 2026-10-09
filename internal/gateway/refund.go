@@ -43,6 +43,7 @@ var chargePattern = regexp.MustCompile(`^ch_[A-Za-z0-9]{1,64}$`)
 // Gateway serves the walking-skeleton route.
 type Gateway struct {
 	org       string
+	run       func(ctx context.Context) error
 	authority pantherclawv1connect.AuthorityServiceClient
 	permits   *permitVerifier
 	egress    *http.Client

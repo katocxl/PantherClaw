@@ -58,6 +58,10 @@ type stack struct {
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
 
+	// The gateway's configuration and its enrollment file (mTLS, M6).
+	gatewayCfg    gateway.Config
+	gatewayEnroll string
+
 	// The seeded PAP/1 workload: its key, its workload token and its run.
 	key   ed25519.PrivateKey
 	token string
@@ -101,7 +105,7 @@ func start(t *testing.T, o options) *stack {
 	if err := keys.GenerateKEKFile(kek); err != nil {
 		t.Fatal(err)
 	}
-	apiAddr := freeAddr(t)
+	apiAddr, gwAPIAddr := freeAddr(t), freeAddr(t)
 	cfg := map[string]any{
 		"role": "all", "log": map[string]any{"level": "warn"}, "http": map[string]any{"addr": apiAddr},
 		"database": map[string]any{
@@ -114,6 +118,8 @@ func start(t *testing.T, o options) *stack {
 	}
 	// Workload proofs name the address they are sent to.
 	cfg["auth"] = map[string]any{"public_url": "http://" + apiAddr}
+	// The gateway reaches the Authority only over mTLS (HR-181).
+	cfg["gateway_api"] = map[string]any{"addr": gwAPIAddr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + gwAPIAddr}
 	write := func(name string) string {
 		b, err := json.Marshal(cfg)
 		if err != nil {
@@ -122,9 +128,9 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
-	token, keyFile, factsFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
+	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{
-		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token,
+		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--gateway-out", enrollFile,
 		"--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if o.maxCount > 0 {
@@ -140,7 +146,6 @@ func start(t *testing.T, o options) *stack {
 	}
 	s.org = ids.MustParse[ids.Org](m[1])
 
-	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org.String(), "gateway_id": "gw-dev-1", "token_file": token}
 	serverCfg := write("server.json")
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
@@ -173,21 +178,39 @@ func start(t *testing.T, o options) *stack {
 
 	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
-	gc.Org, gc.PublicURL = s.org.String(), "http://"+gs.Listener.Addr().String()
-	gc.Authority.URL, gc.Authority.TokenFile = "http://"+apiAddr, token
+	gc.PublicURL = "http://" + gs.Listener.Addr().String()
+	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
 	gc.Target.URL, gc.Target.AllowedPrefixes = simSrv.URL, []string{"127.0.0.1/32"}
 	if o.timeout > 0 {
 		gc.Target.Timeout = config.Duration(o.timeout)
 	}
-	g, err := gateway.New(&gc, pclog.Discard())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s.gatewayCfg = gc
+	s.gatewayEnroll = enrollFile
+	g := s.startGateway(t)
 	gs.Config.Handler = g.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
 	s.gateway = gs.URL
 	return s
+}
+
+// startGateway enrolls the gateway from the dev enrollment file on first
+// use (it then reloads the saved identity) and runs its background work
+// (certificate renewal) until the test ends.
+func (s *stack) startGateway(t *testing.T) *gateway.Gateway {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	id, err := gateway.LoadOrEnroll(ctx, &s.gatewayCfg, s.gatewayEnroll, pclog.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gateway.New(&s.gatewayCfg, id, pclog.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = g.Run(ctx) }()
+	return g
 }
 
 func runServer(ctx context.Context, cfgPath string, logs io.Writer) error {

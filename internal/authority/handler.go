@@ -5,10 +5,7 @@ package authority
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
-	"strings"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -19,7 +16,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
-	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 )
 
 type gatewayKey struct{}
@@ -33,27 +29,6 @@ func WithGateway(ctx context.Context, gw Gateway) context.Context {
 func GatewayFrom(ctx context.Context) (Gateway, bool) {
 	gw, ok := ctx.Value(gatewayKey{}).(Gateway)
 	return gw, ok && gw.ID != "" && !gw.Org.IsZero()
-}
-
-// DevGatewayAuthenticator authenticates the single development gateway by a
-// static bearer token (only its SHA-256 is held). DEVELOPMENT ONLY: it is a
-// stand-in for gateway mTLS with org binding (M6, HR-020). The org comes from
-// configuration, never from the request.
-func DevGatewayAuthenticator(tokenSHA256 [sha256.Size]byte, gw Gateway) rpc.Authenticator {
-	return func(ctx context.Context, info *connect.CallInfo, spec connect.Spec) (context.Context, error) {
-		if !strings.HasPrefix(spec.Procedure, "/"+pantherclawv1connect.AuthorityServiceName+"/") {
-			return nil, connect.NewError(connect.CodePermissionDenied, "permission denied")
-		}
-		token, ok := strings.CutPrefix(info.RequestHeader().Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			return nil, connect.NewError(connect.CodeUnauthenticated, "gateway credentials required")
-		}
-		got := sha256.Sum256([]byte(token))
-		if subtle.ConstantTimeCompare(got[:], tokenSHA256[:]) != 1 {
-			return nil, connect.NewError(connect.CodeUnauthenticated, "invalid gateway credentials")
-		}
-		return WithGateway(ctx, gw), nil
-	}
 }
 
 // Handler serves AuthorityService.
