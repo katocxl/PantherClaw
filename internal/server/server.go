@@ -26,10 +26,12 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/agents/adapters/agentsrpc"
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/accountrpc"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oidcrp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
+	"github.com/katocxl/pantherclaw/internal/authn/adapters/webhttp"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	"github.com/katocxl/pantherclaw/internal/authn/token"
@@ -46,6 +48,8 @@ import (
 	iapp "github.com/katocxl/pantherclaw/internal/identity/app"
 	"github.com/katocxl/pantherclaw/internal/identity/issuers"
 	"github.com/katocxl/pantherclaw/internal/keystore"
+	"github.com/katocxl/pantherclaw/internal/notifications/adapters/notificationsrpc"
+	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -183,6 +187,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
+	m5, err := newM5(ctx, cfg, pool, kp, bill, log)
+	if err != nil {
+		return err
+	}
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
@@ -234,6 +242,11 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		web, err := m5.web(cfg, pool, idps, limiter, log)
+		if err != nil {
+			return err
+		}
+		device.WithBrowserCallback(web.Callback)
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
 			auth:      rpcauth.New(authn, procedurePermissions, gw),
@@ -242,6 +255,8 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 				cfg.Auth.PublicURL, limiter),
 			device:    device,
 			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters, subjects: subjects,
+			web: web,
+			m5:  m5,
 		})
 		if err != nil {
 			return err
@@ -287,10 +302,13 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := iapp.RegisterJanitor(jreg, pool, log); err != nil {
 			return err
 		}
+		if err := m5.registerWorkers(jreg); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
-			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
+			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency, napp.Queue: cfg.Notifications.Concurrency},
 			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
-				iapp.JanitorPeriodicJobs()),
+				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs()),
 			Logger: log,
 		})
 		if err != nil {
@@ -363,6 +381,9 @@ type apiDeps struct {
 	clusters *kube.Directory
 	// subjects are the providers configured for subject tokens (HR-145).
 	subjects oidcrp.Subjects
+	// M5 part 1: browser pages, accounts, notifications.
+	web *webhttp.Handler
+	m5  *m5Services
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -396,10 +417,17 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
 	d.authority.WithWorkloads(identity, runs)
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
+	if d.m5 != nil {
+		pantherclawv1connect.RegisterAccountServiceHandler(rs, accountrpc.New(authnapp.NewAccount(pool, d.m5.webauthn, d.m5.notifications)))
+		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
+	}
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)
 	d.device.Mount(mux, d.oauth)
+	if d.web != nil {
+		d.web.Mount(mux)
+	}
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")

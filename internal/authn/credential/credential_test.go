@@ -30,6 +30,8 @@ func TestRoundTrip(t *testing.T) {
 		{credential.RefreshToken, ""},
 		{credential.OAuthState, ""},
 		{credential.EnrollmentToken, ""},
+		{credential.BrowserSession, ""},
+		{credential.LoginState, ""},
 	} {
 		tok, err := credential.New(tc.kind, tc.env, org)
 		if err != nil {

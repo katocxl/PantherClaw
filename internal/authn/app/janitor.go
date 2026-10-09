@@ -25,11 +25,15 @@ const JanitorInterval = 10 * time.Minute
 // Cleaned counts the rows one janitor run removed.
 type Cleaned struct {
 	Replay, DeviceCodes, Sessions int64
+	// Browser sign-in (M5): pending sign-ins, WebAuthn ceremonies and
+	// browser sessions.
+	LoginRequests, Ceremonies, BrowserSessions int64
 }
 
 // CleanOrg removes one org's expired client-assertion jtis (an expired
 // assertion can no longer be replayed), device codes closed for a day and
-// CLI sessions that ended more than 30 days ago.
+// CLI sessions that ended more than 30 days ago, and the same for browser
+// sign-ins, WebAuthn ceremonies and browser sessions.
 func CleanOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Cleaned, error) {
 	var c Cleaned
 	err := pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
@@ -41,8 +45,10 @@ func CleanOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Cleaned, error
 		if c.DeviceCodes, err = q.DeleteOldDeviceCodes(ctx, org); err != nil {
 			return err
 		}
-		c.Sessions, err = q.DeleteOldSessions(ctx, org)
-		return err
+		if c.Sessions, err = q.DeleteOldSessions(ctx, org); err != nil {
+			return err
+		}
+		return cleanBrowser(ctx, q, org, &c)
 	})
 	return c, err
 }
@@ -75,9 +81,11 @@ type janitorOrgWorker struct {
 
 func (w *janitorOrgWorker) Work(ctx context.Context, job *river.Job[JanitorOrgArgs]) error {
 	c, err := CleanOrg(ctx, w.pool, job.Args.Org)
-	if err == nil && c.Replay+c.DeviceCodes+c.Sessions > 0 {
+	if err == nil && c.Replay+c.DeviceCodes+c.Sessions+c.LoginRequests+c.Ceremonies+c.BrowserSessions > 0 {
 		w.log.InfoContext(ctx, "authn.janitor", slog.String("org", job.Args.Org.String()), slog.Int64("replay", c.Replay),
-			slog.Int64("device_codes", c.DeviceCodes), slog.Int64("sessions", c.Sessions))
+			slog.Int64("device_codes", c.DeviceCodes), slog.Int64("sessions", c.Sessions),
+			slog.Int64("login_requests", c.LoginRequests), slog.Int64("ceremonies", c.Ceremonies),
+			slog.Int64("browser_sessions", c.BrowserSessions))
 	}
 	return err
 }
@@ -129,4 +137,19 @@ func JanitorPeriodicJobs() []*river.PeriodicJob {
 		river.NewPeriodicJob(river.PeriodicInterval(JanitorInterval),
 			func() (river.JobArgs, *river.InsertOpts) { return JanitorDispatchArgs{}, nil }, nil),
 	}
+}
+
+// cleanBrowser removes expired browser sign-ins and ceremonies, then browser
+// sessions that ended or expired more than 30 days ago (ceremonies first:
+// they reference sessions).
+func cleanBrowser(ctx context.Context, q *dbq.Queries, org ids.OrgID, c *Cleaned) error {
+	var err error
+	if c.LoginRequests, err = q.DeleteOldLoginRequests(ctx, org); err != nil {
+		return err
+	}
+	if c.Ceremonies, err = q.DeleteOldWebAuthnCeremonies(ctx, org); err != nil {
+		return err
+	}
+	c.BrowserSessions, err = q.DeleteOldBrowserSessions(ctx, org)
+	return err
 }

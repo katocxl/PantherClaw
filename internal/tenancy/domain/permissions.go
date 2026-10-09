@@ -44,6 +44,13 @@ const (
 	PermAuditRead            Permission = "audit.read"
 )
 
+// Notification permissions (M5): channels, their secrets and delivery
+// health. Only org-scope roles hold them.
+const (
+	PermNotificationRead   Permission = "notification.read"
+	PermNotificationManage Permission = "notification.manage"
+)
+
 // Permissions of later milestones. They are defined now so that the default
 // roles and the separation-of-duties tests cover them before their RPCs
 // exist (F581, F583).
@@ -130,6 +137,7 @@ var catalog = []Permission{
 	PermRoleRead, PermRoleBind,
 	PermServiceAccountRead, PermServiceAccountManage,
 	PermAuditRead,
+	PermNotificationRead, PermNotificationManage,
 	PermAgentRead, PermAgentManage,
 	PermRunRead, PermRunStart, PermRunRepresent, PermRunManage,
 	PermWaitlistRead,

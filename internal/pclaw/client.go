@@ -111,6 +111,9 @@ type clients struct {
 	identity pantherclawv1connect.IdentityServiceClient
 	waitlist pantherclawv1connect.WaitlistServiceClient
 	runs     pantherclawv1connect.RunServiceClient
+	// M5 part 1.
+	account       pantherclawv1connect.AccountServiceClient
+	notifications pantherclawv1connect.NotificationServiceClient
 }
 
 func (a *app) clients() (clients, error) {
@@ -120,13 +123,15 @@ func (a *app) clients() (clients, error) {
 	}
 	c := s.connect()
 	return clients{
-		tenancy:  pantherclawv1connect.NewTenancyServiceClient(c),
-		access:   pantherclawv1connect.NewAccessServiceClient(c),
-		sa:       pantherclawv1connect.NewServiceAccountServiceClient(c),
-		agents:   pantherclawv1connect.NewAgentServiceClient(c),
-		identity: pantherclawv1connect.NewIdentityServiceClient(c),
-		waitlist: pantherclawv1connect.NewWaitlistServiceClient(c),
-		runs:     pantherclawv1connect.NewRunServiceClient(c),
+		tenancy:       pantherclawv1connect.NewTenancyServiceClient(c),
+		access:        pantherclawv1connect.NewAccessServiceClient(c),
+		sa:            pantherclawv1connect.NewServiceAccountServiceClient(c),
+		agents:        pantherclawv1connect.NewAgentServiceClient(c),
+		identity:      pantherclawv1connect.NewIdentityServiceClient(c),
+		waitlist:      pantherclawv1connect.NewWaitlistServiceClient(c),
+		runs:          pantherclawv1connect.NewRunServiceClient(c),
+		account:       pantherclawv1connect.NewAccountServiceClient(c),
+		notifications: pantherclawv1connect.NewNotificationServiceClient(c),
 	}, nil
 }
 

@@ -244,6 +244,23 @@ type PcDek struct {
 	CreatedAt  time.Time
 }
 
+type PcDelivery struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	NotificationID  ids.UUID
+	ChannelID       *ids.UUID
+	RecipientUserID *ids.UUID
+	Kind            string
+	State           string
+	Attempts        int32
+	NextAttemptAt   *time.Time
+	LastAttemptAt   *time.Time
+	LastStatus      *int32
+	LastError       *string
+	CreatedAt       time.Time
+	FinishedAt      *time.Time
+}
+
 type PcDeviceCode struct {
 	OrgID          ids.OrgID
 	ID             ids.UUID
@@ -513,12 +530,69 @@ type PcLicenceState struct {
 	UpdatedBy      string
 }
 
+type PcLoginRequest struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	StateHash    []byte
+	BindingHash  []byte
+	Nonce        *string
+	PkceVerifier *string
+	Provider     string
+	NextPath     string
+	MaxAge       *int32
+	RequestedIp  string
+	State        string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	ConsumedAt   *time.Time
+}
+
 type PcMembership struct {
 	OrgID     ids.OrgID
 	ID        ids.UUID
 	TeamID    ids.UUID
 	UserID    ids.UUID
 	CreatedAt time.Time
+}
+
+type PcNotification struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	Type            string
+	Severity        string
+	SubjectType     *string
+	SubjectID       *ids.UUID
+	Title           string
+	Body            string
+	LinkPath        string
+	RecipientUserID *ids.UUID
+	DedupeKey       *string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+}
+
+type PcNotificationChannel struct {
+	OrgID               ids.OrgID
+	ID                  ids.UUID
+	Name                string
+	Kind                string
+	State               string
+	PauseReason         *string
+	EventTypes          []string
+	MinSeverity         string
+	RecipientRole       *string
+	Url                 *string
+	Secret              []byte
+	PrevSecret          []byte
+	PrevSecretExpiresAt *time.Time
+	ConsecutiveFailures int32
+	FailingSince        *time.Time
+	LastSuccessAt       *time.Time
+	LastFailureAt       *time.Time
+	LastFailureCode     *string
+	CreatedBy           string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type PcOrg struct {
@@ -678,6 +752,29 @@ type PcServiceAccountKey struct {
 	RevokedAt        *time.Time
 }
 
+type PcSession struct {
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+	UserID             ids.UUID
+	SecretHash         []byte
+	PrevSecretHash     []byte
+	RotatedAt          *time.Time
+	Generation         int32
+	Provider           string
+	AuthTime           *time.Time
+	RolesDigest        []byte
+	StepUpAt           *time.Time
+	StepUpCredentialID *ids.UUID
+	UserAgent          string
+	ClientIp           string
+	State              string
+	EndReason          *string
+	CreatedAt          time.Time
+	LastSeenAt         time.Time
+	ExpiresAt          time.Time
+	EndedAt            *time.Time
+}
+
 type PcTeam struct {
 	OrgID          ids.OrgID
 	ID             ids.UUID
@@ -769,4 +866,39 @@ type PcWaitlistEntry struct {
 	DecidedAt      *time.Time
 	DecisionReason string
 	CreatedAt      time.Time
+}
+
+type PcWebauthnCeremony struct {
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+	SessionID          ids.UUID
+	UserID             ids.UUID
+	Purpose            string
+	Challenge          []byte
+	AllowedCredentials [][]byte
+	CreatedAt          time.Time
+	ExpiresAt          time.Time
+	ConsumedAt         *time.Time
+}
+
+type PcWebauthnCredential struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	UserID         ids.UUID
+	CredentialID   []byte
+	PublicKey      []byte
+	Alg            int32
+	SignCount      int64
+	BackupEligible bool
+	BackupState    bool
+	Transports     []string
+	Aaguid         *ids.UUID
+	AttestationFmt string
+	Name           string
+	State          string
+	StateReason    *string
+	CreatedAt      time.Time
+	LastUsedAt     *time.Time
+	ChangedAt      *time.Time
+	ChangedBy      *string
 }

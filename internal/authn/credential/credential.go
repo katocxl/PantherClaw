@@ -11,6 +11,8 @@
 //	pcd_<org>_<secret>         device code (CLI login)
 //	pcr_<org>_<secret>         refresh token (CLI session)
 //	pcs_<org>_<secret>         OAuth state (browser leg of the device flow)
+//	pcb_<org>_<secret>         browser session (the __Host-pc_session cookie, M5)
+//	pcl_<org>_<secret>         browser sign-in state (M5)
 //
 // <org> is the org's UUID as 32 lowercase hex digits; <secret> is 256 random
 // bits in 43 base62 characters. Only hashes are stored. Service-account
@@ -43,6 +45,9 @@ const (
 	// EnrollmentToken is an owner's single-use agent enrollment token (PAP-1
 	// §3.2, M3).
 	EnrollmentToken Kind = "pce"
+	// Browser sign-in and sessions (G0 M5 part 1).
+	BrowserSession Kind = "pcb"
+	LoginState     Kind = "pcl"
 )
 
 // Env labels API keys by deployment, so that a key made for one deployment
@@ -193,6 +198,8 @@ func Secret() (string, error) {
 func (k Kind) valid() bool {
 	switch k {
 	case APIKey, Invitation, DeviceCode, RefreshToken, OAuthState, EnrollmentToken:
+		return true
+	case BrowserSession, LoginState:
 		return true
 	}
 	return false

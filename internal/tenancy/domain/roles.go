@@ -81,6 +81,7 @@ var roles = []Role{
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
 			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport,
+			PermNotificationRead, PermNotificationManage,
 		}, authorityReads),
 	},
 	{
@@ -90,6 +91,7 @@ var roles = []Role{
 			PermUserRead, PermUserManage, PermRoleRead, PermInvitationRead, PermServiceAccountRead,
 			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
 			PermWaitlistRead, PermIssuerRead, PermGrantRevoke, PermFactRead,
+			PermNotificationRead, PermNotificationManage,
 		}, authorityReads),
 	},
 	{
@@ -131,6 +133,7 @@ var roles = []Role{
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
 			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead, PermFactRead,
+			PermNotificationRead,
 		}, authorityReads),
 	},
 	{

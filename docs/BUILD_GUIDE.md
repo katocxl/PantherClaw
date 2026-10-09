@@ -234,6 +234,24 @@ The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server 
 
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.
 
+**Browser sign-in, security keys and notifications (M5 part 1):** WebAuthn needs a domain name, so locally use `http://localhost:8080` as `auth.public_url` (the Keycloak development realm accepts both callback URLs). Security keys are off, with a start-up warning, while the public URL is an IP address.
+
+```bash
+# in your server config: "auth": {"public_url": "http://localhost:8080", ...}
+# optional email through a local relay: "notifications": {"smtp": {"host": "127.0.0.1", "port": 1025, "tls": "none", "from": "pantherclaw@localhost"}}
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.local.json
+# open http://localhost:8080/account?org=<org id>, sign in, then "Add a security key or passkey"
+go run ./cmd/pclaw login --server http://localhost:8080 --org <org id>
+go run ./cmd/pclaw session list && go run ./cmd/pclaw key list
+go run ./cmd/pclaw channel create --name ops --kind log --event 'security.*'
+go run ./cmd/pclaw channel create --name siem --kind webhook --event 'security.*' --url https://hooks.example.com/pantherclaw   # prints the signing secret once
+go run ./cmd/pclaw channel create --name chat --kind slack --event 'security.*' --url-file slack-url.txt                      # the Slack URL is a secret
+go run ./cmd/pclaw channel test <channel id> && go run ./cmd/pclaw delivery list --channel <channel id>
+go run ./cmd/pclaw user revoke-sessions <user id>                                                                             # sign a person out everywhere
+```
+
+Browser sessions last 30 idle minutes and 12 hours at most. Adding or removing a key needs a sign-in at most 5 minutes old (the page sends you back to your identity provider) or a step-up with a key you already have, and the user is emailed about it. Webhooks are signed per Standard Webhooks: any `standardwebhooks` library verifies them with the `whsec_` secret. Slack and email messages only link back to PantherClaw; nothing in a channel can approve anything. Community allows 3 channels. Without `notifications.smtp.host`, email deliveries are skipped and shown as such in `pclaw delivery list`.
+
 **Measure latency (M1.5):** seed a budget large enough for the run (for example `--budget-limit 100000000.00`), start the three processes as above, then drive an open-loop constant rate. Authorize and gateway overhead come from `Server-Timing`, so the target's own latency is excluded:
 
 ```bash
@@ -312,7 +330,7 @@ docs/                    this guide and companions
 | M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes`, `cli_sessions` (CLI refresh tokens), `auth_replay` (client-assertion `jti`s) |
 | M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
 | M4 | `package_trust`, `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `policies`, `policy_versions`, `envelopes`, `envelope_revisions`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `reservations`, `fact_providers`, `facts`, `dedupe_claims`; `budgets` (M1.5) gains rule, grouping and period columns; idempotency lives in columns on `transactions` (M1.5) |
-| M5 | `sessions`, `webauthn_credentials`, `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
+| M5 | `sessions` (browser), `login_requests` (browser sign-ins in progress), `webauthn_credentials`, `webauthn_ceremonies` (pending registrations and assertions), `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
 | M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
 | M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
 | M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
@@ -393,7 +411,7 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Tests:** 12 invariant property tests; 1,000-goroutine budget race; delegation lattice properties; CEL fail-closed + mutation tests; canonicalizer fuzzing; golden tests for packages; the six policy scenario tests from F193.
 
 ### M5 — Human approvals, step-up & Agent Waitlist
-**Threat slice:** T-002, T-005, T-006, T-007, T-026, T-027 · **HR:** HR-030..039 · **F:** F139–F171 · **PN:** PN-004, PN-020.
+**Threat slice:** T-002, T-005, T-006, T-007, T-026, T-027, T-051..T-054 · **HR:** HR-030..039, HR-150..159 · **F:** F139–F171 · **PN:** PN-004, PN-020 · **G0:** part 1 (browser sessions, CSRF, WebAuthn, notifications) in [g0/M5.md](g0/M5.md); part 2 (approvals, transaction-bound step-up, approval page, Agent Waitlist) after M3 and M4 part 2.
 - Browser sessions (OIDC auth code + PKCE), CSRF defenses, WebAuthn registration/assertion, transaction-bound step-up.
 - Approval requests with binding hash, eligibility (role/scope/independence), two-person rule, expiry, invalidation (material change, role removal, revocation), decline with reason, request evidence, propose narrower action.
 - Minimal server-rendered approval page (template-only rendering, untrusted box, strict CSP) — the only HTML before the UI phase.
