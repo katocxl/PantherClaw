@@ -33,25 +33,36 @@ type Package struct {
 // Channel is how an agent reaches a tool.
 type Channel string
 
-// Channels with mappings in part 1. SDK and hook channels reuse these
-// mappings later (F099: the same effect gets the same decision).
+// Channels. The hook channel is a cooperative client asking before it runs
+// a tool itself (G0 M6, the Claude Code hook): its mapping names the kind
+// of call (tool) and reads the client's JSON input like an MCP mapping. The
+// SDK channel reuses these mappings later (F099: the same effect gets the
+// same decision).
 const (
 	ChannelMCP  Channel = "mcp"
 	ChannelHTTP Channel = "http"
+	ChannelHook Channel = "hook"
 )
 
-// Mapping maps one MCP tool or HTTP route onto the definition. Every
-// expression is CEL over the request (internal/definitions/mapping); a wrong
-// mapping is a total bypass, so mappings are reviewed as code and golden
-// tested (HR-124).
+// Mapping maps one MCP tool, HTTP route or hook call onto the definition.
+// Every expression is CEL over the request (internal/definitions/mapping);
+// a wrong mapping is a total bypass, so mappings are reviewed as code and
+// golden tested (HR-124).
 type Mapping struct {
 	Channel Channel `json:"channel"`
 	Tool    string  `json:"tool,omitzero"`
 	Method  string  `json:"method,omitzero"`
 	Path    string  `json:"path,omitzero"`
 	Route   string  `json:"route"`
-	Extract Extract `json:"extract"`
+	// Description and InputSchema are what MCP clients receive for an mcp
+	// mapping (HR-081); the MCP face lists only tools that have both.
+	Description string  `json:"description,omitzero"`
+	InputSchema *Schema `json:"input_schema,omitzero"`
+	Extract     Extract `json:"extract"`
 }
+
+// maxToolDescription bounds a reviewed MCP tool description.
+const maxToolDescription = 4 << 10
 
 // Extract holds the CEL expressions that produce the ActionIR fields.
 type Extract struct {
@@ -124,10 +135,26 @@ func expr(name, e string, required bool) error {
 func (d *Definition) validateMapping(i int) error {
 	m := d.Mappings[i]
 	at := fmt.Sprintf("%s: mappings[%d]", d.Operation, i)
+	if m.Channel != ChannelMCP && (m.Description != "" || m.InputSchema != nil) {
+		return invalid("%s: description and input_schema belong to mcp mappings", at)
+	}
 	switch m.Channel {
-	case ChannelMCP:
+	case ChannelMCP, ChannelHook:
 		if !toolRe.MatchString(m.Tool) || m.Method != "" || m.Path != "" {
-			return invalid("%s: an mcp mapping names a tool and no method or path", at)
+			return invalid("%s: an %s mapping names a tool and no method or path", at, m.Channel)
+		}
+		if m.Description != "" {
+			if len(m.Description) > maxToolDescription {
+				return invalid("%s: description longer than %d bytes", at, maxToolDescription)
+			}
+			if err := checkText(at+".description", m.Description); err != nil {
+				return err
+			}
+		}
+		if m.InputSchema != nil {
+			if err := validateSchema(at+".input_schema", m.InputSchema); err != nil {
+				return err
+			}
 		}
 	case ChannelHTTP:
 		if m.Tool != "" || !slices.Contains(methods, m.Method) || !pathRe.MatchString(m.Path) || len(m.Path) > 512 {
@@ -145,7 +172,7 @@ func (d *Definition) validateMapping(i int) error {
 			}
 		}
 	default:
-		return invalid("%s: channel must be mcp or http", at)
+		return invalid("%s: channel must be mcp, http or hook", at)
 	}
 	if !actionir.ValidRoute(m.Route) {
 		return invalid("%s: route %q", at, m.Route)

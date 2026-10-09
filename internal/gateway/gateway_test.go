@@ -13,8 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +22,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
@@ -33,9 +32,17 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 )
 
-const (
-	testToken = "dev-gateway-token-for-unit-tests-only-0001"
-)
+// gatewayMark marks control-plane calls made by the gateway under test.
+const gatewayMark = "Test gw-test"
+
+// marked adds gatewayMark as the Authorization header the fake records.
+type marked struct{ base http.RoundTripper }
+
+func (m marked) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", gatewayMark)
+	return m.base.RoundTrip(r)
+}
 
 // fakeAuthority signs real permits with a real key registry.
 type fakeAuthority struct {
@@ -207,17 +214,63 @@ func (s authSnap) outcome() pb.Outcome {
 }
 
 type harness struct {
-	auth   *fakeAuthority
-	target *fakeTarget
-	gw     *Gateway
-	url    string
+	auth        *fakeAuthority
+	target      *fakeTarget
+	containment *fakeContainment
+	gw          *Gateway
+	url         string
 }
+
+// fakeContainment is a containment view the test sets.
+type fakeContainment struct {
+	mu    sync.Mutex
+	epoch int64
+	err   error
+	ready chan struct{}
+	// after, when set, applies once the first check passed (containment
+	// changing while the Authority decides).
+	after func(*fakeContainment)
+}
+
+func newFakeContainment() *fakeContainment {
+	ready := make(chan struct{})
+	close(ready)
+	return &fakeContainment{epoch: 1, ready: ready}
+}
+
+func (f *fakeContainment) Check() (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, err := f.epoch, f.err
+	if f.after != nil && err == nil {
+		f.after(f)
+		f.after = nil
+	}
+	return e, err
+}
+
+func (f *fakeContainment) Ready() <-chan struct{} { return f.ready }
+
+// fakeConfig is a configuration store, loaded unless ready is open.
+type fakeConfig struct {
+	cfg   *control.Config
+	ready chan struct{}
+}
+
+func newFakeConfig() *fakeConfig {
+	ready := make(chan struct{})
+	close(ready)
+	return &fakeConfig{cfg: &control.Config{Version: 1, ByName: map[string]*control.Connection{}, ByID: map[string]*control.Connection{}}, ready: ready}
+}
+
+func (f *fakeConfig) Current() *control.Config { return f.cfg }
+func (f *fakeConfig) Ready() <-chan struct{}   { return f.ready }
 
 // setup starts the fakes and the gateway; opts configure the fakes before
 // any server goroutine starts.
 func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 	t.Helper()
-	h := &harness{auth: newFakeAuthority(t), target: &fakeTarget{status: http.StatusOK}}
+	h := &harness{auth: newFakeAuthority(t), target: &fakeTarget{status: http.StatusOK}, containment: newFakeContainment()}
 	for _, o := range opts {
 		o(h)
 	}
@@ -243,16 +296,19 @@ func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 		t.Cleanup(ts.Close)
 		targetURL = ts.URL
 	}
-	tok := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tok, []byte(testToken+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := DefaultConfig()
-	cfg.GatewayID, cfg.Org = "gw-test", testOrg
-	cfg.Authority.URL, cfg.Authority.TokenFile = as.URL, tok
+	cfg.Control.IdentityDir = t.TempDir()
 	cfg.Target.URL, cfg.Target.AllowedPrefixes = targetURL, []string{"127.0.0.1/32"}
 	cfg.Target.Timeout = config.Duration(500 * time.Millisecond)
-	h.gw, err = New(&cfg, pclog.Discard())
+	// The control plane is reached over mTLS in production (internal/gateway/
+	// control and the end-to-end tests); here the fakes take plain calls,
+	// marked so that the test can tell they came from the gateway.
+	hc := &http.Client{Timeout: 5 * time.Second, Transport: marked{http.DefaultTransport}}
+	h.gw, err = newGateway(&cfg, Deps{
+		Org: testOrg, GatewayID: "gw-test",
+		Authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(hc, as.URL))),
+		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc, Containment: h.containment, Configuration: newFakeConfig(),
+	}, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +362,8 @@ func TestHR075_OutboundIsReSerialized(t *testing.T) {
 			t.Errorf("inbound header %s forwarded: %q", name, v)
 		}
 	}
-	if h.auth.snap().auth != "Bearer "+testToken {
-		t.Error("dev gateway token not presented to the Authority")
+	if h.auth.snap().auth != gatewayMark {
+		t.Error("the Authority was not called through the gateway's control client")
 	}
 	if !strings.Contains(strings.Join(hdr.Values("Server-Timing"), ","), "authz;dur=") {
 		t.Errorf("Server-Timing = %v", hdr.Values("Server-Timing"))

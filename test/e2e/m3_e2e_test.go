@@ -88,9 +88,15 @@ func startM3(t *testing.T) *m3Stack {
 		t.Fatalf("org create: %d %s", code, errb.String())
 	}
 	s := &m3Stack{db: d, idp: p, org: orgCreated.FindStringSubmatch(out.String())[1], bootstrap: pciToken.FindString(out.String())}
-	gwToken := writeFile(t, dir, "gateway-token", []byte(strings.Repeat("g", 43)+"\n"))
-	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org, "gateway_id": "gw-dev-1", "token_file": gwToken}
+	// The gateway reaches the Authority over mTLS with a certificate from
+	// the internal CA (M6): a development enrollment file for this org.
+	gwAPIAddr := freeAddr(t)
+	cfg["gateway_api"] = map[string]any{"addr": gwAPIAddr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + gwAPIAddr}
 	serverCfg := write("server.json")
+	enrollFile := filepath.Join(dir, "gateway.json")
+	if code := server.Run(context.Background(), []string{"dev", "gateway", "--config", serverCfg, "--org", s.org, "--out", enrollFile}, &out, &errb, noEnv); code != 0 {
+		t.Fatalf("dev gateway: %d %s", code, errb.String())
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	var logs syncBuffer
@@ -122,13 +128,11 @@ func startM3(t *testing.T) *m3Stack {
 	t.Cleanup(sim.Close)
 	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
-	gc.Org, gc.PublicURL = s.org, "http://"+gs.Listener.Addr().String()
-	gc.Authority.URL, gc.Authority.TokenFile = public, gwToken
+	gc.PublicURL = "http://" + gs.Listener.Addr().String()
+	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
 	gc.Target.URL, gc.Target.AllowedPrefixes = sim.URL, []string{"127.0.0.1/32"}
-	g, err := gateway.New(&gc, pclog.Discard())
-	if err != nil {
-		t.Fatal(err)
-	}
+	gst := &stack{gatewayCfg: gc, gatewayEnroll: enrollFile}
+	g := gst.startGateway(t)
 	gs.Config.Handler = g.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
