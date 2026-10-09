@@ -21,6 +21,7 @@ type EnvelopeRequest struct {
 	Name           string
 	Bounds         domain.Bounds
 	Requirements   []domain.Requirement
+	Limits         domain.Limits
 	Settings       domain.Settings
 	MinAttestation int
 }
@@ -58,7 +59,7 @@ func (s *Service) PutEnvelope(ctx context.Context, req EnvelopeRequest) (domain.
 	}
 	next := domain.Envelope{
 		ID: cur.ID, Org: c.Org, Revision: cur.Revision + 1, Scope: req.Scope, Name: req.Name,
-		Bounds: req.Bounds, Requirements: req.Requirements, Settings: req.Settings, MinAttestation: req.MinAttestation,
+		Bounds: req.Bounds, Requirements: req.Requirements, Limits: req.Limits, Settings: req.Settings, MinAttestation: req.MinAttestation,
 	}
 	if next.ID.IsZero() {
 		next.ID = domain.NewEnvelopeID()

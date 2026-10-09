@@ -94,6 +94,7 @@ type Envelope struct {
 	Name         string
 	Bounds       Bounds
 	Requirements []Requirement
+	Limits       Limits
 	Settings     Settings
 	// MinAttestation is the lowest attestation level any grant under this
 	// envelope may be used at.
@@ -154,6 +155,9 @@ func (e Envelope) Validate() error {
 		if *s.RepeatWindow < MinRepeatWindow || *s.RepeatWindow > MaxRepeatWindow {
 			return invalid("envelope: the repeat window is %s..%s", MinRepeatWindow, MaxRepeatWindow)
 		}
+	}
+	if err := e.Limits.validate(false); err != nil {
+		return err
 	}
 	return e.Bounds.Validate()
 }
@@ -221,6 +225,9 @@ func Compare(cur, next Envelope) Change {
 	}
 	if next.MinAttestation < cur.MinAttestation {
 		return Change{Widens: true, Detail: "the minimum attestation level is lowered"}
+	}
+	if !limitsKept(cur.Limits, next.Limits) {
+		return Change{Widens: true, Detail: "a budget or counter is removed or changed"}
 	}
 	c1, c2 := cur.Settings.effective(cur.Scope.Kind), next.Settings.effective(next.Scope.Kind)
 	if c2.MaxDepth > c1.MaxDepth || c2.MaxChildren > c1.MaxChildren {
