@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"time"
@@ -38,7 +39,7 @@ const (
 	Queue = "notifications"
 	// MaxAttempts bounds the attempts of one delivery (Standard Webhooks
 	// schedule, about 27 hours).
-	MaxAttempts = 8
+	MaxAttempts = domain.MaxAttempts
 	// MaxPendingPerChannel bounds a channel's queue; beyond it new
 	// deliveries are DROPPED and the channel is flagged.
 	MaxPendingPerChannel = 1000
@@ -88,6 +89,10 @@ type Service struct {
 	ownHost  string
 	clock    clock.Clock
 	log      *slog.Logger
+	// mailer sends email (nil: not configured); http reaches Slack and
+	// webhooks through the egress guards.
+	mailer Mailer
+	http   *http.Client
 }
 
 // New returns the service. jc may be an insert-only client (API role).
@@ -99,7 +104,10 @@ func New(pool *db.Pool, jc *jobs.Client, envelope *pccrypto.Envelope, cfg Config
 	if log == nil {
 		log = pclog.Discard()
 	}
-	return &Service{pool: pool, jobs: jc, envelope: envelope, cfg: cfg, ownHost: u.Hostname(), clock: clk, log: log}, nil
+	return &Service{
+		pool: pool, jobs: jc, envelope: envelope, cfg: cfg, ownHost: u.Hostname(), clock: clk, log: log,
+		http: httpx.NewEgressClient(httpx.EgressConfig{Timeout: RequestTimeout, AllowedPrefixes: cfg.AllowedPrivateRanges}),
+	}, nil
 }
 
 // denied is the egress deny list with the operator's allowed ranges.

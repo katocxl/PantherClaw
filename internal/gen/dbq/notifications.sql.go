@@ -10,6 +10,7 @@ package dbq
 
 import (
 	"context"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -41,6 +42,61 @@ func (q *Queries) ActiveUsersWithOrgRole(ctx context.Context, orgID ids.OrgID, r
 		return nil, err
 	}
 	return items, nil
+}
+
+const channelFailed = `-- name: ChannelFailed :one
+UPDATE pc.notification_channels
+SET consecutive_failures = consecutive_failures + 1, failing_since = coalesce(failing_since, now()),
+    last_failure_at = now(), last_failure_code = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3
+RETURNING consecutive_failures, (coalesce(failing_since, now()) <= now() - make_interval(secs => $4::int))::bool AS overdue,
+          failing_since, name, state
+`
+
+type ChannelFailedParams struct {
+	Code              *string
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	PauseAfterSeconds int32
+}
+
+type ChannelFailedRow struct {
+	ConsecutiveFailures int32
+	Overdue             bool
+	FailingSince        *time.Time
+	Name                string
+	State               string
+}
+
+// Counts a failure and reports whether the channel has now failed for the
+// whole auto-pause period.
+func (q *Queries) ChannelFailed(ctx context.Context, arg ChannelFailedParams) (ChannelFailedRow, error) {
+	row := q.db.QueryRow(ctx, channelFailed,
+		arg.Code,
+		arg.OrgID,
+		arg.ID,
+		arg.PauseAfterSeconds,
+	)
+	var i ChannelFailedRow
+	err := row.Scan(
+		&i.ConsecutiveFailures,
+		&i.Overdue,
+		&i.FailingSince,
+		&i.Name,
+		&i.State,
+	)
+	return i, err
+}
+
+const channelSucceeded = `-- name: ChannelSucceeded :exec
+UPDATE pc.notification_channels
+SET consecutive_failures = 0, failing_since = NULL, last_success_at = now(), updated_at = now()
+WHERE org_id = $1 AND id = $2
+`
+
+func (q *Queries) ChannelSucceeded(ctx context.Context, orgID ids.OrgID, iD ids.UUID) error {
+	_, err := q.db.Exec(ctx, channelSucceeded, orgID, iD)
+	return err
 }
 
 const channelsForRouting = `-- name: ChannelsForRouting :many
@@ -84,6 +140,78 @@ func (q *Queries) ChannelsForRouting(ctx context.Context, orgID ids.OrgID) ([]Ch
 		return nil, err
 	}
 	return items, nil
+}
+
+const deleteOldDeliveries = `-- name: DeleteOldDeliveries :execrows
+
+DELETE FROM pc.deliveries WHERE org_id = $1 AND finished_at < now() - interval '30 days'
+`
+
+// Housekeeping (the notifications janitor): deliveries finished more than
+// 30 days ago, then notifications that expired 30 days ago and have none.
+func (q *Queries) DeleteOldDeliveries(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldDeliveries, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteOldNotifications = `-- name: DeleteOldNotifications :execrows
+DELETE FROM pc.notifications n
+WHERE n.org_id = $1 AND n.expires_at < now() - interval '30 days'
+  AND NOT EXISTS (SELECT 1 FROM pc.deliveries d WHERE d.org_id = n.org_id AND d.notification_id = n.id)
+`
+
+func (q *Queries) DeleteOldNotifications(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldNotifications, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expireStaleDeliveries = `-- name: ExpireStaleDeliveries :execrows
+UPDATE pc.deliveries d SET state = 'EXPIRED', last_error = 'notification_expired', finished_at = now()
+FROM pc.notifications n
+WHERE d.org_id = $1 AND n.org_id = d.org_id AND n.id = d.notification_id AND d.state = 'PENDING'
+  AND n.expires_at < now() - interval '1 hour'
+`
+
+// A safety net: pending deliveries of expired notifications end EXPIRED
+// even if their job was lost.
+func (q *Queries) ExpireStaleDeliveries(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, expireStaleDeliveries, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finishDelivery = `-- name: FinishDelivery :execrows
+UPDATE pc.deliveries SET state = $1, last_error = $2, finished_at = now()
+WHERE org_id = $3 AND id = $4 AND state = 'PENDING'
+`
+
+type FinishDeliveryParams struct {
+	State     string
+	LastError *string
+	OrgID     ids.OrgID
+	ID        ids.UUID
+}
+
+// Ends a pending delivery without sending it (EXPIRED, SKIPPED, CANCELLED).
+func (q *Queries) FinishDelivery(ctx context.Context, arg FinishDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishDelivery,
+		arg.State,
+		arg.LastError,
+		arg.OrgID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const flagChannelQueueFull = `-- name: FlagChannelQueueFull :exec
@@ -217,6 +345,95 @@ func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotification
 	return result.RowsAffected(), nil
 }
 
+const loadDelivery = `-- name: LoadDelivery :one
+
+SELECT d.id, d.kind, d.state, d.attempts, d.channel_id, d.recipient_user_id,
+       n.id AS notification_id, n.type, n.severity, n.title, n.body, n.link_path, n.subject_type, n.subject_id,
+       n.created_at AS notification_created_at, (n.expires_at <= now())::bool AS expired,
+       c.state AS channel_state, c.name AS channel_name, c.url AS channel_url, c.secret AS channel_secret,
+       c.prev_secret AS channel_prev_secret, coalesce(c.prev_secret_expires_at > now(), false)::bool AS prev_secret_live,
+       u.email AS recipient_email, u.state AS recipient_state
+FROM pc.deliveries d
+JOIN pc.notifications n ON n.org_id = d.org_id AND n.id = d.notification_id
+LEFT JOIN pc.notification_channels c ON c.org_id = d.org_id AND c.id = d.channel_id
+LEFT JOIN pc.users u ON u.org_id = d.org_id AND u.id = d.recipient_user_id
+WHERE d.org_id = $1 AND d.id = $2
+`
+
+type LoadDeliveryRow struct {
+	ID                    ids.UUID
+	Kind                  string
+	State                 string
+	Attempts              int32
+	ChannelID             *ids.UUID
+	RecipientUserID       *ids.UUID
+	NotificationID        ids.UUID
+	Type                  string
+	Severity              string
+	Title                 string
+	Body                  string
+	LinkPath              string
+	SubjectType           *string
+	SubjectID             *ids.UUID
+	NotificationCreatedAt time.Time
+	Expired               bool
+	ChannelState          *string
+	ChannelName           *string
+	ChannelUrl            *string
+	ChannelSecret         []byte
+	ChannelPrevSecret     []byte
+	PrevSecretLive        bool
+	RecipientEmail        *string
+	RecipientState        *string
+}
+
+// Delivery (the worker). LoadDelivery reads everything one attempt needs;
+// the outcome is recorded with conditional updates on PENDING (HR-004).
+func (q *Queries) LoadDelivery(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (LoadDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, loadDelivery, orgID, iD)
+	var i LoadDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.State,
+		&i.Attempts,
+		&i.ChannelID,
+		&i.RecipientUserID,
+		&i.NotificationID,
+		&i.Type,
+		&i.Severity,
+		&i.Title,
+		&i.Body,
+		&i.LinkPath,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.NotificationCreatedAt,
+		&i.Expired,
+		&i.ChannelState,
+		&i.ChannelName,
+		&i.ChannelUrl,
+		&i.ChannelSecret,
+		&i.ChannelPrevSecret,
+		&i.PrevSecretLive,
+		&i.RecipientEmail,
+		&i.RecipientState,
+	)
+	return i, err
+}
+
+const pauseChannel = `-- name: PauseChannel :execrows
+UPDATE pc.notification_channels SET state = 'PAUSED', pause_reason = $1, updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'ACTIVE'
+`
+
+func (q *Queries) PauseChannel(ctx context.Context, reason *string, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, pauseChannel, reason, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const pendingDeliveries = `-- name: PendingDeliveries :one
 SELECT count(*)::int FROM (
     SELECT 1 FROM pc.deliveries
@@ -230,4 +447,41 @@ func (q *Queries) PendingDeliveries(ctx context.Context, orgID ids.OrgID, channe
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordDeliveryAttempt = `-- name: RecordDeliveryAttempt :execrows
+UPDATE pc.deliveries
+SET attempts = $1, last_attempt_at = now(), last_status = $2,
+    last_error = $3, state = $4,
+    next_attempt_at = CASE WHEN $4::text = 'PENDING' THEN now() + make_interval(secs => $5::int) END,
+    finished_at = CASE WHEN $4::text = 'PENDING' THEN NULL ELSE now() END
+WHERE org_id = $6 AND id = $7 AND state = 'PENDING' AND attempts = $1::int - 1
+`
+
+type RecordDeliveryAttemptParams struct {
+	Attempts     int32
+	LastStatus   *int32
+	LastError    *string
+	State        string
+	RetrySeconds int32
+	OrgID        ids.OrgID
+	ID           ids.UUID
+}
+
+// Records one attempt: DELIVERED, FAILED (last attempt or gone) or still
+// PENDING with its next attempt time.
+func (q *Queries) RecordDeliveryAttempt(ctx context.Context, arg RecordDeliveryAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDeliveryAttempt,
+		arg.Attempts,
+		arg.LastStatus,
+		arg.LastError,
+		arg.State,
+		arg.RetrySeconds,
+		arg.OrgID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

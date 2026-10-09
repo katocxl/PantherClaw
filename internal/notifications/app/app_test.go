@@ -45,3 +45,17 @@ func TestHR039_OnlyNotificationsReadDeliveryState(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkersRegister(t *testing.T) {
+	svc, err := napp.New(nil, nil, nil, napp.Config{PublicURL: "https://pc.example.test"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := jobs.NewRegistry()
+	if err := napp.RegisterWorkers(reg, svc); err != nil {
+		t.Fatal(err)
+	}
+	if len(napp.PeriodicJobs()) != 1 || len(reg.Kinds()) != 3 {
+		t.Fatalf("kinds %v", reg.Kinds())
+	}
+}

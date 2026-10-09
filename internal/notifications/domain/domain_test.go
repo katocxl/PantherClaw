@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/notifications/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
@@ -153,5 +154,26 @@ func TestSubscriptions(t *testing.T) {
 	}
 	if !domain.Critical.AtLeast(domain.Warning) || domain.Info.AtLeast(domain.Warning) {
 		t.Fatal("severity order")
+	}
+}
+
+func TestHR159_RetryScheduleAndHealth(t *testing.T) {
+	var total time.Duration
+	for n := 1; n < domain.MaxAttempts; n++ {
+		total += domain.RetryDelay(n)
+	}
+	if domain.RetryDelay(1) != 5*time.Second || domain.RetryDelay(2) != 5*time.Minute || domain.RetryDelay(7) != 10*time.Hour ||
+		domain.RetryDelay(99) != 10*time.Hour || total < 27*time.Hour || total > 28*time.Hour {
+		t.Fatalf("schedule total %s", total)
+	}
+	if domain.HealthOf(0) != domain.Healthy || domain.HealthOf(3) != domain.Degraded || domain.HealthOf(domain.FailingAfter) != domain.Failing {
+		t.Fatal("health levels")
+	}
+}
+
+func TestHR158_SlackTextHasOneLinkAndNoMarkup(t *testing.T) {
+	got := domain.SlackText("Key <added>", "by <!channel> & <https://evil.example|you>", "https://pc.example.test/account?org=o")
+	if strings.Count(got, "<") != 1 || strings.Contains(got, "<!channel>") || !strings.HasSuffix(got, "<https://pc.example.test/account?org=o|Open in PantherClaw>") {
+		t.Fatalf("slack text %q", got)
 	}
 }
