@@ -9,11 +9,11 @@ PantherClaw is being built in the open under a source-available license. **Outsi
 All changes follow [docs/BUILD_GUIDE.md](docs/BUILD_GUIDE.md) and the gates in [docs/security/GATES_AND_REVIEW.md](docs/security/GATES_AND_REVIEW.md):
 
 1. **G0 brief** exists for the milestone (scope, threat slice, constraints, tests).
-2. Work on a short-lived task branch in your own worktree and land it with `tools/scripts/flow.sh`, which keeps parallel sessions from overwriting each other ([docs/PARALLEL_WORK.md](docs/PARALLEL_WORK.md)).
+2. Work on a short-lived branch from `origin/main` in your own worktree, so parallel sessions don't overwrite each other ([docs/PARALLEL_WORK.md](docs/PARALLEL_WORK.md)).
 3. Every source file carries the SPDX + copyright header (`task license:fix`).
 4. Tests first for security-relevant behavior; reference requirement IDs (`F###`, `PN-###`, `HR-###`, `T-###`) in test names or comments.
-5. `task check` must pass locally (format, lint, unit tests, headers, secrets scan), and so must `task test:integration` (start the cluster with `task up PROFILE=test`) and `task trace`.
-6. Commit with a [Conventional Commit](https://www.conventionalcommits.org/) message and land with `tools/scripts/flow.sh land`, which runs the checks and fast-forwards `main`. CI, PRs and the G1 review are suspended for development speed ([EX-004](docs/security/GATES_AND_REVIEW.md#4-exceptions)), so the local checks are the only gate.
+5. `task check` must pass locally (format, lint, unit tests, headers, secrets scan), and so must `task test:integration` (start the cluster with `task up PROFILE=test`) and `task trace` when the change touches what they cover.
+6. Commit with a [Conventional Commit](https://www.conventionalcommits.org/) message, push the branch and open a pull request; the founder merges it. CI and the G1 review are suspended for development speed ([EX-004](docs/security/GATES_AND_REVIEW.md#4-exceptions)), so GitHub runs no checks and the local checks are the only gate.
 
 ## Development setup
 

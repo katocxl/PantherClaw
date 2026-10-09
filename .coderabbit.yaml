@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 #
-# CodeRabbit reviews are switched off while EX-004 is active (no PRs; changes
-# go straight to main). Uninstall the app on GitHub to remove it entirely.
+# CodeRabbit reviews are switched off while EX-004 is active (pull requests get
+# no automated review). Uninstall the app on GitHub to remove it entirely.
 reviews:
   auto_review:
     enabled: false

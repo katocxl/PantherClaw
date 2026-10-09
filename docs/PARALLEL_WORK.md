@@ -1,38 +1,34 @@
 # Parallel work: several AI sessions on one repository
 
-Read this before you start any task in this repository. It applies to every Claude Code session (desktop tab, terminal or IDE) and to people. It works together with the no-CI rule in [CLAUDE.md](../CLAUDE.md) ([EX-004](security/GATES_AND_REVIEW.md#4-exceptions)).
+Read this before you start any task in this repository. It applies to every Claude Code session (desktop tab, terminal or IDE) and to people. It works together with the pull-request rule in [CLAUDE.md](../CLAUDE.md) ([EX-004](security/GATES_AND_REVIEW.md#4-exceptions)).
 
-## Can two sessions work at the same time without breaking `main`?
+## How work reaches `main`
 
-Yes, if both follow this page. Two tasks can still conflict when they change the same lines, and no workflow prevents that. What this one does:
-
-- each conflict shows up on one task branch, when that task lands, and is resolved there;
-- `main` only moves forward (never force-pushed), and only to a commit that passed every local check *with all earlier landed work included*;
-- two sessions landing at the same moment cannot overwrite each other: the second one notices, rebases and runs the checks again.
-
-## Branches
+Every task ends as a pull request. GitHub runs no checks on it, and the founder merges the pull requests, usually in a batch when a piece of work is done. Two tasks can still change the same lines; that shows up as a conflict on the second pull request after the first one merges, and the session that owns it resolves it on its branch.
 
 | Branch | What it is | Rules |
 |---|---|---|
-| `main` | What is on GitHub. | Moves only through `tools/scripts/flow.sh land`. Never commit on it and never check it out. |
-| `integration` | Local staging branch. Every worktree on this machine shares it. | Never check it out. Only `flow.sh` moves it, by compare-and-swap. After each landing it equals `origin/main`. |
-| `task/<slug>` | One task. | One session per branch, in its own worktree. Private: rebasing it is fine. `land` deletes it. |
+| `main` | What is on GitHub. | Changes only through a merged pull request (the `main` ruleset requires one). Never commit on it or push to it. |
+| your branch | One task: `feat/…`, `fix/…`, `docs/…`, or the `claude/…` branch the desktop app gave your worktree. | One session per branch, in its own worktree. Push it and open a pull request. |
 
 ## The loop for every task
 
-1. **Get a worktree of your own.** The desktop app gives each session one under `.claude/worktrees/`. Never work in another session's worktree. Two sessions in one folder overwrite each other's files.
-2. **Look at what is in flight:** `tools/scripts/flow.sh status`. It lists every `task/*` branch and the files it changes. If your task needs the same files, say so to the founder before you start. Either wait for that task to land, or put your code in new files and keep your edits to the shared files to a few lines.
-3. **Start:** `tools/scripts/flow.sh start <slug>` (for example `m4-215-pclaw`). It creates `task/<slug>` from the newest `integration`.
-4. **Work in small steps.** A task should take about 30–60 minutes of agent time and stay under about 600 lines of non-generated diff ([BUILD_GUIDE](BUILD_GUIDE.md) §0). Split bigger work into several tasks and land them one after another. Commit often on your branch.
-5. **Pick up other sessions' work** with `tools/scripts/flow.sh sync`, which rebases onto `integration`. Do it whenever someone lands, and at the latest before you land. Small, early syncs make conflicts small.
-6. **Land:** `tools/scripts/flow.sh land`. It:
-   1. rebases your branch onto `integration`;
-   2. runs `task check`, `task test:integration` and `task trace` on the result (minutes, so run it in the background);
-   3. moves `integration` to your commit, but only if nobody landed meanwhile; otherwise it rebases and checks again, up to 3 times;
-   4. fast-forwards `origin/main` to the same commit, then deletes your task branch.
+1. **Get a worktree of your own.** The desktop app gives each session one under `.claude/worktrees/`. Never work in another session's worktree: two sessions in one folder overwrite each other's files. A new worktree lacks the git-ignored `deploy/compose/.env` (the test database password), so copy it from the main checkout before you run the integration tests: `cp "$(git worktree list | head -1 | cut -d' ' -f1)/deploy/compose/.env" deploy/compose/.env`.
+2. **Look at what is in flight:** `gh pr list` shows the open pull requests and `gh pr diff <n> --name-only` the files each one changes. If your task needs the same files, tell the founder before you start. Either build on that pull request's branch (a stacked pull request), or put your code in new files and keep your edits to the shared files to a few lines.
+3. **Start** from the latest `origin/main`: `git fetch origin`, then `git switch -c <type>/<slug> origin/main`. In a desktop worktree that already has a `claude/…` branch, run `git rebase origin/main` before your first commit. For stacked work, start from the branch you build on instead.
+4. **Work in small steps.** A task should take about 30–60 minutes of agent time and stay under about 600 lines of non-generated diff ([BUILD_GUIDE](BUILD_GUIDE.md) §0). Split bigger work into several pull requests. Commit often.
+5. **Check locally.** There is no CI, so this is the only test the code gets before the founder merges it:
+   - always `task check` (format, headers, lint, unit tests, secret scan);
+   - `task test:integration` when you touched database, server, gateway or end-to-end code (cluster on `127.0.0.1:5433`; start it with `task up PROFILE=test`);
+   - `task trace` when you added or renamed `HR-###` or `T-###` tests.
 
-   A task is done only when `land` prints `landed`. If a check fails, fix it on your branch, commit and run `land` again. Never skip a check and never weaken a test to get through.
-7. **Report** what landed (commit and summary) to the founder, then start the next task with `start`.
+   They take minutes, so run them in the background. Never weaken a test or an `HR-###` rule to make one pass.
+6. **Open the pull request:** `git push -u origin HEAD`, then `gh pr create --base main` (or `--base <branch>` for stacked work). Say what changed, which checks ran and their result, and which pull request yours depends on.
+7. **Report** the pull request link to the founder, then start the next task. Never merge, not even your own pull request.
+
+## Keeping an open pull request up to date
+
+When the founder asks (for example after another pull request merged and yours now conflicts), merge `origin/main` into your branch, resolve the conflicts, run the checks again and push. Merging keeps branches stacked on yours intact; never force-push a branch another pull request is built on. When the founder merges a stacked pull request's base, GitHub retargets the next one to `main` and deletes the merged branch.
 
 ## Shared files: where conflicts come from
 
@@ -45,32 +41,32 @@ These files are touched by many tasks. Keep your edits to them small and prefer 
 - numbered things: `migrations/000NN_*.sql`, `HR-###` in [HARDENING_RULES](security/HARDENING_RULES.md), `T-###` in [THREAT_MODEL](security/THREAT_MODEL.md), proto field numbers;
 - G0 briefs in `docs/g0/` and [FEATURES.md](FEATURES.md).
 
-**Numbers.** Use the range the founder or the G0 brief gave your task. If there is none, take the next free number on `integration` when you start, and check it again after your last `sync`. A duplicate migration version makes `task test:integration` fail; renumber your file. A duplicate `HR`/`T` id must be renumbered in your branch, never in one that has landed.
+**Numbers.** Use the range the founder or the G0 brief gave your task. If there is none, take the next number that is free on `main` *and* in every open pull request (`gh pr list`, then look at their diffs), and say which numbers you took in the pull request description. A duplicate migration version makes `task test:integration` fail once both are merged; renumber in the pull request that is not merged yet.
 
-## Resolving a conflict during `sync` or `land`
+## Resolving a conflict
 
 - **Generated code** (`internal/gen/**`): take either side, run `task gen` (it regenerates and fixes headers), and `git add` the result. Never hand-merge generated files.
 - **`go.sum`**: take either side, then `go mod tidy`.
 - **Everything else**: keep both sides' intent. Never drop another task's change to make yours fit. If you cannot tell what the other change needs, stop and ask the founder.
-- Then `git add` the files, run `git rebase --continue`, and run `land` again. It checks everything once more.
+- Then commit the merge, run the checks again and push.
 
 ## Shared resources
 
 - **Test database:** all sessions share the cluster on `127.0.0.1:5433`. Each test creates its own database, so concurrent runs are safe. If it is down, `task up PROFILE=test`. Never stop, reset or wipe containers another session may be using.
+- **Lint:** golangci-lint keeps one lock per machine; `task lint` waits for another session's run instead of failing.
 - **Ports:** if you run a local server or gateway, use ports no other session uses.
 - **Docker, the founder's credentials and GitHub settings** are shared. Change none of them unless the founder asks.
 
 ## What never happens
 
-- No force-push, no `git push --delete`, no rewriting `main` or `integration`.
-- No commits straight on `main` or `integration`. If `integration` and `origin/main` ever diverge, `flow.sh` stops: tell the founder.
-- No pull requests and no CI while EX-004 lasts. The local checks in `land` are the only gate.
+- No pushes to `main` and no merges by a session: the founder merges every pull request.
+- No force-push of a branch another pull request is built on, and no `git push --delete` of a branch someone else owns.
 
 ## Quick reference
 
 ```bash
-tools/scripts/flow.sh status        # what is in flight, and which files each task changes
-tools/scripts/flow.sh start <slug>  # new task branch from integration
-tools/scripts/flow.sh sync          # pick up what others landed
-tools/scripts/flow.sh land          # check everything, then land on integration and origin/main
+gh pr list                                    # open pull requests (what is in flight)
+git fetch origin && git switch -c feat/x origin/main
+go tool -modfile=tools/pins/task/go.mod task check
+git push -u origin HEAD && gh pr create --base main
 ```

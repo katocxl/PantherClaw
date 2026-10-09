@@ -53,8 +53,9 @@ tasks:
   lint:
     desc: Lint all Go modules
     cmds:
+      # One lock per machine: wait for another worktree's lint instead of failing.
       - for: { var: GO_MODULES }
-        cmd: cd "{{.ROOT_DIR}}/{{.ITEM}}" && {{.GOLANGCI}} run ./...
+        cmd: cd "{{.ROOT_DIR}}/{{.ITEM}}" && {{.GOLANGCI}} run --allow-serial-runners ./...
 
   lint:workflows:
     desc: Lint GitHub Actions workflows (actionlint)

@@ -28,11 +28,11 @@ Also: [THREAT_MODEL.md](security/THREAT_MODEL.md) (`T-###`), [GATES_AND_REVIEW.m
 
 ```
 G0 brief (GATES_AND_REVIEW §5) → protos/migrations/contracts first → tests named by ID first
-→ implement (domain → app → adapters → cmd) → commit on a task branch → tools/scripts/flow.sh land (task check + task test:integration + task trace, then fast-forward main)
+→ implement (domain → app → adapters → cmd) → commit on a branch → task check (+ task test:integration, task trace where they apply) → pull request; the founder merges
 → update traceability (FEATURES status, HR/T test links) → next slice
 ```
 
-While EX-004 is active there are no PRs and no CI: local checks are the only gate, so never push to `main` with a failing or skipped check. Several sessions may work at once: each works on its own task branch and worktree and lands through the local `integration` branch with `tools/scripts/flow.sh`, which rebases onto the latest landed work and runs the checks again before `main` moves ([PARALLEL_WORK.md](PARALLEL_WORK.md)).
+While EX-004 is active there is no CI: GitHub runs no checks on a pull request, so the local checks are the only gate. Run them before you open the pull request and report the result in it. Several sessions may work at once: each works on its own branch and worktree and opens its own pull request, and only the founder merges ([PARALLEL_WORK.md](PARALLEL_WORK.md)).
 
 Rules for the AI implementer:
 - Implement only what the current G0 brief covers; surface missing security decisions instead of guessing.
