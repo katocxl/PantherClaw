@@ -36,7 +36,7 @@ Excluded: **Trivy and `aquasecurity/trivy-action`** (supply-chain compromise, Ma
 | `github.com/go-jose/go-jose/v4` (≥ 4.1.5) | JWS/JWT/JWK, thumbprints | Apache-2.0 | Algorithm allowlists; RFC 7638 |
 | `github.com/coreos/go-oidc/v3` | OIDC relying party | Apache-2.0 | ID token verification, discovery |
 | `golang.org/x/oauth2` | OAuth2 flows | BSD-3 | Auth code, device flow |
-| `github.com/go-webauthn/webauthn` | WebAuthn step-up | BSD-3 | Maintained server-side WebAuthn |
+| `github.com/go-webauthn/webauthn` | WebAuthn step-up (`internal/authn/app`) | BSD-3 | Maintained server-side WebAuthn: all attestation formats, the browser and authenticator edge cases, and a caller-supplied challenge (needed for transaction-bound approvals, HR-033). v0.18.2 is from 2026-09-19 (outside the cooldown; founder decision 1, G0 M5). Used with attestation `none` and user verification required. Adds 11 modules, all under allowed licences: `fxamacker/cbor/v2` and `x448/float16` (MIT, CBOR), `go-webauthn/x` (BSD-3), `golang-jwt/jwt/v5` (MIT, metadata service), `google/go-tpm` (Apache-2.0, TPM attestation), `google/uuid` (BSD-3), `go-viper/mapstructure/v2` (MIT), `tinylib/msgp` and `philhofer/fwd` (MIT), `golang.org/x/crypto` and `golang.org/x/sys` (BSD-3). Alternative considered: a verifier written here for attestation `none` only (fewer modules, but security-critical parsing maintained by one person) |
 | `github.com/modelcontextprotocol/go-sdk` | MCP server/client | MIT/Apache | Official SDK |
 | `go.opentelemetry.io/otel` (+ SDK, OTLP exporters) | Telemetry | Apache-2.0 | Standard |
 | `github.com/google/uuid` | UUIDv7 | BSD-3 | Small, stable |
