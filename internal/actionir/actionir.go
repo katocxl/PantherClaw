@@ -64,20 +64,23 @@ type Destination struct {
 
 // ActionIR is one canonical action.
 type ActionIR struct {
-	V             int            `json:"v"`
-	Org           string         `json:"org"`
-	Env           string         `json:"env"`
-	RunID         string         `json:"run_id"`
-	ActionID      string         `json:"action_id"`
-	AgentInstance string         `json:"agent_instance"`
-	Operation     string         `json:"operation"`
-	Definition    Definition     `json:"definition"`
-	Channel       string         `json:"channel"`
-	Route         string         `json:"route"`
-	Target        Target         `json:"target"`
-	Params        jsontext.Value `json:"params"`
-	Destinations  []Destination  `json:"destinations"`
-	DedupeKey     string         `json:"dedupe_key,omitempty"`
+	V             int        `json:"v"`
+	Org           string     `json:"org"`
+	Env           string     `json:"env"`
+	RunID         string     `json:"run_id"`
+	ActionID      string     `json:"action_id"`
+	AgentInstance string     `json:"agent_instance"`
+	Operation     string     `json:"operation"`
+	Definition    Definition `json:"definition"`
+	Channel       string     `json:"channel"`
+	Route         string     `json:"route"`
+	// Connection is the registered connection the request came through
+	// (PAP-1 §6); optional, set by the gateway for http, mcp and hook.
+	Connection   string         `json:"connection,omitempty"`
+	Target       Target         `json:"target"`
+	Params       jsontext.Value `json:"params"`
+	Destinations []Destination  `json:"destinations"`
+	DedupeKey    string         `json:"dedupe_key,omitempty"`
 }
 
 // Parsed is a validated ActionIR with its canonical bytes and hash.
@@ -186,6 +189,11 @@ func (a ActionIR) validate() error {
 		return ambiguous("unknown channel")
 	case !routePattern.MatchString(a.Route):
 		return ambiguous("invalid route")
+	}
+	if a.Connection != "" {
+		if _, err := ids.ParseUUID(a.Connection); err != nil {
+			return ambiguous("connection must be a canonical UUID")
+		}
 	}
 	if err := identifier("target.type", a.Target.Type, true); err != nil {
 		return err

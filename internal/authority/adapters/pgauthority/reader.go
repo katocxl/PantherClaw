@@ -155,6 +155,32 @@ func (r *Reader) Run(ctx context.Context, org ids.OrgID, id ids.UUID) (pipeline.
 	return out, err
 }
 
+// Connection implements pipeline.Reader: a connection with its explicit
+// route modes (G0 M6).
+func (r *Reader) Connection(ctx context.Context, org ids.OrgID, id ids.UUID) (pipeline.Connection, error) {
+	var out pipeline.Connection
+	err := r.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		c, err := q.GetConnection(ctx, org, id)
+		if err != nil {
+			return notFound(err)
+		}
+		routes, err := q.ListConnectionRoutes(ctx, org, id)
+		if err != nil {
+			return err
+		}
+		out = pipeline.Connection{
+			ID: c.ID, Gateway: c.GatewayID, Kind: c.Kind, Package: c.Package, State: c.State, AccessMode: c.AccessMode,
+			DefaultMode: c.DefaultMode, Modes: make(map[string]string, len(routes)),
+		}
+		for _, rt := range routes {
+			out.Modes[rt.Route] = rt.Mode
+		}
+		return nil
+	})
+	return out, err
+}
+
 func principal(user, sa, instance *ids.UUID) gdomain.Principal {
 	switch {
 	case user != nil:

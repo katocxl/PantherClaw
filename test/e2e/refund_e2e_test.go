@@ -205,11 +205,15 @@ func (s *stack) startGateway(t *testing.T) *gateway.Gateway {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gateway.New(&s.gatewayCfg, id, pclog.Discard())
+	g, err := gateway.New(ctx, &s.gatewayCfg, id, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = g.Run(ctx) }()
+	// Like `serve`, take no request before the first containment snapshot.
+	if err := g.WaitReady(ctx, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
 	return g
 }
 

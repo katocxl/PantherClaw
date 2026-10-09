@@ -210,7 +210,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
-	m6, err := newM6(cfg, pool, reg)
+	m6, err := newM6(cfg, pool, reg, m5.notifications, log)
 	if err != nil {
 		return err
 	}
@@ -261,6 +261,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		m6.mountPages(web)
 		device.WithBrowserCallback(web.Callback)
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,

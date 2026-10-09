@@ -203,7 +203,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 		t.Fatalf("a repeat while the first is issued: %s", decisive(r))
 	}
 	// Failed at the target: the claim is released.
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, first.PermitID, first.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, first.PermitID, first.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: first.PermitID, Outcome: finalize.Failed}); err != nil {
@@ -214,7 +214,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 		t.Fatalf("after a failure the action may be tried again: %s", decisive(second))
 	}
 	// Accepted: repeats wait for the window.
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, second.PermitID, second.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, second.PermitID, second.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: second.PermitID, Outcome: finalize.Accepted}); err != nil {
@@ -230,7 +230,7 @@ func TestHR007_RepeatProtectionFollowsTheOutcome(t *testing.T) {
 		t.Fatalf("after the window: %s", decisive(third))
 	}
 	// Unknown: blocked until reconciled (M7).
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, third.PermitID, third.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, third.PermitID, third.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Authority.RecordExecution(ctx, s.Gateway, finalize.Execution{Permit: third.PermitID, Outcome: finalize.Unknown}); err != nil {
@@ -267,7 +267,7 @@ func TestHR003_ExpiredPermitsReleaseUnknownOnesHold(t *testing.T) {
 	if b.Permit == "" {
 		t.Fatalf("after the release: %s", decisive(b))
 	}
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, b.PermitID, b.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, b.PermitID, b.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	s.W.Advance(time.Minute)
@@ -293,23 +293,23 @@ func TestHR001_BeginDispatchIsTheCommitPoint(t *testing.T) {
 		return r
 	}
 	a := issue()
-	if err := s.Authority.BeginDispatch(ctx, finalize.Gateway{ID: "other", Org: s.Org}, a.PermitID, a.Epoch); !errors.Is(err, finalize.ErrPermitUnknown) {
+	if _, err := s.Authority.BeginDispatch(ctx, finalize.Gateway{ID: "other", Org: s.Org}, a.PermitID, a.Epoch, finalize.Outbound{}); !errors.Is(err, finalize.ErrPermitUnknown) {
 		t.Fatalf("another gateway's permit: %v", err)
 	}
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, a.PermitID, a.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, a.PermitID, a.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, a.PermitID, a.Epoch); !errors.Is(err, finalize.ErrPermitUsed) {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, a.PermitID, a.Epoch, finalize.Outbound{}); !errors.Is(err, finalize.ErrPermitUsed) {
 		t.Fatalf("a permit is single use: %v", err)
 	}
 	b := issue()
 	s.W.Cont.Epoch++ // a revocation elsewhere
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, b.PermitID, b.Epoch); !errors.Is(err, finalize.ErrEpochStale) {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, b.PermitID, b.Epoch, finalize.Outbound{}); !errors.Is(err, finalize.ErrEpochStale) {
 		t.Fatalf("a permit from before a containment change: %v", err)
 	}
 	c := issue()
 	s.W.Advance(6 * time.Second)
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, c.PermitID, c.Epoch); !errors.Is(err, finalize.ErrPermitExpired) {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, c.PermitID, c.Epoch, finalize.Outbound{}); !errors.Is(err, finalize.ErrPermitExpired) {
 		t.Fatalf("an expired permit: %v", err)
 	}
 	_ = g

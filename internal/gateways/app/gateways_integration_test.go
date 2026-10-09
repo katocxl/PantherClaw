@@ -369,3 +369,33 @@ func TestT037_GatewaysOfAnotherOrgAreNotFound(t *testing.T) {
 		t.Fatalf("the gateway was harmed by another org's calls: %v", err)
 	}
 }
+
+// TestIntGatewaysListInPages: the first page starts at the beginning (the
+// zero cursor is SQL NULL), pages follow each other, and revoked gateways
+// are listed only on request.
+func TestIntGatewaysListInPages(t *testing.T) {
+	e := newEnv(t)
+	var made []ids.UUID
+	for _, name := range []string{"a", "b", "c"} {
+		g, err := e.svc.CreateGateway(e.admin, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = append(made, g.ID)
+	}
+	if _, err := e.svc.RevokeGateway(e.admin, made[2], "test"); err != nil {
+		t.Fatal(err)
+	}
+	first, next, err := e.svc.ListGateways(e.admin, 1, "", false)
+	if err != nil || len(first) != 1 || first[0].ID != made[0] || next == "" {
+		t.Fatalf("first page: %d %q %v", len(first), next, err)
+	}
+	second, next, err := e.svc.ListGateways(e.admin, 1, next, false)
+	if err != nil || len(second) != 1 || second[0].ID != made[1] || next != "" {
+		t.Fatalf("second page: %d %q %v", len(second), next, err)
+	}
+	all, _, err := e.svc.ListGateways(e.admin, 0, "", true)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("with revoked: %d %v", len(all), err)
+	}
+}
