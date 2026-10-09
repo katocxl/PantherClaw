@@ -94,6 +94,26 @@ func (allowAll) Require(tenancy.Caller, td.Permission, td.Path) error { return n
 func seedAuthority(t *testing.T, pool *db.Pool, org ids.OrgID, agent, user ids.UUID, charges ...string) string {
 	t.Helper()
 	ctx := context.Background()
+	seedPackage(t, pool, org)
+	defStore := &defspg.Store{Pool: pool}
+
+	billing := ids.NewV7()
+	if err := pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		_, err := tx.Exec(ctx, "INSERT INTO pc.service_accounts (org_id, id, name, created_by) VALUES ($1, $2, 'billing', 'e2e')", org, billing)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return seedFactsAndGrant(t, pool, org, defStore, billing, agent, user, charges...)
+}
+
+// seedPackage imports the reference package into org, signed with a test
+// root, and activates it. Tests seed it directly: importing through
+// PackageService needs a targets document signed by a root the server
+// trusts, and a test server trusts none (G0 M4 decision 3).
+func seedPackage(t *testing.T, pool *db.Pool, org ids.OrgID) {
+	t.Helper()
+	ctx := context.Background()
 	priv, kid, err := rootkey.Generate(rootkey.PurposePackages)
 	if err != nil {
 		t.Fatal(err)
@@ -109,22 +129,20 @@ func seedAuthority(t *testing.T, pool *db.Pool, org ids.OrgID, agent, user ids.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	defStore := &defspg.Store{Pool: pool}
-	im := &defsapp.Importer{Roots: trust.Roots{kid: signer.Public()}, Repo: defStore, Clock: clock.System{}}
+	im := &defsapp.Importer{Roots: trust.Roots{kid: signer.Public()}, Repo: &defspg.Store{Pool: pool}, Clock: clock.System{}}
 	if _, err := im.Import(ctx, org, mockpayments.Name, mockpayments.Version, doc, mockpayments.Package, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := im.Transition(ctx, org, mockpayments.Name, mockpayments.Version, defs.StateActive, nil); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	billing := ids.NewV7()
-	if err := pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO pc.service_accounts (org_id, id, name, created_by) VALUES ($1, $2, 'billing', 'e2e')", org, billing)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
+// seedFactsAndGrant registers billing as the provider of refundable facts,
+// reports each charge, and issues the grant seedAuthority describes.
+func seedFactsAndGrant(t *testing.T, pool *db.Pool, org ids.OrgID, defStore *defspg.Store, billing, agent, user ids.UUID, charges ...string) string {
+	t.Helper()
+	ctx := context.Background()
 	human := tenancy.WithCaller(ctx, tenancy.Caller{Subject: td.Subject{Org: org, Principal: td.PrincipalRef{Kind: td.KindUser, ID: user}}})
 	facts := &factsapp.Service{Store: &factspg.Store{Pool: pool}, Authz: allowAll{}}
 	if _, err := facts.RegisterProvider(human, "billing.system", billing, []fdomain.Declaration{

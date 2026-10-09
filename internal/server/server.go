@@ -675,7 +675,8 @@ func registerAuthorityAdmin(rs *connect.Server, d apiDeps, grants *grantsapp.Ser
 		}
 	}
 	pantherclawv1connect.RegisterPackageServiceHandler(rs, packagesrpc.New(&defsapp.Admin{
-		Importer: &defsapp.Importer{Roots: roots, Repo: defs, Clock: clock.System{}}, Reads: defs, Authz: authz,
+		Importer: &defsapp.Importer{Roots: roots, Repo: defs, Keys: defs, Clock: clock.System{}}, Reads: defs, Authz: authz,
+		Ents: d.billing,
 	}))
 	pantherclawv1connect.RegisterPolicyServiceHandler(rs, policiesrpc.New(&policyapp.Versions{
 		Store: &polpg.Store{Pool: d.pool}, Facts: facts, Definitions: defs, Authz: authz, Limits: celenv.DefaultLimits,

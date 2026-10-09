@@ -80,12 +80,12 @@ func with(ps ...[]Permission) []Permission {
 var roles = []Role{
 	{
 		Name: RoleOrgAdmin, Title: "Org Admin", Scopes: orgScope,
-		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails, manage gateways and connections, engage the kill switch or read restricted evidence.",
+		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages and registers the org's package-signing keys. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails, manage gateways and connections, engage the kill switch or read restricted evidence.",
 		Permissions: with(basicReads, []Permission{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
-			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport,
+			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport, PermPackageKeyManage,
 			PermNotificationRead, PermNotificationManage,
 		}, authorityReads, boundaryReads),
 	},

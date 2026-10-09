@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
 // Package rootkey creates and stores the offline root signing keys
-// (licence signing, package signing) used only by pclaw-admin (HR-063).
+// (licence signing, package signing) used only by pclaw-admin (HR-063), and
+// in the same format the org package-signing keys pclaw makes on a
+// customer's machine (HR-162).
 //
 // Private keys are written as PKCS#8 in a PEM block. With a passphrase the
 // block is encrypted: PBKDF2-HMAC-SHA256 (600,000 iterations, 16-byte salt)
@@ -38,10 +40,19 @@ type Purpose string
 const (
 	PurposeLicence  Purpose = "licence"
 	PurposePackages Purpose = "packages"
+	// PurposeOrgPackages is an org's own package-signing key (HR-162),
+	// created by pclaw on the customer's machine. It is not a PantherClaw
+	// root: pclaw-admin never makes one.
+	PurposeOrgPackages Purpose = "org-packages"
 )
 
 // Valid reports whether p is a known purpose.
-func (p Purpose) Valid() bool { return slices.Contains([]Purpose{PurposeLicence, PurposePackages}, p) }
+func (p Purpose) Valid() bool {
+	return slices.Contains([]Purpose{PurposeLicence, PurposePackages, PurposeOrgPackages}, p)
+}
+
+// Root reports whether p is one of PantherClaw's offline roots.
+func (p Purpose) Root() bool { return p == PurposeLicence || p == PurposePackages }
 
 const (
 	plainType     = "PANTHERCLAW ROOT PRIVATE KEY"
@@ -54,8 +65,13 @@ const (
 // ErrKeyFile reports an unreadable or invalid key file.
 var ErrKeyFile = errors.New("rootkey: invalid key file")
 
-// KID derives the kid of a root public key: "<purpose>-root-<thumbprint>".
+// KID derives the kid of a root public key: "<purpose>-root-<thumbprint>",
+// or "org-packages-<thumbprint>" for an org package-signing key (equal to
+// trust.OrgKID).
 func KID(p Purpose, pub ed25519.PublicKey) string {
+	if p == PurposeOrgPackages {
+		return string(p) + "-" + jws.Thumbprint(pub)[:22]
+	}
 	return string(p) + "-root-" + jws.Thumbprint(pub)[:22]
 }
 

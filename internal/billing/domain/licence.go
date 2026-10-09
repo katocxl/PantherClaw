@@ -186,3 +186,8 @@ func (e Entitlements) CheckAgents(current int) error {
 // (F573: Business and Enterprise; smaller tenants use only org, teams and
 // environments).
 func (e Entitlements) BusinessUnits() bool { return e.Edition == Business || e.Edition == Enterprise }
+
+// OrgPackageKeys reports whether the edition lets an org register its own
+// package-signing keys and import packages signed with them (F361, HR-162:
+// Team and above). Packages already active keep deciding without it.
+func (e Entitlements) OrgPackageKeys() bool { return e.Edition.Paid() }

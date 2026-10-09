@@ -4,12 +4,13 @@
 // Package scan is the local shadow-agent scan behind `pclaw scan`
 // (PN-001.1, F015). It reads, and never changes, the MCP configurations of
 // Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin
-// Desktop), Zed and JetBrains Junie, looks for agent-framework projects
-// under the given directories, and checks the environment and the servers'
-// configured environment and HTTP headers for credentials agents use,
-// PantherClaw pck_ keys included. Secrets never appear in a finding: only
-// the variable or header name, the kind of credential and its well-known
-// prefix. Findings stay on the machine unless submitted.
+// Desktop), Zed, JetBrains Junie, OpenAI Codex CLI and Google Gemini CLI,
+// looks for agent-framework projects under the given directories, and checks
+// the environment and the servers' configured environment, HTTP headers and
+// OAuth client secrets for credentials agents use, PantherClaw pck_ keys
+// included. Secrets never appear in a finding: only the variable or header
+// name, the kind of credential and its well-known prefix. Findings stay on
+// the machine unless submitted.
 package scan
 
 import (
@@ -25,6 +26,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Finding kinds.
@@ -57,6 +60,9 @@ type Options struct {
 	// Home and ConfigDir locate the per-user configurations
 	// (os.UserHomeDir, os.UserConfigDir).
 	Home, ConfigDir string
+	// CodexHome and GeminiCLIHome are $CODEX_HOME and $GEMINI_CLI_HOME,
+	// which move those clients' per-user configuration.
+	CodexHome, GeminiCLIHome string
 	// Paths are project directories to walk (at most MaxDepth deep).
 	Paths []string
 	// Environ is the environment to check (os.Environ).
@@ -112,7 +118,7 @@ func Run(o Options) []Finding {
 // clientConfig is one MCP configuration file and the path to its servers.
 type clientConfig struct {
 	client, path string
-	servers      []string // JSON member path to the servers object
+	servers      []string // member path to the servers object
 }
 
 func clientConfigs(o Options) []clientConfig {
@@ -138,6 +144,14 @@ func clientConfigs(o Options) []clientConfig {
 		add("devin_desktop", filepath.Join(o.Home, ".config", "devin", "mcp_config.json"), "mcpServers")
 		add("zed", filepath.Join(o.Home, ".config", "zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(o.Home, ".junie", "mcp", "mcp.json"), "mcpServers")
+		add("codex", filepath.Join(o.Home, ".codex", "config.toml"), "mcp_servers")
+		add("gemini_cli", filepath.Join(o.Home, ".gemini", "settings.json"), "mcpServers")
+	}
+	if o.CodexHome != "" {
+		add("codex", filepath.Join(o.CodexHome, "config.toml"), "mcp_servers")
+	}
+	if o.GeminiCLIHome != "" {
+		add("gemini_cli", filepath.Join(o.GeminiCLIHome, ".gemini", "settings.json"), "mcpServers")
 	}
 	for _, p := range o.Paths {
 		add("project", filepath.Join(p, ".mcp.json"), "mcpServers")
@@ -145,13 +159,15 @@ func clientConfigs(o Options) []clientConfig {
 		add("vscode", filepath.Join(p, ".vscode", "mcp.json"), "servers")
 		add("zed", filepath.Join(p, ".zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(p, ".junie", "mcp", "mcp.json"), "mcpServers")
+		add("codex", filepath.Join(p, ".codex", "config.toml"), "mcp_servers")
+		add("gemini_cli", filepath.Join(p, ".gemini", "settings.json"), "mcpServers")
 	}
 	return out
 }
 
-// readJSON reads a JSON or JSONC file into an object; anything else is
-// skipped.
-func readJSON(path string) map[string]any {
+// readConfig reads a JSON, JSONC or TOML (Codex) file into an object;
+// anything else is skipped.
+func readConfig(path string) map[string]any {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFileSize {
 		return nil
@@ -161,6 +177,12 @@ func readJSON(path string) map[string]any {
 		return nil
 	}
 	var v map[string]any
+	if filepath.Ext(path) == ".toml" {
+		if _, err := toml.Decode(string(b), &v); err != nil {
+			return nil
+		}
+		return v
+	}
 	if json.Unmarshal(fromJSONC(b), &v, jsontext.AllowDuplicateNames(true)) != nil {
 		return nil
 	}
@@ -229,7 +251,7 @@ func member(v map[string]any, path []string) map[string]any {
 }
 
 func mcpFindings(host, client, path string, serversAt []string) []Finding {
-	doc := readJSON(path)
+	doc := readConfig(path)
 	if doc == nil {
 		return nil
 	}
@@ -252,6 +274,7 @@ func mcpFindings(host, client, path string, serversAt []string) []Finding {
 				continue
 			}
 			attrs := map[string]string{"client": client, "config": clip(path), "name": clip(name), "host": clip(host)}
+			where := client + " " + name
 			cmd, _ := s["command"].(string)
 			env, _ := s["env"].(map[string]any)
 			if nested, ok := s["command"].(map[string]any); ok { // older Zed: {"command": {"path", "args", "env"}}
@@ -261,44 +284,92 @@ func mcpFindings(host, client, path string, serversAt []string) []Finding {
 			if cmd != "" {
 				attrs["transport"], attrs["command"] = "stdio", clip(filepath.Base(cmd))
 			}
-			u, _ := s["url"].(string)
-			if u == "" {
-				u, _ = s["serverUrl"].(string) // Windsurf and Devin Desktop
-			}
-			if u != "" {
+			// serverUrl: Windsurf and Devin Desktop; httpUrl: Gemini CLI.
+			if u := firstString(s, "url", "serverUrl", "httpUrl"); u != "" {
 				attrs["transport"] = "http"
 				if pu, err := url.Parse(u); err == nil {
 					attrs["url_host"] = clip(pu.Host) // never the path or query: tokens live there
 				}
 			}
-			var envNames []string
+			var envNames, headerNames []string
 			for k, v := range env {
 				envNames = append(envNames, k)
 				if val, ok := v.(string); ok {
-					out = append(out, envSecrets(host, client+" "+name, []string{k + "=" + val})...)
+					out = append(out, envSecrets(host, where, []string{k + "=" + val})...)
 				}
 			}
-			slices.Sort(envNames)
-			if len(envNames) > 0 {
-				attrs["env_names"] = clip(strings.Join(envNames, ","))
-			}
-			var headerNames []string
-			if headers, ok := s["headers"].(map[string]any); ok {
+			for _, field := range []string{"headers", "http_headers"} { // http_headers: Codex
+				headers, _ := s[field].(map[string]any)
 				for k, v := range headers {
 					headerNames = append(headerNames, k)
 					if val, ok := v.(string); ok {
-						out = append(out, headerSecrets(host, client+" "+name+" headers", k, val)...)
+						out = append(out, headerSecrets(host, where+" headers", k, val)...)
 					}
 				}
 			}
+			// Codex names the environment variables a server inherits
+			// (env_vars) and those that hold its bearer token and header
+			// values. The names are listed; the variables are not looked up.
+			ref := func(where, field string, v any) {
+				n, found := varRef(host, where, field, v)
+				if n != "" {
+					envNames = append(envNames, n)
+				}
+				out = append(out, found...)
+			}
+			if vars, ok := s["env_vars"].([]any); ok {
+				for _, v := range vars {
+					if m, ok := v.(map[string]any); ok { // {name = "X", source = "remote"}
+						v = m["name"]
+					}
+					ref(where, "env_vars", v)
+				}
+			}
+			if v, ok := s["bearer_token_env_var"]; ok {
+				headerNames = append(headerNames, "Authorization")
+				ref(where, "bearer_token_env_var", v)
+			}
+			if headers, ok := s["env_http_headers"].(map[string]any); ok {
+				for k, v := range headers {
+					headerNames = append(headerNames, k)
+					ref(where+" env_http_headers", k, v)
+				}
+			}
+			// Codex refuses a literal bearer_token, but the file can still
+			// hold one.
+			if v, ok := s["bearer_token"].(string); ok {
+				out = append(out, valueSecrets(host, where, "bearer_token", "", v, "http_credential")...)
+			}
+			if oauth, ok := s["oauth"].(map[string]any); ok {
+				for _, field := range []string{"clientSecret", "client_secret"} { // Gemini CLI, Codex
+					if v, ok := oauth[field].(string); ok {
+						out = append(out, valueSecrets(host, where+" oauth", field, "", v, "oauth_client_secret")...)
+					}
+				}
+			}
+			slices.Sort(envNames)
+			if envNames = slices.Compact(envNames); len(envNames) > 0 {
+				attrs["env_names"] = clip(strings.Join(envNames, ","))
+			}
 			slices.Sort(headerNames)
-			if len(headerNames) > 0 {
+			if headerNames = slices.Compact(headerNames); len(headerNames) > 0 {
 				attrs["header_names"] = clip(strings.Join(headerNames, ","))
 			}
 			out = append(out, Finding{Kind: KindMCPServer, Key: key(KindMCPServer, host, path, name), Attributes: attrs})
 		}
 	}
 	return out
+}
+
+// firstString returns the first of the named members that is a non-empty
+// string.
+func firstString(v map[string]any, names ...string) string {
+	for _, n := range names {
+		if s, ok := v[n].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // frameworks maps a dependency name to the framework it indicates.
@@ -360,7 +431,7 @@ func projects(o Options, dir string) []Finding {
 }
 
 func packageJSON(path string) []string {
-	doc := readJSON(path)
+	doc := readConfig(path)
 	var out []string
 	for _, section := range []string{"dependencies", "devDependencies"} {
 		if deps, ok := doc[section].(map[string]any); ok {
@@ -435,11 +506,42 @@ func knownPrefix(value string) (kind, prefix string) {
 	return "", ""
 }
 
-// placeholder reports a reference such as ${env:GITHUB_TOKEN} or
-// ${input:token}: the client fills it in at start-up, so the file holds no
-// credential.
+// placeholder reports a reference the client fills in at start-up, so the
+// file holds no credential: ${env:GITHUB_TOKEN} or ${input:token} (VS Code),
+// $GITHUB_TOKEN, ${GITHUB_TOKEN:-default} or %GITHUB_TOKEN% (Gemini CLI).
 func placeholder(value string) bool {
-	return strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}")
+	switch {
+	case strings.HasPrefix(value, "${"):
+		return strings.HasSuffix(value, "}")
+	case strings.HasPrefix(value, "$"):
+		return identifier(value[1:])
+	case len(value) >= 2 && strings.HasPrefix(value, "%") && strings.HasSuffix(value, "%"):
+		return identifier(value[1 : len(value)-1])
+	}
+	return false
+}
+
+// identifier reports an environment variable name: ASCII letters, digits
+// and underscores, not starting with a digit.
+func identifier(s string) bool {
+	for i, r := range s {
+		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// varRef reads a field that names an environment variable (Codex env_vars,
+// bearer_token_env_var, env_http_headers). Only a conventional name such as
+// GITHUB_TOKEN is returned for listing, so a credential pasted there by
+// mistake is never listed; one with a known prefix is reported redacted.
+func varRef(host, where, field string, v any) (string, []Finding) {
+	s, _ := v.(string)
+	if kind, _ := knownPrefix(s); kind == "" && identifier(s) && strings.ToUpper(s) == s {
+		return s, nil
+	}
+	return "", valueSecrets(host, where, field, "", s, "")
 }
 
 func secretFinding(host, where, name, kind, redacted string) Finding {
@@ -448,20 +550,29 @@ func secretFinding(host, where, name, kind, redacted string) Finding {
 	}}
 }
 
+// valueSecrets reports a value that holds a credential, redacted: one with a
+// known prefix or, when kind is set, any value that is not a placeholder.
+// The scheme (such as "Bearer ") is shown before the prefix.
+func valueSecrets(host, where, name, scheme, value, kind string) []Finding {
+	if len(value) < 8 || placeholder(value) {
+		return nil
+	}
+	k, shown := knownPrefix(value)
+	if k != "" {
+		kind = k
+	}
+	if kind == "" {
+		return nil
+	}
+	return []Finding{secretFinding(host, where, name, kind, scheme+shown+"…")}
+}
+
 // envSecrets reports NAME=value pairs that hold credentials, redacted.
 func envSecrets(host, where string, env []string) []Finding {
 	var out []Finding
 	for _, kv := range env {
-		name, value, ok := strings.Cut(kv, "=")
-		if !ok || len(value) < 8 || placeholder(value) {
-			continue
-		}
-		kind, shown := knownPrefix(value)
-		if kind == "" {
-			kind = secretNames[strings.ToUpper(name)]
-		}
-		if kind != "" {
-			out = append(out, secretFinding(host, where, name, kind, shown+"…"))
+		if name, value, ok := strings.Cut(kv, "="); ok {
+			out = append(out, valueSecrets(host, where, name, "", value, secretNames[strings.ToUpper(name)])...)
 		}
 	}
 	return out
@@ -475,15 +586,9 @@ func headerSecrets(host, where, name, value string) []Finding {
 	if s, t, ok := strings.Cut(value, " "); ok && slices.Contains([]string{"bearer", "basic", "token"}, strings.ToLower(s)) {
 		scheme, token = s+" ", strings.TrimSpace(t)
 	}
-	if len(token) < 8 || placeholder(token) {
-		return nil
-	}
-	kind, shown := knownPrefix(token)
-	if kind == "" && slices.Contains(credentialHeaders, strings.ToLower(name)) {
+	kind := ""
+	if slices.Contains(credentialHeaders, strings.ToLower(name)) {
 		kind = "http_credential"
 	}
-	if kind == "" {
-		return nil
-	}
-	return []Finding{secretFinding(host, where, name, kind, scheme+shown+"…")}
+	return valueSecrets(host, where, name, scheme, token, kind)
 }

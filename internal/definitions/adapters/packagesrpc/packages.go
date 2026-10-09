@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
-// Package packagesrpc serves PackageService over Connect (HR-123, HR-124;
-// G0 M4 part 2). Only packages listed in a targets document signed by a
-// trusted package root are imported; activating is a separate, human-only
-// step.
+// Package packagesrpc serves PackageService over Connect (HR-123, HR-124,
+// HR-162; G0 M4 part 2). Only packages listed in a targets document signed
+// by a trusted package root, or by one of the org's own package-signing
+// keys, are imported; activating is a separate, human-only step.
 package packagesrpc
 
 import (
@@ -58,7 +58,7 @@ func ts(t time.Time) *timestamppb.Timestamp {
 func VersionProto(v app.VersionInfo) *pantherclawv1.PackageVersion {
 	out := &pantherclawv1.PackageVersion{
 		Name: v.Name, Version: v.Version, State: states[v.State], FileDigest: v.FileDigest, Pinned: v.Pinned,
-		ImportTime: ts(v.ImportedAt),
+		ImportTime: ts(v.ImportedAt), SigningKey: v.SigningKey,
 	}
 	for _, d := range v.Definitions {
 		out.Definitions = append(out.Definitions, &pantherclawv1.DefinitionRef{Operation: d.Operation, Digest: d.Digest})

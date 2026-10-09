@@ -426,3 +426,21 @@ func TestHR123_PackageImportAndActivationAreSeparate(t *testing.T) {
 		}
 	}
 }
+
+// TestHR162_PackageKeysAreAnOrgAdminTask: only Org Admin registers the
+// org's package-signing keys (decision answered 2026-10-09), and no role
+// both registers keys and activates packages, so an org-signed package
+// takes two roles to start deciding.
+func TestHR162_PackageKeysAreAnOrgAdminTask(t *testing.T) {
+	for _, r := range domain.Roles() {
+		if r.Has(domain.PermPackageKeyManage) != (r.Name == domain.RoleOrgAdmin) {
+			t.Errorf("role %s: package.key.manage = %v", r.Name, r.Has(domain.PermPackageKeyManage))
+		}
+		if r.Has(domain.PermPackageKeyManage) && r.Has(domain.PermPackageActivate) {
+			t.Errorf("role %s both registers signing keys and activates packages", r.Name)
+		}
+	}
+	if !domain.PermPackageKeyManage.Known() {
+		t.Fatal("package.key.manage is not in the catalog")
+	}
+}

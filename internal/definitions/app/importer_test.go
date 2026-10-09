@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,20 +25,30 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/statemachine"
 )
 
-// memRepo is an in-memory Repository with the same conditional semantics.
+// memRepo is an in-memory Repository (and Keys, orgkeys_test.go) with the
+// same conditional semantics.
 type memRepo struct {
-	meta   *trust.State
+	meta   map[ids.OrgID]*trust.State
 	pins   map[string]domain.Pin
 	states map[string]domain.State
 	files  map[string][]byte
+	// Org package-signing keys (HR-162), by org and kid; the key that
+	// signed each version (nil: a package root); each version's operations.
+	keys     map[string]*SigningKey
+	signedBy map[string]*ids.UUID
+	ops      map[string][]string
+	epochs   map[ids.OrgID]int
 }
 
 func newRepo() *memRepo {
-	return &memRepo{pins: map[string]domain.Pin{}, states: map[string]domain.State{}, files: map[string][]byte{}}
+	return &memRepo{
+		meta: map[ids.OrgID]*trust.State{}, pins: map[string]domain.Pin{}, states: map[string]domain.State{}, files: map[string][]byte{},
+		keys: map[string]*SigningKey{}, signedBy: map[string]*ids.UUID{}, ops: map[string][]string{}, epochs: map[ids.OrgID]int{},
+	}
 }
 
-func (r *memRepo) TrustedMetadata(context.Context, ids.OrgID) (*trust.State, error) {
-	return r.meta, nil
+func (r *memRepo) TrustedMetadata(_ context.Context, org ids.OrgID) (*trust.State, error) {
+	return r.meta[org], nil
 }
 
 func (r *memRepo) CurrentPin(_ context.Context, org ids.OrgID, pkg string) (*domain.Pin, error) {
@@ -49,13 +61,43 @@ func (r *memRepo) CurrentPin(_ context.Context, org ids.OrgID, pkg string) (*dom
 
 func (r *memRepo) Import(ctx context.Context, org ids.OrgID, rec Record) error {
 	cur, _ := r.CurrentPin(ctx, org, rec.Pin.Package)
-	if (r.meta == nil) != (rec.PreviousMetadata == nil) || (r.meta != nil && *r.meta != *rec.PreviousMetadata) ||
+	prev := r.meta[org]
+	var key *SigningKey
+	if rec.SigningKey != nil {
+		if key = r.keyByID(org, *rec.SigningKey); key == nil || key.State != KeyActive {
+			return ErrConflict
+		}
+		prev = key.Metadata
+	}
+	if (prev == nil) != (rec.PreviousMetadata == nil) || (prev != nil && *prev != *rec.PreviousMetadata) ||
 		(cur == nil) != (rec.PreviousPin == nil) || (cur != nil && *cur != *rec.PreviousPin) {
 		return ErrConflict
 	}
-	r.meta = &rec.Metadata
+	var ops []string
+	for _, d := range rec.Package.Definitions {
+		ops = append(ops, d.Operation)
+	}
+	for vk, theirs := range r.ops {
+		if !strings.HasPrefix(vk, org.String()) || r.states[vk] == domain.StateRetired || (r.signedBy[vk] == nil) == (rec.SigningKey == nil) {
+			continue
+		}
+		for _, op := range ops {
+			if slices.Contains(theirs, op) {
+				return ErrOperationTaken
+			}
+		}
+	}
+	meta := rec.Metadata
+	if key != nil {
+		key.Metadata = &meta
+	} else {
+		r.meta[org] = &meta
+	}
+	vk := org.String() + rec.Pin.Package + rec.Pin.Version
 	r.pins[org.String()+rec.Pin.Package] = rec.Pin
-	r.states[org.String()+rec.Pin.Package+rec.Pin.Version] = rec.State
+	r.states[vk] = rec.State
+	r.signedBy[vk] = rec.SigningKey
+	r.ops[vk] = ops
 	r.files[rec.FileDigest] = rec.Raw
 	return nil
 }
@@ -166,7 +208,7 @@ func TestT036_ImportRefusesUnsignedOrSwappedBytes(t *testing.T) {
 	if _, err := f.importVersion("1.0.0", f.targets(2, "1.0.0")); !errors.Is(err, trust.ErrUntrusted) {
 		t.Fatalf("name/version mismatch: %v", err)
 	}
-	if len(f.repo.files) != 0 || f.repo.meta != nil {
+	if len(f.repo.files) != 0 || len(f.repo.meta) != 0 {
 		t.Fatal("nothing may be stored after a failed import")
 	}
 	f.im.Clock = clock.NewFake(time.Date(2027, 4, 8, 0, 0, 0, 0, time.UTC))

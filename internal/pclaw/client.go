@@ -114,6 +114,12 @@ type clients struct {
 	// M5 part 1.
 	account       pantherclawv1connect.AccountServiceClient
 	notifications pantherclawv1connect.NotificationServiceClient
+	// M4.
+	grants     pantherclawv1connect.GrantServiceClient
+	guardrails pantherclawv1connect.GuardrailServiceClient
+	facts      pantherclawv1connect.FactServiceClient
+	packages   pantherclawv1connect.PackageServiceClient
+	policies   pantherclawv1connect.PolicyServiceClient
 	m6Clients
 }
 
@@ -133,6 +139,11 @@ func (a *app) clients() (clients, error) {
 		runs:          pantherclawv1connect.NewRunServiceClient(c),
 		account:       pantherclawv1connect.NewAccountServiceClient(c),
 		notifications: pantherclawv1connect.NewNotificationServiceClient(c),
+		grants:        pantherclawv1connect.NewGrantServiceClient(c),
+		guardrails:    pantherclawv1connect.NewGuardrailServiceClient(c),
+		facts:         pantherclawv1connect.NewFactServiceClient(c),
+		packages:      pantherclawv1connect.NewPackageServiceClient(c),
+		policies:      pantherclawv1connect.NewPolicyServiceClient(c),
 		m6Clients: m6Clients{
 			gateways:    pantherclawv1connect.NewGatewayAdminServiceClient(c),
 			containment: pantherclawv1connect.NewContainmentServiceClient(c),

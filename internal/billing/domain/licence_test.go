@@ -97,3 +97,24 @@ func TestEditionLimits(t *testing.T) {
 		t.Fatal("invalid licence must fall back to Community limits")
 	}
 }
+
+// TestHR162_OrgPackageKeysNeedTeam: org package-signing keys come with
+// Team and above, survive the grace period, and end with it.
+func TestHR162_OrgPackageKeysNeedTeam(t *testing.T) {
+	c := claims()
+	for _, tc := range []struct {
+		name string
+		e    Entitlements
+		want bool
+	}{
+		{"community", CommunityEntitlements(), false},
+		{"team", Evaluate(c, nbf.Add(time.Hour)), true},
+		{"grace", Evaluate(c, exp.Add(time.Hour)), true},
+		{"expired", Evaluate(c, exp.Add(GracePeriod)), false},
+		{"invalid", Invalid("tampered"), false},
+	} {
+		if got := tc.e.OrgPackageKeys(); got != tc.want {
+			t.Errorf("%s: OrgPackageKeys = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
