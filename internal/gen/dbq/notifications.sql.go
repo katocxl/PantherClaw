@@ -44,6 +44,19 @@ func (q *Queries) ActiveUsersWithOrgRole(ctx context.Context, orgID ids.OrgID, r
 	return items, nil
 }
 
+const cancelPendingDeliveries = `-- name: CancelPendingDeliveries :execrows
+UPDATE pc.deliveries SET state = 'CANCELLED', last_error = 'channel_deleted', finished_at = now()
+WHERE org_id = $1 AND channel_id = $2 AND state = 'PENDING'
+`
+
+func (q *Queries) CancelPendingDeliveries(ctx context.Context, orgID ids.OrgID, channelID *ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelPendingDeliveries, orgID, channelID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const channelFailed = `-- name: ChannelFailed :one
 UPDATE pc.notification_channels
 SET consecutive_failures = consecutive_failures + 1, failing_since = coalesce(failing_since, now()),
@@ -142,6 +155,17 @@ func (q *Queries) ChannelsForRouting(ctx context.Context, orgID ids.OrgID) ([]Ch
 	return items, nil
 }
 
+const countLiveChannels = `-- name: CountLiveChannels :one
+SELECT count(*)::int FROM pc.notification_channels WHERE org_id = $1 AND state <> 'DISABLED'
+`
+
+func (q *Queries) CountLiveChannels(ctx context.Context, orgID ids.OrgID) (int32, error) {
+	row := q.db.QueryRow(ctx, countLiveChannels, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteOldDeliveries = `-- name: DeleteOldDeliveries :execrows
 
 DELETE FROM pc.deliveries WHERE org_id = $1 AND finished_at < now() - interval '30 days'
@@ -165,6 +189,19 @@ WHERE n.org_id = $1 AND n.expires_at < now() - interval '30 days'
 
 func (q *Queries) DeleteOldNotifications(ctx context.Context, orgID ids.OrgID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteOldNotifications, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const disableChannel = `-- name: DisableChannel :execrows
+UPDATE pc.notification_channels SET state = 'DISABLED', pause_reason = NULL, updated_at = now()
+WHERE org_id = $1 AND id = $2 AND state <> 'DISABLED'
+`
+
+func (q *Queries) DisableChannel(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, disableChannel, orgID, iD)
 	if err != nil {
 		return 0, err
 	}
@@ -222,6 +259,39 @@ WHERE org_id = $1 AND id = $2
 func (q *Queries) FlagChannelQueueFull(ctx context.Context, orgID ids.OrgID, iD ids.UUID) error {
 	_, err := q.db.Exec(ctx, flagChannelQueueFull, orgID, iD)
 	return err
+}
+
+const getChannel = `-- name: GetChannel :one
+SELECT org_id, id, name, kind, state, pause_reason, event_types, min_severity, recipient_role, url, secret, prev_secret, prev_secret_expires_at, consecutive_failures, failing_since, last_success_at, last_failure_at, last_failure_code, created_by, created_at, updated_at FROM pc.notification_channels WHERE org_id = $1 AND id = $2 AND state <> 'DISABLED'
+`
+
+func (q *Queries) GetChannel(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (PcNotificationChannel, error) {
+	row := q.db.QueryRow(ctx, getChannel, orgID, iD)
+	var i PcNotificationChannel
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.Name,
+		&i.Kind,
+		&i.State,
+		&i.PauseReason,
+		&i.EventTypes,
+		&i.MinSeverity,
+		&i.RecipientRole,
+		&i.Url,
+		&i.Secret,
+		&i.PrevSecret,
+		&i.PrevSecretExpiresAt,
+		&i.ConsecutiveFailures,
+		&i.FailingSince,
+		&i.LastSuccessAt,
+		&i.LastFailureAt,
+		&i.LastFailureCode,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const insertChannel = `-- name: InsertChannel :exec
@@ -345,6 +415,138 @@ func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotification
 	return result.RowsAffected(), nil
 }
 
+const listChannels = `-- name: ListChannels :many
+
+SELECT org_id, id, name, kind, state, pause_reason, event_types, min_severity, recipient_role, url, secret, prev_secret, prev_secret_expires_at, consecutive_failures, failing_since, last_success_at, last_failure_at, last_failure_code, created_by, created_at, updated_at FROM pc.notification_channels
+WHERE org_id = $1 AND state <> 'DISABLED'
+  AND id > coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
+ORDER BY id
+LIMIT $3
+`
+
+// Channel administration (NotificationService). DISABLED channels are
+// deleted ones: they are kept for their deliveries' history but never
+// listed or changed again.
+func (q *Queries) ListChannels(ctx context.Context, orgID ids.OrgID, after *ids.UUID, pageLimit int32) ([]PcNotificationChannel, error) {
+	rows, err := q.db.Query(ctx, listChannels, orgID, after, pageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PcNotificationChannel{}
+	for rows.Next() {
+		var i PcNotificationChannel
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.Name,
+			&i.Kind,
+			&i.State,
+			&i.PauseReason,
+			&i.EventTypes,
+			&i.MinSeverity,
+			&i.RecipientRole,
+			&i.Url,
+			&i.Secret,
+			&i.PrevSecret,
+			&i.PrevSecretExpiresAt,
+			&i.ConsecutiveFailures,
+			&i.FailingSince,
+			&i.LastSuccessAt,
+			&i.LastFailureAt,
+			&i.LastFailureCode,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveries = `-- name: ListDeliveries :many
+SELECT d.id, d.notification_id, n.type AS notification_type, d.channel_id, d.recipient_user_id, d.kind, d.state,
+       d.attempts, d.last_status, d.last_error, d.created_at, d.next_attempt_at, d.finished_at
+FROM pc.deliveries d
+JOIN pc.notifications n ON n.org_id = d.org_id AND n.id = d.notification_id
+WHERE d.org_id = $1
+  AND ($2::uuid IS NULL OR d.channel_id = $2::uuid)
+  AND ($3::text IS NULL OR d.state = $3::text)
+  AND d.id < coalesce($4::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff')
+ORDER BY d.id DESC
+LIMIT $5
+`
+
+type ListDeliveriesParams struct {
+	OrgID     ids.OrgID
+	ChannelID *ids.UUID
+	State     *string
+	Before    *ids.UUID
+	PageLimit int32
+}
+
+type ListDeliveriesRow struct {
+	ID               ids.UUID
+	NotificationID   ids.UUID
+	NotificationType string
+	ChannelID        *ids.UUID
+	RecipientUserID  *ids.UUID
+	Kind             string
+	State            string
+	Attempts         int32
+	LastStatus       *int32
+	LastError        *string
+	CreatedAt        time.Time
+	NextAttemptAt    *time.Time
+	FinishedAt       *time.Time
+}
+
+// Newest first: the cursor is the last id of the previous page.
+func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) ([]ListDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveries,
+		arg.OrgID,
+		arg.ChannelID,
+		arg.State,
+		arg.Before,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeliveriesRow{}
+	for rows.Next() {
+		var i ListDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.NotificationID,
+			&i.NotificationType,
+			&i.ChannelID,
+			&i.RecipientUserID,
+			&i.Kind,
+			&i.State,
+			&i.Attempts,
+			&i.LastStatus,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.NextAttemptAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const loadDelivery = `-- name: LoadDelivery :one
 
 SELECT d.id, d.kind, d.state, d.attempts, d.channel_id, d.recipient_user_id,
@@ -421,6 +623,24 @@ func (q *Queries) LoadDelivery(ctx context.Context, orgID ids.OrgID, iD ids.UUID
 	return i, err
 }
 
+const lockChannelSecret = `-- name: LockChannelSecret :one
+SELECT kind, secret FROM pc.notification_channels
+WHERE org_id = $1 AND id = $2 AND state <> 'DISABLED'
+FOR UPDATE
+`
+
+type LockChannelSecretRow struct {
+	Kind   string
+	Secret []byte
+}
+
+func (q *Queries) LockChannelSecret(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (LockChannelSecretRow, error) {
+	row := q.db.QueryRow(ctx, lockChannelSecret, orgID, iD)
+	var i LockChannelSecretRow
+	err := row.Scan(&i.Kind, &i.Secret)
+	return i, err
+}
+
 const pauseChannel = `-- name: PauseChannel :execrows
 UPDATE pc.notification_channels SET state = 'PAUSED', pause_reason = $1, updated_at = now()
 WHERE org_id = $2 AND id = $3 AND state = 'ACTIVE'
@@ -477,6 +697,83 @@ func (q *Queries) RecordDeliveryAttempt(ctx context.Context, arg RecordDeliveryA
 		arg.LastError,
 		arg.State,
 		arg.RetrySeconds,
+		arg.OrgID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rotateChannelSecret = `-- name: RotateChannelSecret :one
+UPDATE pc.notification_channels
+SET secret = $1, prev_secret = $2,
+    prev_secret_expires_at = now() + make_interval(secs => $3::int), updated_at = now()
+WHERE org_id = $4 AND id = $5 AND kind = 'webhook' AND state <> 'DISABLED'
+RETURNING prev_secret_expires_at
+`
+
+type RotateChannelSecretParams struct {
+	Secret         []byte
+	PrevSecret     []byte
+	OverlapSeconds int32
+	OrgID          ids.OrgID
+	ID             ids.UUID
+}
+
+func (q *Queries) RotateChannelSecret(ctx context.Context, arg RotateChannelSecretParams) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, rotateChannelSecret,
+		arg.Secret,
+		arg.PrevSecret,
+		arg.OverlapSeconds,
+		arg.OrgID,
+		arg.ID,
+	)
+	var prev_secret_expires_at *time.Time
+	err := row.Scan(&prev_secret_expires_at)
+	return prev_secret_expires_at, err
+}
+
+const setChannelPaused = `-- name: SetChannelPaused :execrows
+UPDATE pc.notification_channels
+SET state = CASE WHEN $1::bool THEN 'PAUSED' ELSE 'ACTIVE' END,
+    pause_reason = CASE WHEN $1::bool THEN 'MANUAL' END,
+    consecutive_failures = CASE WHEN $1::bool THEN consecutive_failures ELSE 0 END,
+    failing_since = CASE WHEN $1::bool THEN failing_since END,
+    updated_at = now()
+WHERE org_id = $2 AND id = $3 AND state <> 'DISABLED'
+`
+
+// Pauses (MANUAL) or resumes a channel; resuming clears its failure count.
+func (q *Queries) SetChannelPaused(ctx context.Context, paused bool, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, setChannelPaused, paused, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateChannel = `-- name: UpdateChannel :execrows
+UPDATE pc.notification_channels
+SET name = coalesce($1, name), event_types = coalesce($2::text[], event_types),
+    min_severity = coalesce($3, min_severity), updated_at = now()
+WHERE org_id = $4 AND id = $5 AND state <> 'DISABLED'
+`
+
+type UpdateChannelParams struct {
+	Name        *string
+	EventTypes  []string
+	MinSeverity *string
+	OrgID       ids.OrgID
+	ID          ids.UUID
+}
+
+func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateChannel,
+		arg.Name,
+		arg.EventTypes,
+		arg.MinSeverity,
 		arg.OrgID,
 		arg.ID,
 	)

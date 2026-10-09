@@ -13,6 +13,7 @@ import (
 
 	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/jobs"
+	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
 func TestHR056_DeliveryJobsCarryIDsOnly(t *testing.T) {
@@ -57,5 +58,23 @@ func TestWorkersRegister(t *testing.T) {
 	}
 	if len(napp.PeriodicJobs()) != 1 || len(reg.Kinds()) != 3 {
 		t.Fatalf("kinds %v", reg.Kinds())
+	}
+}
+
+// Notification channels belong to the whole org: only org-scope roles hold
+// notification.* (G0 M5).
+func TestOnlyOrgScopeRolesHoldNotificationPermissions(t *testing.T) {
+	holders := 0
+	for _, r := range td.Roles() {
+		if !r.Has(td.PermNotificationRead) && !r.Has(td.PermNotificationManage) {
+			continue
+		}
+		holders++
+		if len(r.Scopes) != 1 || r.Scopes[0] != td.ScopeOrg {
+			t.Errorf("role %s holds notification permissions at scopes %v", r.Name, r.Scopes)
+		}
+	}
+	if holders != 3 { // Org Admin, Security Admin, Auditor
+		t.Errorf("%d roles hold notification permissions, want 3", holders)
 	}
 }

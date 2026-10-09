@@ -1,0 +1,356 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// NotificationService manages notification channels (log, email, Slack,
+// signed webhooks) and shows their delivery health (G0 M5 part 1,
+// HR-157..159). A channel only tells people that something happened and
+// links to PantherClaw: nothing sent or received through a channel ever
+// approves anything. Secrets (a webhook signing secret, a Slack webhook URL)
+// are stored encrypted and never returned, except a new signing secret once.
+service NotificationService {
+  // CreateChannel adds a channel. For a webhook channel the signing secret
+  // is returned once. Community allows 3 channels.
+  // permission: notification.manage
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  // GetChannel returns a channel with its health and its last 20 deliveries.
+  // permission: notification.read
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ListChannels lists the org's channels.
+  // permission: notification.read
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // UpdateChannel renames a channel, changes its subscription, or pauses or
+  // resumes it. Its destination cannot change: create a new channel.
+  // permission: notification.manage
+  rpc UpdateChannel(UpdateChannelRequest) returns (UpdateChannelResponse);
+  // DeleteChannel removes a channel; its pending deliveries are cancelled.
+  // permission: notification.manage
+  rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse);
+  // RotateChannelSecret replaces a webhook channel's signing secret. The new
+  // secret is returned once; the old one keeps signing for 24 hours.
+  // permission: notification.manage
+  rpc RotateChannelSecret(RotateChannelSecretRequest) returns (RotateChannelSecretResponse);
+  // TestChannel sends a test notification to one channel.
+  // permission: notification.manage
+  rpc TestChannel(TestChannelRequest) returns (TestChannelResponse);
+  // ListDeliveries lists deliveries, newest first.
+  // permission: notification.read
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// ChannelKind is where a channel delivers.
+enum ChannelKind {
+  CHANNEL_KIND_UNSPECIFIED = 0;
+  // A structured server log event.
+  CHANNEL_KIND_LOG = 1;
+  // Email to every user holding a role at org scope.
+  CHANNEL_KIND_EMAIL = 2;
+  // A Slack incoming webhook: text and a link, never an action.
+  CHANNEL_KIND_SLACK = 3;
+  // An HTTPS endpoint, signed per Standard Webhooks.
+  CHANNEL_KIND_WEBHOOK = 4;
+}
+
+// NotificationSeverity orders notifications.
+enum NotificationSeverity {
+  NOTIFICATION_SEVERITY_UNSPECIFIED = 0;
+  NOTIFICATION_SEVERITY_INFO = 1;
+  NOTIFICATION_SEVERITY_WARNING = 2;
+  NOTIFICATION_SEVERITY_CRITICAL = 3;
+}
+
+// ChannelState is whether a channel delivers.
+enum ChannelState {
+  CHANNEL_STATE_UNSPECIFIED = 0;
+  CHANNEL_STATE_ACTIVE = 1;
+  // Paused by a person, or automatically (its destination is gone, or it
+  // failed for 72 hours); see pause_reason.
+  CHANNEL_STATE_PAUSED = 2;
+}
+
+// ChannelHealth summarizes recent delivery results.
+enum ChannelHealth {
+  CHANNEL_HEALTH_UNSPECIFIED = 0;
+  CHANNEL_HEALTH_HEALTHY = 1;
+  // Some recent deliveries failed.
+  CHANNEL_HEALTH_DEGRADED = 2;
+  // 10 or more consecutive failures.
+  CHANNEL_HEALTH_FAILING = 3;
+}
+
+// Channel is one notification channel.
+message Channel {
+  // Channel id.
+  string id = 1;
+  // Name.
+  string name = 2;
+  // Kind.
+  ChannelKind kind = 3;
+  // State.
+  ChannelState state = 4;
+  // Why it is paused (MANUAL, GONE, FAILING).
+  string pause_reason = 5;
+  // Subscribed event types (exact types or prefixes ending in ".*").
+  repeated string event_types = 6;
+  // Lowest severity delivered.
+  NotificationSeverity min_severity = 7;
+  // Email channels: the role whose holders receive it.
+  string recipient_role = 8;
+  // Webhook channels: the endpoint. Slack URLs are secrets and never shown.
+  string url = 9;
+  // Health.
+  ChannelHealth health = 10;
+  // Consecutive failed deliveries.
+  int32 consecutive_failures = 11;
+  // Last successful delivery.
+  google.protobuf.Timestamp last_success_time = 12;
+  // Last failed delivery and its code.
+  google.protobuf.Timestamp last_failure_time = 13;
+  // Last failure code (for example http_500, timeout, redirect_refused).
+  string last_failure_code = 14;
+  // Until when the previous signing secret still signs (after a rotation).
+  google.protobuf.Timestamp previous_secret_expire_time = 15;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 16;
+  // Last change.
+  google.protobuf.Timestamp update_time = 17;
+}
+
+// DeliveryState is the state of one delivery.
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  DELIVERY_STATE_PENDING = 1;
+  DELIVERY_STATE_DELIVERED = 2;
+  // All attempts failed, or the destination is gone.
+  DELIVERY_STATE_FAILED = 3;
+  // The notification expired first.
+  DELIVERY_STATE_EXPIRED = 4;
+  // Not sent: the channel was paused or email is not configured.
+  DELIVERY_STATE_SKIPPED = 5;
+  // Not sent: the channel's queue was full.
+  DELIVERY_STATE_DROPPED = 6;
+  // Not sent: the channel was deleted.
+  DELIVERY_STATE_CANCELLED = 7;
+}
+
+// Delivery is one delivery of a notification.
+message Delivery {
+  // Delivery id.
+  string id = 1;
+  // Notification id.
+  string notification_id = 2;
+  // Notification type (for example security.credential_registered).
+  string notification_type = 3;
+  // Channel id (empty for a personal email).
+  string channel_id = 4;
+  // Recipient user (email deliveries).
+  string recipient_user_id = 5;
+  // Kind.
+  ChannelKind kind = 6;
+  // State.
+  DeliveryState state = 7;
+  // Attempts made (at most 8).
+  int32 attempts = 8;
+  // Last HTTP status, if any.
+  int32 last_status = 9;
+  // Last error code.
+  string last_error = 10;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 11;
+  // Next attempt (pending deliveries).
+  google.protobuf.Timestamp next_attempt_time = 12;
+  // End time.
+  google.protobuf.Timestamp finish_time = 13;
+}
+
+// CreateChannelRequest describes a new channel.
+message CreateChannelRequest {
+  // Name: lowercase letters, digits and hyphens.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  }];
+  // Kind.
+  ChannelKind kind = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Event types to deliver: exact types or prefixes ending in ".*".
+  repeated string event_types = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+    items: {
+      string: {
+        max_len: 64
+        pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,3}(\\.\\*)?$"
+      }
+    }
+  }];
+  // Lowest severity delivered (default INFO).
+  NotificationSeverity min_severity = 4 [(buf.validate.field).enum.defined_only = true];
+  // Email channels: the role whose holders receive it.
+  string recipient_role = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[a-z_]*$"
+  }];
+  // Webhook channels: the https endpoint. Slack channels: the incoming
+  // webhook URL (https://hooks.slack.com/services/...), stored encrypted.
+  string url = 6 [(buf.validate.field).string.max_len = 2048];
+}
+
+// CreateChannelResponse returns the channel and, for a webhook channel, the
+// signing secret (shown once; "whsec_..." per Standard Webhooks).
+message CreateChannelResponse {
+  // The channel.
+  Channel channel = 1;
+  // Webhook signing secret, shown once.
+  string signing_secret = 2;
+}
+
+// GetChannelRequest names a channel.
+message GetChannelRequest {
+  // Channel id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetChannelResponse returns the channel and its recent deliveries.
+message GetChannelResponse {
+  // The channel.
+  Channel channel = 1;
+  // Its last 20 deliveries, newest first.
+  repeated Delivery recent_deliveries = 2;
+}
+
+// ListChannelsRequest pages through channels.
+message ListChannelsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+}
+
+// ListChannelsResponse is one page of channels.
+message ListChannelsResponse {
+  // Channels.
+  repeated Channel channels = 1;
+  // Token for the next page; empty at the end.
+  string next_page_token = 2;
+}
+
+// UpdateChannelRequest changes the fields that are set.
+message UpdateChannelRequest {
+  // Channel id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // New name.
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  }];
+  // New subscription (replaces the old one when not empty).
+  repeated string event_types = 3 [(buf.validate.field).repeated = {
+    max_items: 32
+    items: {
+      string: {
+        max_len: 64
+        pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,3}(\\.\\*)?$"
+      }
+    }
+  }];
+  // New lowest severity.
+  optional NotificationSeverity min_severity = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Pause (true) or resume (false). Resuming clears the failure count.
+  optional bool paused = 5;
+}
+
+// UpdateChannelResponse returns the channel.
+message UpdateChannelResponse {
+  // The channel.
+  Channel channel = 1;
+}
+
+// DeleteChannelRequest names a channel.
+message DeleteChannelRequest {
+  // Channel id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// DeleteChannelResponse is empty.
+message DeleteChannelResponse {}
+
+// RotateChannelSecretRequest names a webhook channel.
+message RotateChannelSecretRequest {
+  // Channel id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RotateChannelSecretResponse returns the new secret once.
+message RotateChannelSecretResponse {
+  // New signing secret, shown once.
+  string signing_secret = 1;
+  // Until when the previous secret also signs.
+  google.protobuf.Timestamp previous_secret_expire_time = 2;
+}
+
+// TestChannelRequest names a channel.
+message TestChannelRequest {
+  // Channel id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// TestChannelResponse names the test notification.
+message TestChannelResponse {
+  // Notification id; watch its delivery with ListDeliveries.
+  string notification_id = 1;
+}
+
+// ListDeliveriesRequest pages through deliveries.
+message ListDeliveriesRequest {
+  // Only this channel's deliveries.
+  string channel_id = 1 [(buf.validate.field).string = {
+    max_len: 36
+    pattern: "^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$"
+  }];
+  // Only deliveries in this state.
+  DeliveryState state = 2 [(buf.validate.field).enum.defined_only = true];
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 4 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+}
+
+// ListDeliveriesResponse is one page of deliveries.
+message ListDeliveriesResponse {
+  // Deliveries, newest first.
+  repeated Delivery deliveries = 1;
+  // Token for the next page; empty at the end.
+  string next_page_token = 2;
+}
