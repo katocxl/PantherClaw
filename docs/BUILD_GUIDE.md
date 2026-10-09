@@ -341,7 +341,7 @@ docs/                    this guide and companions
 | M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
 | M4 | `package_trust`, `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `policies`, `policy_versions`, `envelopes`, `envelope_revisions`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `reservations`, `fact_providers`, `facts`, `dedupe_claims`; `budgets` (M1.5) gains rule, grouping and period columns; idempotency lives in columns on `transactions` (M1.5) |
 | M5 | `sessions` (browser), `login_requests` (browser sign-ins in progress), `webauthn_credentials`, `webauthn_ceremonies` (pending registrations and assertions), `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
-| M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
+| M6 | `gateways`, `gateway_enrollment_tokens`, `gateway_certs`, `broker_keys`, `connections`, `connection_routes`, `credentials` (sealed), `circuit_states`, `kill_switch_requests`; `org_containment` gains who engaged the kill switch; `transactions` and `permits` gain mode and connection |
 | M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
 | M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
 | M10 | `detection_rules`, `detection_state`, `alerts`, `incidents`, `cases`, `case_notes`, `findings`, `suppressions`, `containment_actions`, `export_destinations`, `saved_queries` |
@@ -430,11 +430,11 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Tests:** replay/theft by sibling run, self-approval, API-key approval refused, sock-puppet (same WebAuthn cred), TOCTOU after approval, variant-shopping cap, delivery failure ≠ approval.
 
 ### M6 — Gateway & non-bypassable boundary
-**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..086, HR-113 · **PN:** PN-003, PN-005, PN-013, PN-014, PN-015.
+**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031, T-065..T-069 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..083, HR-113, HR-180..188 (HR-084 and HR-085 moved to M9) · **PN:** PN-002.6, PN-003, PN-005, PN-013, PN-014, PN-015 · **G0:** [g0/M6.md](g0/M6.md).
 - Gateway enrollment + mTLS (internal CA), org binding; Authorize/BeginDispatch/RecordExecution clients; revocation/containment stream with heartbeat and cold-start snapshot.
 - MCP proxy (2026-07-28 stateless + 2025-11-25 stateful), tasks extension for HOLD, reviewed descriptions, elicitation/sampling gating; `pclaw mcp proxy` stdio shim.
 - HTTP proxy (route matching from packages), outbound re-serialization, egress transport; credential broker (sealed creds, per-tenant keys, AAD binding), `pclaw seal`.
-- Connector runtime (customer-hosted only) with isolation; circuit breaker; monitor vs enforce mode per route.
+- Circuit breaker; monitor vs enforce mode per route. The connector runtime for third-party MCP servers (customer-hosted only, with isolation) moves to M9 (G0 M6 decision 3).
 - Kill switch (asymmetric) and containment epoch bumps.
 - Claude Code plugin (PreToolUse for Bash + PowerShell, path normalization) — dogfooded on PantherClaw development.
 - **Exit — refund scenario table (`test/e2e`):**
@@ -469,9 +469,10 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - §43 coding-agent scenario on a sandbox GitHub repo: merge requires independent reviewer; deployment consequence requires release approver.
 
 ### M9 — Coverage & containment sandbox
-**HR:** HR-024, HR-086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
+**HR:** HR-024, HR-084..086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
 - Routes inventory, coverage snapshots (UNKNOWN/OBSERVE_ONLY/PARTIAL/ENFORCED), invalidation events, freshness contract, closure evidence, access-mode disclosure, credential-overreach findings.
 - `pclaw sandbox run`: egress-locked Docker network (gateway only; IPv6/ICMP/DNS blocked), no creds, read-only FS, non-root, optional gVisor; trusted sidecar probes + external canary; expiring ENFORCED promotion.
+- Connector runtime for third-party MCP servers run as local processes (moved from M6, G0 M6 decision 3): each in its own locked-down container on the same sandbox machinery, customer-hosted gateways only, egress only through the gateway, which injects credentials (HR-084, HR-085).
 
 ### M10 — Detect, investigate, respond
 **F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018, PN-024 · **ADR:** 0019.
