@@ -38,6 +38,7 @@ const (
 	StatusAnnotated     Status = "ANNOTATED"      // labels were added
 	StatusError         Status = "ERROR"          // the rule could not be evaluated
 	StatusNotApplicable Status = "NOT_APPLICABLE" // out of the rule's scope
+	StatusNotEvaluated  Status = "NOT_EVALUATED"  // its facts are missing or stale
 )
 
 // Effect is how one rule evaluated.
@@ -58,6 +59,10 @@ const (
 	EvalError
 	// CostExceeded: the per-expression or per-evaluation budget ran out.
 	CostExceeded
+	// FactsMissing: a fact the rule reads is missing or stale, so it was
+	// not evaluated. Missing evidence is CANNOT_AUTHORIZE, never a
+	// business denial (F096), even for FORBID.
+	FactsMissing
 )
 
 // Obligation is a constraint the gateway or connector must enforce, with its
@@ -113,6 +118,7 @@ const (
 	ReasonEvalError             = "POLICY_EVALUATION_ERROR"
 	ReasonCostExceeded          = "POLICY_COST_EXCEEDED"
 	ReasonUnsupportedObligation = "UNSUPPORTED_OBLIGATION"
+	ReasonFactMissing           = "FACT_MISSING"
 )
 
 // classify maps one result to its checklist status and the verdict it
@@ -130,6 +136,11 @@ func classify(r Result) (Status, Verdict, string) {
 		return StatusPassed, VerdictPass, r.Rule.Reason
 	case CostExceeded:
 		return StatusError, VerdictCannotAuthorize, ReasonCostExceeded
+	case FactsMissing:
+		if k == Annotate {
+			return StatusNotEvaluated, VerdictPass, ReasonFactMissing
+		}
+		return StatusNotEvaluated, VerdictCannotAuthorize, ReasonFactMissing
 	case Unsupported:
 		return StatusError, VerdictCannotAuthorize, ReasonUnsupportedObligation
 	case Violated:
@@ -201,7 +212,7 @@ func Compose(results []Result) Outcome {
 		d := items[decisive]
 		items = append([]Item{d}, slices.Delete(items, decisive, decisive+1)...)
 	}
-	rank := map[Status]int{StatusFailed: 0, StatusError: 1, StatusRequired: 2, StatusConstrained: 3, StatusAnnotated: 4, StatusPassed: 5, StatusNotApplicable: 6}
+	rank := map[Status]int{StatusFailed: 0, StatusError: 1, StatusNotEvaluated: 2, StatusRequired: 3, StatusConstrained: 4, StatusAnnotated: 5, StatusPassed: 6, StatusNotApplicable: 7}
 	start := 0
 	if decisive >= 0 {
 		start = 1
