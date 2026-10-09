@@ -165,6 +165,17 @@ func (q *Queries) CountGovernedAgents(ctx context.Context, orgID ids.OrgID) (int
 	return count, err
 }
 
+const countOpenDiscoveries = `-- name: CountOpenDiscoveries :one
+SELECT count(*)::int FROM pc.discoveries WHERE org_id = $1 AND state = 'OPEN'
+`
+
+func (q *Queries) CountOpenDiscoveries(ctx context.Context, orgID ids.OrgID) (int32, error) {
+	row := q.db.QueryRow(ctx, countOpenDiscoveries, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getAgent = `-- name: GetAgent :one
 SELECT org_id, id, name, purpose, team_id, environment_id, owner_user_id, backup_owner_user_id, execution_context, state, suspended_from, created_by, created_at, updated_at, claimed_at, retired_at FROM pc.agents WHERE org_id = $1 AND id = $2
 `
@@ -394,6 +405,46 @@ func (q *Queries) InsertDiscoveredAgent(ctx context.Context, arg InsertDiscovere
 		&i.UpdatedAt,
 		&i.ClaimedAt,
 		&i.RetiredAt,
+	)
+	return i, err
+}
+
+const insertScanDiscovery = `-- name: InsertScanDiscovery :one
+INSERT INTO pc.discoveries (org_id, id, agent_id, source, scan_key, observed)
+VALUES ($1, $2, $3, 'scan', $4, $5)
+RETURNING org_id, id, agent_id, source, key_jkt, public_jwk, scan_key, state, observed, seen_count, first_seen_at, last_seen_at
+`
+
+type InsertScanDiscoveryParams struct {
+	OrgID    ids.OrgID
+	ID       ids.UUID
+	AgentID  ids.UUID
+	ScanKey  []byte
+	Observed []byte
+}
+
+func (q *Queries) InsertScanDiscovery(ctx context.Context, arg InsertScanDiscoveryParams) (PcDiscovery, error) {
+	row := q.db.QueryRow(ctx, insertScanDiscovery,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.ScanKey,
+		arg.Observed,
+	)
+	var i PcDiscovery
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.AgentID,
+		&i.Source,
+		&i.KeyJkt,
+		&i.PublicJwk,
+		&i.ScanKey,
+		&i.State,
+		&i.Observed,
+		&i.SeenCount,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
 	)
 	return i, err
 }
@@ -684,6 +735,21 @@ func (q *Queries) SetAgentState(ctx context.Context, arg SetAgentStateParams) (P
 		&i.RetiredAt,
 	)
 	return i, err
+}
+
+const touchScanDiscovery = `-- name: TouchScanDiscovery :execrows
+UPDATE pc.discoveries SET seen_count = seen_count + 1, last_seen_at = now(), observed = $1
+WHERE org_id = $2 AND scan_key = $3
+`
+
+// Scan findings (PN-001.1, F015): a finding already submitted is only
+// counted, with its latest observations.
+func (q *Queries) TouchScanDiscovery(ctx context.Context, observed []byte, orgID ids.OrgID, scanKey []byte) (int64, error) {
+	result, err := q.db.Exec(ctx, touchScanDiscovery, observed, orgID, scanKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const transferAgentOwnership = `-- name: TransferAgentOwnership :one

@@ -276,3 +276,18 @@ func MarkVerified(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent ids.
 	}
 	return RecordChange(ctx, q, org, agent, domain.Change{Kind: domain.ChangeVerified, Actor: by})
 }
+
+// MarkObserved moves a verified agent to OBSERVED on its first verified
+// request (F020), in the caller's transaction. Any other state is left
+// alone.
+func MarkObserved(ctx context.Context, q *dbq.Queries, org ids.OrgID, agent ids.UUID, by domain.Actor) error {
+	_, err := q.SetAgentState(ctx, dbq.SetAgentStateParams{
+		OrgID: org, ID: agent, FromState: string(domain.StateVerified), ToState: string(domain.StateObserved),
+	})
+	if db.IsNoRows(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return RecordChange(ctx, q, org, agent, domain.Change{Kind: domain.ChangeObserved, Actor: by})
+}

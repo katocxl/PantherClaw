@@ -29,6 +29,21 @@ func (q *Queries) ActiveUserBySubject(ctx context.Context, orgID ids.OrgID, issu
 	return id, err
 }
 
+const bindRunInstance = `-- name: BindRunInstance :execrows
+UPDATE pc.runs SET instance_id = $1
+WHERE org_id = $2 AND id = $3 AND instance_id IS NULL AND state = 'ACTIVE' AND expires_at > now()
+`
+
+// First-use binding (HR-022): an unbound active run binds to the first
+// admitted instance that uses it; no row means another instance won.
+func (q *Queries) BindRunInstance(ctx context.Context, instanceID *ids.UUID, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, bindRunInstance, instanceID, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const endRunTree = `-- name: EndRunTree :many
 WITH RECURSIVE tree AS (
     SELECT r.id FROM pc.runs r WHERE r.org_id = $4 AND r.id = $1
@@ -98,6 +113,21 @@ func (q *Queries) EndRunTree(ctx context.Context, arg EndRunTreeParams) ([]PcRun
 		return nil, err
 	}
 	return items, nil
+}
+
+const expireRuns = `-- name: ExpireRuns :execrows
+UPDATE pc.runs SET state = 'EXPIRED', end_reason = 'expired', ended_at = now()
+WHERE org_id = $1 AND state = 'ACTIVE' AND expires_at <= now()
+`
+
+// Janitor: records the expiry of runs past expires_at (they already read
+// EXPIRED); a child never outlives its parent, so children expire too.
+func (q *Queries) ExpireRuns(ctx context.Context, orgID ids.OrgID) (int64, error) {
+	result, err := q.db.Exec(ctx, expireRuns, orgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getRun = `-- name: GetRun :one

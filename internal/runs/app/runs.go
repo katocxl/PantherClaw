@@ -595,3 +595,38 @@ func recordEnd(ctx context.Context, tx db.TenantTx, actor evdomain.Actor, r Run,
 	})
 	return err
 }
+
+// Bind checks that a request from instance of agent may use run (HR-022):
+// the run is active, of that agent, and bound to that instance, or unbound
+// and then bound to it by a conditional update, so concurrent first uses
+// bind exactly one instance. Anything else is run_mismatch.
+func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) error {
+	return s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		r, err := q.GetRun(ctx, org, run)
+		if db.IsNoRows(err) {
+			return pap.Err(pap.CodeRunMismatch)
+		} else if err != nil {
+			return err
+		}
+		if r.EffectiveState != "ACTIVE" || r.PcRun.AgentID != agent {
+			return pap.Err(pap.CodeRunMismatch)
+		}
+		if r.PcRun.InstanceID == nil {
+			n, err := q.BindRunInstance(ctx, &instance, org, run)
+			if err != nil {
+				return err
+			}
+			if n == 1 {
+				return nil
+			}
+			if r, err = q.GetRun(ctx, org, run); err != nil {
+				return err
+			}
+		}
+		if r.PcRun.InstanceID == nil || *r.PcRun.InstanceID != instance {
+			return pap.Err(pap.CodeRunMismatch)
+		}
+		return nil
+	})
+}

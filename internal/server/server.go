@@ -75,7 +75,7 @@ Usage:
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
-  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE]
+  pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--token-out FILE] [--workload-out FILE]
                                                      DEVELOPMENT ONLY: demo org, budget and gateway token
   pantherclaw-server version
 
@@ -284,10 +284,14 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
 			return err
 		}
+		if err := iapp.RegisterJanitor(jreg, pool, log); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
-			Queues:       map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
-			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs()),
-			Logger:       log,
+			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency},
+			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
+				iapp.JanitorPeriodicJobs()),
+			Logger: log,
 		})
 		if err != nil {
 			return err
@@ -390,6 +394,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		runs.WithSubjects(d.subjects)
 	}
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
+	d.authority.WithWorkloads(identity, runs)
 	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
