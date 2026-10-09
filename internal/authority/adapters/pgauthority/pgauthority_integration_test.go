@@ -40,6 +40,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
+	"github.com/katocxl/pantherclaw/internal/platform/money"
 	"github.com/katocxl/pantherclaw/internal/platform/rootkey"
 	polpg "github.com/katocxl/pantherclaw/internal/policy/adapters/pgstore"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
@@ -361,5 +362,86 @@ func TestHR048_NoOverspendUnder1000ConcurrentAuthorizations(t *testing.T) {
 	}
 	if total != 500 || permits[1] > 300 || permits[2] > 300 {
 		t.Fatalf("permits %v (total %d), want 500 in total and at most 300 per child", permits, total)
+	}
+}
+
+// budget returns the reserved and spent totals of the org's accounts.
+func (w *world) budget() (reserved, spent string) {
+	w.t.Helper()
+	if err := w.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
+		return tx.QueryRow(ctx, "SELECT coalesce(sum(reserved), 0)::text, coalesce(sum(spent), 0)::text FROM pc.budget_accounts").
+			Scan(&reserved, &spent)
+	}); err != nil {
+		w.t.Fatal(err)
+	}
+	return money.MustParse(reserved).String(), money.MustParse(spent).String()
+}
+
+// TestINV07_SettlementOnPostgres: a decision reserves, only an accepted
+// outcome spends; a failed one or an expired permit releases the budget
+// and the refund's dedupe claim, and an unknown one holds both (HR-003).
+func TestINV07_SettlementOnPostgres(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.refundable("ch_1", "ch_2", "ch_3")
+	run := w.run(w.grant("500").ID, ids.UUID{})
+	dispatch := func(r finalize.Result, o finalize.Outcome) {
+		t.Helper()
+		if r.Permit == "" {
+			t.Fatalf("no permit: %s %s", r.Decision, decisive(r))
+		}
+		if err := w.auth.BeginDispatch(ctx, w.gw, r.PermitID, r.Epoch); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.auth.RecordExecution(ctx, w.gw, r.PermitID, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first := w.authorize(w.request(run, ids.NewV7(), "ch_1", "30.00"))
+	if res, sp := w.budget(); res != "30" || sp != "0" {
+		t.Fatalf("an ALLOW reserves and spends nothing: reserved %s spent %s", res, sp)
+	}
+	dispatch(first, finalize.Failed)
+	if res, sp := w.budget(); res != "0" || sp != "0" {
+		t.Fatalf("a failed outcome releases: reserved %s spent %s", res, sp)
+	}
+
+	second := w.authorize(w.request(run, ids.NewV7(), "ch_1", "30.00"))
+	if second.Decision != adomain.Allow {
+		t.Fatalf("after a failure the same refund may be tried again: %s %s", second.Decision, decisive(second))
+	}
+	dispatch(second, finalize.Unknown)
+	if res, sp := w.budget(); res != "30" || sp != "0" {
+		t.Fatalf("an unknown outcome holds the reservation: reserved %s spent %s", res, sp)
+	}
+	if r := w.authorize(w.request(run, ids.NewV7(), "ch_1", "30.00")); decisive(r) != pipeline.ReasonReconciliation {
+		t.Fatalf("an unknown outcome holds the claim: %s", decisive(r))
+	}
+
+	// An issued permit that expires is released by the sweep, and a permit
+	// stuck in DISPATCHING becomes UNKNOWN.
+	w.auth.PermitTTL = time.Second
+	expiring := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
+	stuck := w.authorize(w.request(run, ids.NewV7(), "ch_3", "5.00"))
+	if err := w.auth.BeginDispatch(ctx, w.gw, stuck.PermitID, stuck.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	released, unknown, err := w.auth.Store.Sweep(ctx, w.org, time.Nanosecond)
+	if err != nil || released != 1 || unknown != 1 {
+		t.Fatalf("sweep: released %d unknown %d: %v", released, unknown, err)
+	}
+	if err := w.auth.BeginDispatch(ctx, w.gw, expiring.PermitID, expiring.Epoch); err == nil {
+		t.Fatal("a released permit was dispatched")
+	}
+	if res, sp := w.budget(); res != "35" || sp != "0" {
+		t.Fatalf("after the sweep: reserved %s spent %s, want the unknown 30 and 5 held", res, sp)
+	}
+	w.auth.PermitTTL = 0
+	again := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
+	dispatch(again, finalize.Accepted)
+	if res, sp := w.budget(); res != "35" || sp != "20" {
+		t.Fatalf("an accepted outcome spends: reserved %s spent %s", res, sp)
 	}
 }
