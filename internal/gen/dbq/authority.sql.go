@@ -93,6 +93,7 @@ const finishPermit = `-- name: FinishPermit :one
 UPDATE pc.permits
 SET state = $1, finished_at = now()
 WHERE org_id = $2 AND id = $3 AND gateway_id = $4 AND state = 'DISPATCHING'
+  AND budget_id IS NOT NULL
 RETURNING transaction_id, budget_id, amount
 `
 
@@ -105,8 +106,8 @@ type FinishPermitParams struct {
 
 type FinishPermitRow struct {
 	TransactionID ids.UUID
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 }
 
 func (q *Queries) FinishPermit(ctx context.Context, arg FinishPermitParams) (FinishPermitRow, error) {
@@ -372,8 +373,8 @@ type InsertPermitParams struct {
 	TransactionID ids.UUID
 	GatewayID     string
 	Epoch         int64
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 	ExpiresAt     time.Time
 }
 
@@ -437,14 +438,15 @@ UPDATE pc.permits
 SET state = 'UNKNOWN', finished_at = now()
 WHERE org_id = $1 AND state = 'DISPATCHING'
   AND dispatching_at < now() - make_interval(secs => $2::float8)
+  AND budget_id IS NOT NULL
 RETURNING id, transaction_id, budget_id, amount
 `
 
 type MarkStaleDispatchingUnknownRow struct {
 	ID            ids.UUID
 	TransactionID ids.UUID
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 }
 
 // Stale DISPATCHING permits become UNKNOWN and keep their reservation.
@@ -477,14 +479,15 @@ const releaseExpiredPermits = `-- name: ReleaseExpiredPermits :many
 UPDATE pc.permits
 SET state = 'RELEASED', finished_at = now()
 WHERE org_id = $1 AND state = 'ISSUED' AND expires_at < now()
+  AND budget_id IS NOT NULL
 RETURNING id, transaction_id, budget_id, amount
 `
 
 type ReleaseExpiredPermitsRow struct {
 	ID            ids.UUID
 	TransactionID ids.UUID
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 }
 
 // Sweeper (HR-003): only expired ISSUED permits release their reservation.
