@@ -430,11 +430,12 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - `pclaw sandbox run`: egress-locked Docker network (gateway only; IPv6/ICMP/DNS blocked), no creds, read-only FS, non-root, optional gVisor; trusted sidecar probes + external canary; expiring ENFORCED promotion.
 
 ### M10 — Detect, investigate, respond
-**F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018.
+**F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018, PN-024 · **ADR:** 0019.
 - Detection engine (CEL rules over outbox events, windowed counters with cardinality caps, ATLAS/OWASP mapping), attention levels, grouping, suppression with scope/expiry.
 - Alerts → incidents → cases (facts, hypotheses, open questions, lenses, closure requirements), posture findings and lifecycle.
 - Breach radius: observed vs effective vs credential/bypass reach, dependency previews, exposure matrix.
 - Containment actions with per-path verification, restoration workflow; OCSF 1.9 export, Standard Webhooks, delivery health; permission-safe search & saved queries; live operations stream (SSE).
+- Shared Signals (CAEP/RISC) receiver for the customer IdP (PN-024, ADR-0019): signed events from configured transmitters only; identity events suspend grants only through preauthorized playbooks, otherwise open a case. The M10 brief threat-models the new inbound endpoint.
 
 ### M11 — Policy lifecycle & governed automations (MVP subset)
 **F:** F172–F210, F652–F754 (subset).
@@ -458,9 +459,10 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - Entitlements & metering per edition, rate limits/quotas, support access (task-bound, customer-approved, audited), data export/deletion, Helm chart, backup/restore + DR drill, FIPS build variant, k6 at SLOs, Schemathesis clean, threat-model refresh (G4), docs site.
 
 ### M14 — Framework SDKs & business connectors (delivered after M11, before M13)
-**PN:** PN-016.3, PN-017.2, PN-017.3, PN-017.4 · **F:** F101 · **ADR:** 0017.
+**PN:** PN-016.3, PN-017.2, PN-017.3, PN-017.4, PN-023 · **F:** F101 · **ADR:** 0017, 0019.
 - Framework wrappers on the core clients: Python (LangChain/LangGraph, OpenAI Agents SDK, CrewAI on py3.13), TypeScript (Vercel AI SDK, MCP TS), all on the conformance suite.
 - Connectors: Stripe test mode (refunds, idempotency keys), Slack (approval deep links, notifications), Postgres query (read-only, row limits, field filtering); data-scoping constraints where connectors support them.
+- AuthZEN decision endpoint for third-party enforcement points (PN-023, ADR-0019); routes decided this way are `PARTIAL`, and budget-consuming allows are recorded as dispatched with an unreported outcome.
 - Refund scenario as the second-market demo on real Stripe test mode.
 
 ### UI phase (after backend)

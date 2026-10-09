@@ -1,10 +1,10 @@
 # ADR-0019 — Standards at the edges: AuthZEN endpoint and Shared Signals receiver
 
-**Status:** Proposed (2026-10-09; founder decision pending). On acceptance, FEATURES.md gains PN-023 (M14) and PN-024 (M10).
+**Status:** Accepted (founder decision 2026-10-09). FEATURES.md: PN-023 (M14) and PN-024 (M10).
 
 **Context.** Buyers expect a new security layer to fit their existing stack. The October 2026 competitive review recommended OpenID AuthZEN for interoperable policy decisions and the OpenID Shared Signals Framework (CAEP/RISC) for revocation and risk signals. Some of its other recommendations conflict with accepted decisions and are rejected below.
 
-**Decision (proposed).**
+**Decision.**
 1. **AuthZEN evaluation endpoint (M14).** Third-party enforcement points (for example Envoy `ext_authz` or agent gateways) can ask PantherClaw for a decision through AuthZEN. Such routes skip permits and `BeginDispatch`, so they are labelled `PARTIAL` unless the target verifies PAP/1 action tokens (HR-024). An `ALLOW` for an action that consumes a budget or counter is recorded as dispatched with an unreported outcome, so its reservation is committed and never released early.
 2. **Shared Signals receiver (M10).** PantherClaw accepts signed CAEP/RISC events from configured transmitters (the customer's identity provider). "User disabled", "sessions revoked" and "credential compromised" find the grants that person issued, approved or is represented in. PantherClaw suspends them only under a preauthorized playbook (F562); otherwise it opens a case (F800: no destructive automatic response by default).
 3. **Not adopted from the review:**

@@ -1,6 +1,6 @@
 # PantherClaw — Product Components, Positioning and First Market
 
-**Status:** components and packaging **Proposed** (2026-10-09, founder review in the PR). First market and delivery order **Accepted** ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)); identity federation **Accepted** ([ADR-0018](adr/0018-federated-workload-identity-and-represented-principals.md)).
+**Status (2026-10-09):** **Accepted** by the founder: first market and delivery order ([ADR-0017](adr/0017-coding-agents-first-and-proven-coverage.md)), identity federation ([ADR-0018](adr/0018-federated-workload-identity-and-represented-principals.md)), standards at the edges ([ADR-0019](adr/0019-standards-at-the-edges.md)), one product sold in editions, and the pricing unit (§7). **Pending:** brand names for the seven components (§9).
 
 This document says how PantherClaw is explained, demonstrated and sold to security teams. It groups the 20 pillars of [FEATURES.md](FEATURES.md) into seven product components that an IT administrator can recognise. It never changes product behaviour: FEATURES.md, ARCHITECTURE.md and PAP/1 stay authoritative for what is built. Where it conflicts with "Where customers start" in the reference specification (§2), this document wins. Everything here is planned scope, not a claim that it is built.
 
@@ -72,7 +72,7 @@ Each component lists what an administrator does with it, the result they can sho
 
 - **What you do:** start from templates (coding to production, support, refunds, diagnostics, release); set budgets, counts, rates and sequences ("no external message after reading customer data in the same task"); test a policy and simulate it against recorded activity before enforcing it; roll it out to a pilot group first; grant exceptions that expire.
 - **What you can show:** every decision explained by the exact rule and value that decided it; zero overspend under concurrent agents; each policy change simulated before publication.
-- **Works with:** OPA as an extra, restrict-only check ([ADR-0004](adr/0004-cel-policy-engine.md)); trusted external facts and risk signals (F366, Next).
+- **Works with:** OPA as an extra, restrict-only check ([ADR-0004](adr/0004-cel-policy-engine.md)); gateways you already run, which can ask for decisions through OpenID AuthZEN (PN-023, M14; those routes count as Partly protected); trusted external facts and risk signals (F366, Next).
 - **Inside:** Decision pipeline & policy engine, Policy lifecycle, Agent Controls.
 - **Similar offerings:** AWS AgentCore policies, Cerbos, Permit.io, Pomerium, OPA. **Our difference:** limits are reserved atomically across parallel runs and sub-agents; missing evidence gives "Cannot authorise", never a guess; the same rule applies whether the agent uses MCP, a direct API or a hook (F099).
 
@@ -96,7 +96,7 @@ Each component lists what an administrator does with it, the result they can sho
 
 - **What you do:** work the operations queue; inspect a run end to end; see the breach radius (what happened vs what grants allow vs what raw credentials allow); suspend one run, agent, grant or connection; engage the org kill switch, which needs two people to restore; send events to your SIEM; restore access through a reviewed workflow.
 - **What you can show:** time to contain; containment confirmed per route rather than assumed; incidents closed with evidence.
-- **Works with:** SIEMs via OCSF 1.9, SOAR tools, Slack and signed webhooks.
+- **Works with:** SIEMs via OCSF 1.9, SOAR tools, Slack and signed webhooks; your identity provider's Shared Signals (CAEP/RISC) events, so a disabled user or revoked session reaches that person's agent grants (PN-024, M10).
 - **Inside:** Sessions, Containment, Monitoring, Threat Detection, Investigation, Breach Radius.
 - **Similar offerings:** CrowdStrike (with SGNL), Astrix, Pomerium. **Our difference:** responses act on authority itself (grants, runs, credentials, connections) and confirm each route, instead of only raising alerts.
 
@@ -154,7 +154,7 @@ Each attempt produces a signed receipt that `pclaw verify` checks offline. This 
 
 **Open question:** coding agents ship their own sandboxes. A vendor sandbox could count as the containment boundary if the same closure probes can run inside it and verify it (F454). That needs design work and is not committed.
 
-## 7. How PantherClaw is sold (proposal)
+## 7. How PantherClaw is sold (accepted 2026-10-09)
 
 1. **One product, one licence.** The components are how we explain, demonstrate and navigate PantherClaw. They are not separate products at launch. The value is the whole loop, and selling parts invites point comparisons.
 2. **Editions gate scale, retention, integrations and enterprise operations, never safety** (unchanged from FEATURES "Editions at a glance"). Every edition gets the full loop for its agent limit.
@@ -171,7 +171,10 @@ Each attempt produces a signed receipt that `pclaw verify` checks offline. This 
 | Proof | Signed receipts, `pclaw verify`, replay, community scenarios | + transparency anchoring, evidence packs, assurance reports, CI gate | + full scenario library | — |
 | Platform | Self-hosted single node | + governed automations | — | + FIPS build, HA, hybrid fleet, customer-approved support access |
 
-4. **Pricing unit (open decision):** editions count governed agents. For coding agents it must be settled whether one agent record with many instances (one per developer laptop) counts once or per instance. Counting records matches the accountability model (F574) and is simple; counting instances tracks value but feels like per-seat pricing. Proposal: count agent records, and give each edition an instance allowance. This needs a founder decision and, for the Community grant, a check against the BSL Additional Use Grant ([ADR-0007](adr/0007-licensing-bsl-apache-split.md)).
+4. **Pricing unit: one agent record counts once, and each edition includes an allowance of running instances.** One accountable agent, such as "Claude Code, engineering" with an instance on every developer laptop and CI job, counts as one governed agent until its instances exceed the edition's allowance. This matches the accountability model (F574) and avoids per-seat pricing. Follow-ups:
+   - **Licence wording.** The BSL Additional Use Grant defines an Agent as any distinct "software agent, automated workload, automation, or execution identity". Read literally, every running instance counts toward the Community limit of 5. Aligning the grant with this decision needs an amendment for future versions ([ADR-0007](adr/0007-licensing-bsl-apache-split.md)) and, ideally, legal review. Until it is amended, the licence text governs.
+   - **Allowance numbers** per edition are not set yet.
+   - **Metering:** `internal/billing` limits today count agents only (`MaxAgents`); the instance allowance joins the entitlements and metering work in M13 (PN-012.2).
 
 ## 8. Competitive map
 
@@ -197,9 +200,10 @@ Strategic threats to watch: CrowdStrike/SGNL and Microsoft for enterprise agent 
 
 ## 9. Open decisions
 
-| # | Decision | Proposal |
+| # | Decision | Status |
 |---|---|---|
-| 1 | Accept the seven components and their names | As in §3 |
-| 2 | Sell as one product with editions, not separate component SKUs | §7 items 1–3 |
-| 3 | Pricing unit for coding agents | §7 item 4 |
-| 4 | Accept [ADR-0019](adr/0019-standards-at-the-edges.md) (AuthZEN endpoint, Shared Signals receiver) | Proposed |
+| 1 | Memorable brand names for the seven components (descriptive names in §3 stay as the plain-language subtitle) | Pending founder approval |
+| 2 | Sell as one product with editions, not separate component SKUs | Accepted 2026-10-09 (§7 items 1–3) |
+| 3 | Pricing unit for coding agents | Accepted 2026-10-09 (§7 item 4) |
+| 4 | [ADR-0019](adr/0019-standards-at-the-edges.md): AuthZEN endpoint, Shared Signals receiver | Accepted 2026-10-09 |
+| 5 | Amend the licence's Agent definition and set per-edition instance allowances | Open (§7 item 4) |

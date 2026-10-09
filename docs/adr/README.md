@@ -22,4 +22,4 @@ Format: Context → Decision → Consequences → Alternatives considered. Statu
 | [0016](0016-human-and-service-authentication.md) | Human and service authentication for the control plane (M2) |
 | [0017](0017-coding-agents-first-and-proven-coverage.md) | Coding and DevOps agents first; v0.1.0 built around proven coverage (2026-10-09) |
 | [0018](0018-federated-workload-identity-and-represented-principals.md) | Federated workload identity and represented principals from the customer's IdP (M3) |
-| [0019](0019-standards-at-the-edges.md) | Standards at the edges: AuthZEN endpoint and Shared Signals receiver (**Proposed**) |
+| [0019](0019-standards-at-the-edges.md) | Standards at the edges: AuthZEN endpoint (M14) and Shared Signals receiver (M10) |
