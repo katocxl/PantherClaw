@@ -76,6 +76,7 @@ WHERE p.org_id = sqlc.arg(org_id) AND p.id = sqlc.arg(id);
 UPDATE pc.permits
 SET state = sqlc.arg(to_state), finished_at = now()
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND gateway_id = sqlc.arg(gateway_id) AND state = 'DISPATCHING'
+  AND budget_id IS NOT NULL
 RETURNING transaction_id, budget_id, amount;
 
 -- name: CommitReservation :execresult
@@ -107,6 +108,7 @@ VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(permit_id), sqlc.arg(transactio
 UPDATE pc.permits
 SET state = 'RELEASED', finished_at = now()
 WHERE org_id = sqlc.arg(org_id) AND state = 'ISSUED' AND expires_at < now()
+  AND budget_id IS NOT NULL
 RETURNING id, transaction_id, budget_id, amount;
 
 -- Stale DISPATCHING permits become UNKNOWN and keep their reservation.
@@ -115,6 +117,7 @@ UPDATE pc.permits
 SET state = 'UNKNOWN', finished_at = now()
 WHERE org_id = sqlc.arg(org_id) AND state = 'DISPATCHING'
   AND dispatching_at < now() - make_interval(secs => sqlc.arg(stale_seconds)::float8)
+  AND budget_id IS NOT NULL
 RETURNING id, transaction_id, budget_id, amount;
 
 -- name: GetBudget :one

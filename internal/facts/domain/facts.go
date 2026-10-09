@@ -412,3 +412,26 @@ func Digest(used []Fact) string {
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// EncodeValue writes a value in its wire form (DecodeValue reads it back).
+func EncodeValue(v Value) ([]byte, error) {
+	var w valueJSON
+	switch v.Type {
+	case TypeBoolean:
+		b := v.Bool
+		w.Bool = &b
+	case TypeInteger:
+		w.Int = strconv.FormatInt(v.Int, 10)
+	case TypeDecimal:
+		w.Decimal = v.Decimal.String()
+	case TypeMoney:
+		w.Amount, w.Currency = v.Money.Amount.String(), string(v.Money.Currency)
+	case TypeIdentifier:
+		w.ID = v.Str
+	case TypeTimestamp:
+		w.Time = time.Unix(v.Int, 0).UTC().Format(time.RFC3339)
+	default:
+		return nil, invalid("value: unknown type %q", v.Type)
+	}
+	return json.Marshal(w, json.Deterministic(true))
+}
