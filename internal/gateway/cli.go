@@ -91,6 +91,7 @@ const usage = `pantherclaw-gateway — PantherClaw gateway
 
 Usage:
   pantherclaw-gateway enroll --config FILE --token-file FILE
+  pantherclaw-gateway broker-key generate --out FILE --kek-file FILE
   pantherclaw-gateway serve [--config FILE] [--enroll-file FILE]
   pantherclaw-gateway version
 
@@ -110,6 +111,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env confi
 		return 0
 	case "serve":
 		err = serve(ctx, args[1:], stderr, env, nil)
+	case "broker-key":
+		err = cmdBrokerKey(ctx, args[1:], stdout, stderr)
 	case "enroll":
 		err = cmdEnroll(ctx, args[1:], stdout, stderr, env)
 	default:
@@ -184,7 +187,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, env config.Look
 	if err != nil {
 		return err
 	}
-	g, err := New(&cfg, id, log)
+	g, err := New(ctx, &cfg, id, log)
 	if err != nil {
 		return err
 	}
