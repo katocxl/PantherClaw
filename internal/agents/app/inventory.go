@@ -105,9 +105,9 @@ func place(ctx context.Context, q *dbq.Queries, org ids.OrgID, team, env ids.UUI
 	return placement{team: team, env: env, path: path}, nil
 }
 
-// pathOf returns where an existing agent's permissions are checked: its
+// PathOf returns where an existing agent's permissions are checked: its
 // placement once claimed, the org for a discovered agent.
-func pathOf(ctx context.Context, q *dbq.Queries, r dbq.PcAgent) (td.Path, error) {
+func PathOf(ctx context.Context, q *dbq.Queries, r dbq.PcAgent) (td.Path, error) {
 	if r.TeamID == nil || r.EnvironmentID == nil {
 		return td.OrgPath(r.OrgID), nil
 	}
@@ -141,7 +141,7 @@ func load(ctx context.Context, c tenancy.Caller, q *dbq.Queries, id ids.UUID, p 
 	if err != nil {
 		return r, notFound(err, ErrAgentNotFound)
 	}
-	path, err := pathOf(ctx, q, r)
+	path, err := PathOf(ctx, q, r)
 	if err != nil {
 		return r, err
 	}

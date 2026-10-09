@@ -24,6 +24,8 @@ import (
 	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/katocxl/pantherclaw/internal/agents/adapters/agentsrpc"
+	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/devicehttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/oauthhttp"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/rpcauth"
@@ -48,6 +50,8 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/version"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
+	wapp "github.com/katocxl/pantherclaw/internal/waitlist/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -343,6 +347,8 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
 	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
 	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
+	pantherclawv1connect.RegisterAgentServiceHandler(rs, agentsrpc.NewAgents(aapp.NewInventory(pool, d.billing)))
+	pantherclawv1connect.RegisterWaitlistServiceHandler(rs, waitlistrpc.NewWaitlist(wapp.NewReader(pool)))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)

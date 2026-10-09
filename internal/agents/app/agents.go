@@ -229,7 +229,7 @@ func (inv *Inventory) List(ctx context.Context, pr page.Request, states []domain
 		}
 		rows, out.Next = page.Finish(pr, rows, func(r dbq.PcAgent) ids.UUID { return r.ID })
 		for _, r := range rows {
-			path, err := pathOf(ctx, q, r)
+			path, err := PathOf(ctx, q, r)
 			if err != nil {
 				return err
 			}
