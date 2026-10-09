@@ -619,6 +619,23 @@ type PcPackagePin struct {
 	UpdatedAt time.Time
 }
 
+type PcPackageSigningKey struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	Kid               string
+	PublicKey         []byte
+	Name              string
+	State             string
+	CreatedBy         string
+	CreatedAt         time.Time
+	RevokeReason      *string
+	RevokedBy         *string
+	RevokedAt         *time.Time
+	MetadataVersion   pgtype.Int8
+	MetadataDigest    *string
+	MetadataExpiresAt *time.Time
+}
+
 type PcPackageTrust struct {
 	OrgID         ids.OrgID
 	Version       int64
@@ -628,15 +645,16 @@ type PcPackageTrust struct {
 }
 
 type PcPackageVersion struct {
-	OrgID      ids.OrgID
-	ID         ids.UUID
-	PackageID  ids.UUID
-	Version    string
-	FileDigest string
-	Raw        []byte
-	State      string
-	ImportedAt time.Time
-	ChangedAt  time.Time
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	PackageID    ids.UUID
+	Version      string
+	FileDigest   string
+	Raw          []byte
+	State        string
+	ImportedAt   time.Time
+	ChangedAt    time.Time
+	SigningKeyID *ids.UUID
 }
 
 type PcPermit struct {

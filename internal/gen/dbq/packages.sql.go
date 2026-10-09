@@ -323,19 +323,20 @@ func (q *Queries) InsertPackageTrust(ctx context.Context, arg InsertPackageTrust
 }
 
 const insertPackageVersion = `-- name: InsertPackageVersion :exec
-INSERT INTO pc.package_versions (org_id, id, package_id, version, file_digest, raw, state)
+INSERT INTO pc.package_versions (org_id, id, package_id, version, file_digest, raw, state, signing_key_id)
 VALUES ($1, $2, $3, $4, $5,
-        $6, $7)
+        $6, $7, $8)
 `
 
 type InsertPackageVersionParams struct {
-	OrgID      ids.OrgID
-	ID         ids.UUID
-	PackageID  ids.UUID
-	Version    string
-	FileDigest string
-	Raw        []byte
-	State      string
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	PackageID    ids.UUID
+	Version      string
+	FileDigest   string
+	Raw          []byte
+	State        string
+	SigningKeyID *ids.UUID
 }
 
 func (q *Queries) InsertPackageVersion(ctx context.Context, arg InsertPackageVersionParams) error {
@@ -347,6 +348,7 @@ func (q *Queries) InsertPackageVersion(ctx context.Context, arg InsertPackageVer
 		arg.FileDigest,
 		arg.Raw,
 		arg.State,
+		arg.SigningKeyID,
 	)
 	return err
 }
@@ -420,10 +422,11 @@ func (q *Queries) ListActiveVersionsWith(ctx context.Context, orgID ids.OrgID, o
 
 const listPackageVersions = `-- name: ListPackageVersions :many
 SELECT v.id, t.name, v.version, v.state, v.file_digest, v.imported_at,
-       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned
+       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned, k.kid AS signing_kid
 FROM pc.package_versions v
 JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
 LEFT JOIN pc.package_pins p ON p.org_id = t.org_id AND p.package_id = t.id
+LEFT JOIN pc.package_signing_keys k ON k.org_id = v.org_id AND k.id = v.signing_key_id
 WHERE v.org_id = $1 AND ($2::text = '' OR t.name = $2::text)
 ORDER BY t.name, v.imported_at DESC
 LIMIT 500
@@ -437,10 +440,12 @@ type ListPackageVersionsRow struct {
 	FileDigest string
 	ImportedAt time.Time
 	Pinned     bool
+	SigningKid *string
 }
 
 // ListPackageVersions lists an org's imported package versions (all
-// packages when name is empty), with whether each is the pinned one.
+// packages when name is empty), with whether each is the pinned one and
+// the kid of the org key that signed it (NULL: a package root).
 func (q *Queries) ListPackageVersions(ctx context.Context, orgID ids.OrgID, name string) ([]ListPackageVersionsRow, error) {
 	rows, err := q.db.Query(ctx, listPackageVersions, orgID, name)
 	if err != nil {
@@ -458,6 +463,7 @@ func (q *Queries) ListPackageVersions(ctx context.Context, orgID ids.OrgID, name
 			&i.FileDigest,
 			&i.ImportedAt,
 			&i.Pinned,
+			&i.SigningKid,
 		); err != nil {
 			return nil, err
 		}
