@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
@@ -250,6 +251,21 @@ func (f *fakeContainment) Check() (int64, error) {
 
 func (f *fakeContainment) Ready() <-chan struct{} { return f.ready }
 
+// fakeConfig is a configuration store, loaded unless ready is open.
+type fakeConfig struct {
+	cfg   *control.Config
+	ready chan struct{}
+}
+
+func newFakeConfig() *fakeConfig {
+	ready := make(chan struct{})
+	close(ready)
+	return &fakeConfig{cfg: &control.Config{Version: 1, ByName: map[string]*control.Connection{}, ByID: map[string]*control.Connection{}}, ready: ready}
+}
+
+func (f *fakeConfig) Current() *control.Config { return f.cfg }
+func (f *fakeConfig) Ready() <-chan struct{}   { return f.ready }
+
 // setup starts the fakes and the gateway; opts configure the fakes before
 // any server goroutine starts.
 func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
@@ -291,7 +307,7 @@ func setup(t *testing.T, targetURL string, opts ...func(*harness)) *harness {
 	h.gw, err = newGateway(&cfg, Deps{
 		Org: testOrg, GatewayID: "gw-test",
 		Authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(hc, as.URL))),
-		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc, Containment: h.containment,
+		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc, Containment: h.containment, Configuration: newFakeConfig(),
 	}, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)

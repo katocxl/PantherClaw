@@ -6,6 +6,7 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,5 +66,21 @@ func TestHR010_ServingWaitsForTheFirstSnapshot(t *testing.T) {
 	close(pending.ready)
 	if err := h.gw.WaitReady(context.Background(), time.Second); err != nil {
 		t.Fatalf("not ready after the snapshot: %v", err)
+	}
+}
+
+// TestServingWaitsForTheFirstConfiguration: with a containment snapshot
+// but no configuration, the gateway is not ready (decision 19: a gateway
+// whose configuration is unavailable at start does not serve).
+func TestServingWaitsForTheFirstConfiguration(t *testing.T) {
+	h := setup(t, "")
+	pending := &fakeConfig{ready: make(chan struct{})}
+	h.gw.config = pending
+	if err := h.gw.WaitReady(context.Background(), 50*time.Millisecond); err == nil || !strings.Contains(err.Error(), "configuration") {
+		t.Fatalf("ready without a configuration: %v", err)
+	}
+	close(pending.ready)
+	if err := h.gw.WaitReady(context.Background(), time.Second); err != nil {
+		t.Fatalf("not ready after the configuration: %v", err)
 	}
 }

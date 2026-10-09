@@ -46,6 +46,7 @@ type Gateway struct {
 	org         string
 	run         []func(ctx context.Context) error
 	containment Containment
+	config      Configuration
 	authority   pantherclawv1connect.AuthorityServiceClient
 	permits     *permitVerifier
 	egress      *http.Client
