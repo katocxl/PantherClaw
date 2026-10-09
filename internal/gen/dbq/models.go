@@ -223,6 +223,15 @@ type PcDecisionReceipt struct {
 	ReceiptJws    string
 	LedgerEntryID ids.UUID
 	CreatedAt     time.Time
+	Evaluation    int32
+}
+
+type PcDedupeClaim struct {
+	OrgID         ids.OrgID
+	DedupeKey     string
+	TransactionID ids.UUID
+	State         string
+	ChangedAt     time.Time
 }
 
 type PcDek struct {
@@ -563,8 +572,8 @@ type PcPermit struct {
 	GatewayID     string
 	Epoch         int64
 	State         string
-	BudgetID      ids.UUID
-	Amount        money.Decimal
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
 	IssuedAt      time.Time
 	ExpiresAt     time.Time
 	DispatchingAt *time.Time
@@ -689,19 +698,26 @@ type PcToolPackage struct {
 }
 
 type PcTransaction struct {
-	OrgID      ids.OrgID
-	ID         ids.UUID
-	RunID      ids.UUID
-	ActionID   ids.UUID
-	ActionHash []byte
-	Operation  string
-	Decision   string
-	ReasonCode string
-	BudgetID   *ids.UUID
-	Amount     *money.Decimal
-	Currency   *string
-	GatewayID  string
-	CreatedAt  time.Time
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	RunID         ids.UUID
+	ActionID      ids.UUID
+	ActionHash    []byte
+	Operation     string
+	Decision      string
+	ReasonCode    string
+	BudgetID      *ids.UUID
+	Amount        *money.Decimal
+	Currency      *string
+	GatewayID     string
+	CreatedAt     time.Time
+	State         string
+	Evaluations   int32
+	GrantID       *ids.UUID
+	GrantRevision *int32
+	BasisDigest   *string
+	EffectiveHash []byte
+	DedupeKey     *string
 }
 
 type PcTrustedIssuer struct {
