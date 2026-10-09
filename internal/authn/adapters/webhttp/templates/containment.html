@@ -1,0 +1,46 @@
+{{template "head" .}}
+<h1>Emergency stop</h1>
+<p class="note">The kill switch stops every agent action in this organization within a second: gateways refuse to dispatch and the Authority denies everything. Engaging it needs one person with a security key; lifting it needs two different people, each with their own key.</p>
+{{with .KillSwitch}}
+{{if .Engaged}}
+<p class="alert">The kill switch is <strong>engaged</strong>. Every agent action is refused.</p>
+<dl>
+<dt>Engaged by</dt><dd><code>{{.EngagedBy}}</code></dd>
+<dt>Engaged at</dt><dd>{{if .EngagedAt}}{{.EngagedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}{{end}}</dd>
+<dt>Reason</dt><dd class="untrusted">{{.Reason}}</dd>
+<dt>Containment epoch</dt><dd>{{.Epoch}}</dd>
+</dl>
+{{if .Pending}}
+<h2>Restore waiting for a second person</h2>
+<dl>
+<dt>Proposed by</dt><dd><code>{{.Pending.ProposedBy}}</code></dd>
+<dt>Expires</dt><dd>{{.Pending.ExpiresAt.UTC.Format "2006-01-02 15:04:05 UTC"}}</dd>
+<dt>Reason</dt><dd class="untrusted">{{.Pending.Reason}}</dd>
+</dl>
+{{if $.CanAct}}
+{{if $.IsProposer}}
+<p class="note">You proposed this restore. A different person with a different security key must confirm it.</p>
+{{else}}
+<p><button type="button" id="confirm-restore" data-id="{{.Pending.ID}}">Confirm restore (needs your security key)</button></p>
+{{end}}
+<p><button type="button" id="cancel-restore" data-id="{{.Pending.ID}}">Cancel this proposal</button></p>
+{{end}}
+{{else if $.CanAct}}
+<h2>Propose a restore</h2>
+<p><label for="restore-reason">Why it is safe to restore</label>
+<input id="restore-reason" type="text" maxlength="500"></p>
+<p><button type="button" id="propose-restore">Propose restore (needs your security key)</button></p>
+{{end}}
+{{else}}
+<p class="ok">The kill switch is not engaged. Containment epoch {{.Epoch}}.</p>
+{{if $.CanAct}}
+<p><label for="engage-reason">Reason</label>
+<input id="engage-reason" type="text" maxlength="500"></p>
+<p><button type="button" id="engage" class="danger">Engage the kill switch (needs your security key)</button></p>
+{{end}}
+{{end}}
+{{end}}
+{{if not .CanAct}}<p class="note">You can see the kill switch but not change it: that needs the Emergency Responder role.</p>{{end}}
+<p id="status" role="status"></p>
+<script src="/static/containment.js"></script>
+{{template "foot" .}}

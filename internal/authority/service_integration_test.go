@@ -337,7 +337,7 @@ func TestIntAllowDispatchCommit(t *testing.T) {
 	if b := f.budgetRow(t); b.Reserved.String() != "30" || b.Spent.String() != "0" {
 		t.Fatalf("after authorize: reserved %s spent %s", b.Reserved, b.Spent)
 	}
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); err != nil {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(`{"id":"re_1"}`))
@@ -364,15 +364,15 @@ func TestHR009_PermitIsSingleUse(t *testing.T) {
 	f := setup(t, "1000", 0, 5*time.Second)
 	ctx := context.Background()
 	res := f.authorize(t, "10.00")
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); err != nil {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); !errors.Is(err, authority.ErrPermitUsed) {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); !errors.Is(err, authority.ErrPermitUsed) {
 		t.Fatalf("second BeginDispatch: %v, want ErrPermitUsed", err)
 	}
 	other := authority.Gateway{ID: "gw-other", Org: f.gw.Org}
 	res2 := f.authorize(t, "10.00")
-	if err := f.svc.BeginDispatch(ctx, other, res2.PermitID, res2.Epoch); !errors.Is(err, authority.ErrPermitUnknown) {
+	if _, err := f.svc.BeginDispatch(ctx, other, res2.PermitID, res2.Epoch, authority.Outbound{}); !errors.Is(err, authority.ErrPermitUnknown) {
 		t.Fatalf("another gateway used the permit: %v", err)
 	}
 }
@@ -388,18 +388,18 @@ func TestHR001_BeginDispatchRejectsStaleEpochAndKillSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); !errors.Is(err, authority.ErrEpochStale) {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); !errors.Is(err, authority.ErrEpochStale) {
 		t.Fatalf("BeginDispatch after epoch bump: %v, want ErrEpochStale", err)
 	}
 	res2 := f.authorize(t, "10.00")
 	err = f.pool.InTenantTx(ctx, f.gw.Org, func(ctx context.Context, tx db.TenantTx) error {
-		_, err := dbq.New(tx).SetKillSwitch(ctx, true, f.gw.Org)
+		_, err := dbq.New(tx).EngageKillSwitch(ctx, "test", "test", f.gw.Org)
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.BeginDispatch(ctx, f.gw, res2.PermitID, res2.Epoch); !errors.Is(err, authority.ErrKillSwitch) {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res2.PermitID, res2.Epoch, authority.Outbound{}); !errors.Is(err, authority.ErrKillSwitch) {
 		t.Fatalf("BeginDispatch under kill switch: %v", err)
 	}
 	if res := f.authorize(t, "10.00"); res.Decision != domain.Deny || res.Permit != "" {
@@ -410,7 +410,7 @@ func TestHR001_BeginDispatchRejectsStaleEpochAndKillSwitch(t *testing.T) {
 func TestHR001_BeginDispatchRejectsExpiredPermit(t *testing.T) {
 	f := setup(t, "1000", 0, time.Microsecond)
 	res := f.authorize(t, "10.00")
-	if err := f.svc.BeginDispatch(context.Background(), f.gw, res.PermitID, res.Epoch); !errors.Is(err, authority.ErrPermitExpired) {
+	if _, err := f.svc.BeginDispatch(context.Background(), f.gw, res.PermitID, res.Epoch, authority.Outbound{}); !errors.Is(err, authority.ErrPermitExpired) {
 		t.Fatalf("expired permit: %v, want ErrPermitExpired", err)
 	}
 }
@@ -511,7 +511,7 @@ func TestT024_CrashMidDispatchYieldsUnknown(t *testing.T) {
 	f := setup(t, "1000", 0, 5*time.Second)
 	ctx := context.Background()
 	res := f.authorize(t, "40.00")
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); err != nil {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	// The gateway "crashes": RecordExecution never arrives.
@@ -549,7 +549,7 @@ func TestIntFailedDispatchReleases(t *testing.T) {
 	f := setup(t, "1000", 0, 5*time.Second)
 	ctx := context.Background()
 	res := f.authorize(t, "20.00")
-	if err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch); err != nil {
+	if _, err := f.svc.BeginDispatch(ctx, f.gw, res.PermitID, res.Epoch, authority.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.RecordExecution(ctx, f.gw, authority.Execution{Permit: res.PermitID, Outcome: authority.Failed, TargetStatus: 402}); err != nil {

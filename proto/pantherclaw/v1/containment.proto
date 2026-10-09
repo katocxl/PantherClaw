@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ContainmentService shows the org's containment state (G0 M6). The kill
+// switch is engaged and restored only on the emergency-stop page
+// (/containment), because both need a WebAuthn step-up on a browser session
+// and restoring needs two people (HR-113, G0 M6 decision 2); no RPC changes
+// it.
+service ContainmentService {
+  // GetKillSwitch returns the kill switch, the containment epoch and any
+  // pending restore proposal.
+  // permission: containment.read
+  rpc GetKillSwitch(GetKillSwitchRequest) returns (GetKillSwitchResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// GetKillSwitchRequest asks for the org's kill switch.
+message GetKillSwitchRequest {}
+
+// GetKillSwitchResponse is the kill switch.
+message GetKillSwitchResponse {
+  // Whether it is engaged.
+  bool engaged = 1;
+  // Current containment epoch.
+  int64 epoch = 2;
+  // Who engaged it, when and why (UNTRUSTED text).
+  string engaged_by = 3;
+  // When it was engaged.
+  google.protobuf.Timestamp engage_time = 4;
+  // Why it was engaged.
+  string reason = 5;
+  // The pending restore proposal, if any.
+  KillSwitchRestore pending_restore = 6;
+  // The emergency-stop page, where it is engaged and restored.
+  string page_url = 7;
+}
+
+// KillSwitchRestore is a proposal to restore after the kill switch.
+message KillSwitchRestore {
+  // Proposal id.
+  string id = 1;
+  // User who proposed it.
+  string proposed_by = 2;
+  // When.
+  google.protobuf.Timestamp propose_time = 3;
+  // When it expires (30 minutes).
+  google.protobuf.Timestamp expire_time = 4;
+  // Why (UNTRUSTED text).
+  string reason = 5;
+}

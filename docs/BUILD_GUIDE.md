@@ -183,17 +183,17 @@ go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
 
 Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
 
-**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+**Gateway (M6):** gateways reach `AuthorityService` only on the server's mTLS gateway listener (`gateway_api`), with a 24-hour certificate from PantherClaw's internal CA. A gateway gets its first certificate with a single-use enrollment token and pins the CA by its SHA-256. The public API refuses every gateway call. For development, `dev seed --gateway-out` (or `dev gateway --org ID --out FILE` for an existing org) writes an enrollment file holding the API URL, the token (valid 15 minutes) and the CA pin. The gateway enrolls from it on first start, keeps its identity in `control.identity_dir`, and renews the certificate itself.
 
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
-  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
+  --org-name acme --budget-limit 1000.00 --gateway-out deploy/dev/secrets/gateway-enroll.json \
   --workload-out deploy/dev/secrets/workload.json \
-  --facts-key-out deploy/dev/secrets/facts.key   # a workload with a grant and a run, and a fact provider's API key
-# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+  --facts-key-out deploy/dev/secrets/facts.key   # a gateway to enroll, a workload with a grant and a run, a fact provider's API key
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json   # API on :8080, gateway listener on :8443
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
-# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
-go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
+# within 15 minutes of dev seed (or run dev gateway again):
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.example.json --enroll-file deploy/dev/secrets/gateway-enroll.json
 # since M4 every refund needs a fresh payments.charge.refundable fact about its charge, and identical
 # refunds are parked: --unique varies charge and amount, --facts-key-file reports the facts first
 go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --facts-key-file deploy/dev/secrets/facts.key \
@@ -354,7 +354,7 @@ docs/                    this guide and companions
 | M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
 | M4 | `package_trust`, `tool_packages`, `package_versions`, `package_pins`, `package_signing_keys` (follow-up, 00026), `action_definitions`, `consequence_rules`, `policies`, `policy_versions`, `envelopes`, `envelope_revisions`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `reservations`, `fact_providers`, `facts`, `dedupe_claims`; `budgets` (M1.5) gains rule, grouping and period columns; idempotency lives in columns on `transactions` (M1.5) |
 | M5 | `sessions` (browser), `login_requests` (browser sign-ins in progress), `webauthn_credentials`, `webauthn_ceremonies` (pending registrations and assertions), `approval_requests`, `approval_responses`, `notifications`, `notification_channels`, `deliveries` |
-| M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
+| M6 | `gateways`, `gateway_enrollment_tokens`, `gateway_certs`, `broker_keys`, `connections`, `connection_routes`, `credentials` (sealed), `circuit_states`, `kill_switch_requests`; `org_containment` gains who engaged the kill switch; `transactions` and `permits` gain mode and connection |
 | M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
 | M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
 | M10 | `detection_rules`, `detection_state`, `alerts`, `incidents`, `cases`, `case_notes`, `findings`, `suppressions`, `containment_actions`, `export_destinations`, `saved_queries` |
@@ -443,11 +443,11 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Tests:** replay/theft by sibling run, self-approval, API-key approval refused, sock-puppet (same WebAuthn cred), TOCTOU after approval, variant-shopping cap, delivery failure ≠ approval.
 
 ### M6 — Gateway & non-bypassable boundary
-**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..086, HR-113 · **PN:** PN-003, PN-005, PN-013, PN-014, PN-015.
+**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031, T-065..T-069 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..083, HR-113, HR-180..188 (HR-084 and HR-085 moved to M9) · **PN:** PN-002.6, PN-003, PN-005, PN-013, PN-014, PN-015 · **G0:** [g0/M6.md](g0/M6.md).
 - Gateway enrollment + mTLS (internal CA), org binding; Authorize/BeginDispatch/RecordExecution clients; revocation/containment stream with heartbeat and cold-start snapshot.
 - MCP proxy (2026-07-28 stateless + 2025-11-25 stateful), tasks extension for HOLD, reviewed descriptions, elicitation/sampling gating; `pclaw mcp proxy` stdio shim.
 - HTTP proxy (route matching from packages), outbound re-serialization, egress transport; credential broker (sealed creds, per-tenant keys, AAD binding), `pclaw seal`.
-- Connector runtime (customer-hosted only) with isolation; circuit breaker; monitor vs enforce mode per route.
+- Circuit breaker; monitor vs enforce mode per route. The connector runtime for third-party MCP servers (customer-hosted only, with isolation) moves to M9 (G0 M6 decision 3).
 - Kill switch (asymmetric) and containment epoch bumps.
 - Claude Code plugin (PreToolUse for Bash + PowerShell, path normalization) — dogfooded on PantherClaw development.
 - **Exit — refund scenario table (`test/e2e`):**
@@ -482,9 +482,10 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - §43 coding-agent scenario on a sandbox GitHub repo: merge requires independent reviewer; deployment consequence requires release approver.
 
 ### M9 — Coverage & containment sandbox
-**HR:** HR-024, HR-086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
+**HR:** HR-024, HR-084..086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
 - Routes inventory, coverage snapshots (UNKNOWN/OBSERVE_ONLY/PARTIAL/ENFORCED), invalidation events, freshness contract, closure evidence, access-mode disclosure, credential-overreach findings.
 - `pclaw sandbox run`: egress-locked Docker network (gateway only; IPv6/ICMP/DNS blocked), no creds, read-only FS, non-root, optional gVisor; trusted sidecar probes + external canary; expiring ENFORCED promotion.
+- Connector runtime for third-party MCP servers run as local processes (moved from M6, G0 M6 decision 3): each in its own locked-down container on the same sandbox machinery, customer-hosted gateways only, egress only through the gateway, which injects credentials (HR-084, HR-085).
 
 ### M10 — Detect, investigate, respond
 **F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018, PN-024 · **ADR:** 0019.

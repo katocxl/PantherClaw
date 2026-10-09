@@ -34,12 +34,14 @@ func New(a Authenticator, perms map[string]td.Permission, gateway rpc.Authentica
 		if !ok || perm == td.PermPublic {
 			return nil, connect.NewError(connect.CodePermissionDenied, "permission denied")
 		}
-		if perm.Workload() {
+		if perm.Workload() || perm == td.PermGatewayEnroll {
 			// WorkloadService is authenticated by PAP/1: each handler verifies
 			// the request proof (and workload token) itself before doing
-			// anything (internal/identity/adapters/workloadrpc). No principal
-			// is put in the context, so no use case for people or services
-			// can run from here.
+			// anything (internal/identity/adapters/workloadrpc). Gateway
+			// enrollment is authenticated by the single-use enrollment token
+			// in the request, which its handler verifies (HR-180). No
+			// principal is put in the context, so no use case for people or
+			// services can run from here.
 			return ctx, nil
 		}
 		if perm.Gateway() {

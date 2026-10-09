@@ -123,10 +123,12 @@ func (q *Queries) GetDedupeClaim(ctx context.Context, orgID ids.OrgID, dedupeKey
 
 const insertDecision = `-- name: InsertDecision :exec
 INSERT INTO pc.transactions (org_id, id, run_id, action_id, action_hash, operation, decision, reason_code, gateway_id,
-                             state, evaluations, grant_id, grant_revision, basis_digest, effective_hash, dedupe_key)
+                             state, evaluations, grant_id, grant_revision, basis_digest, effective_hash, dedupe_key, mode,
+                             connection_id, channel, target_type, target_id)
 VALUES ($1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, 1, $11,
-        $12, $13, $14, $15)
+        $12, $13, $14, $15, $16,
+        $17, $18, $19, $20)
 `
 
 type InsertDecisionParams struct {
@@ -145,6 +147,11 @@ type InsertDecisionParams struct {
 	BasisDigest   *string
 	EffectiveHash []byte
 	DedupeKey     *string
+	Mode          string
+	ConnectionID  *ids.UUID
+	Channel       *string
+	TargetType    *string
+	TargetID      *string
 }
 
 func (q *Queries) InsertDecision(ctx context.Context, arg InsertDecisionParams) error {
@@ -164,6 +171,11 @@ func (q *Queries) InsertDecision(ctx context.Context, arg InsertDecisionParams) 
 		arg.BasisDigest,
 		arg.EffectiveHash,
 		arg.DedupeKey,
+		arg.Mode,
+		arg.ConnectionID,
+		arg.Channel,
+		arg.TargetType,
+		arg.TargetID,
 	)
 	return err
 }
@@ -204,8 +216,9 @@ func (q *Queries) InsertEvaluationReceipt(ctx context.Context, arg InsertEvaluat
 }
 
 const insertPermitForTransaction = `-- name: InsertPermitForTransaction :exec
-INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at, mode, connection_id)
+VALUES ($1, $2, $3, $4, $5, $6,
+        $7, $8)
 `
 
 type InsertPermitForTransactionParams struct {
@@ -215,6 +228,8 @@ type InsertPermitForTransactionParams struct {
 	GatewayID     string
 	Epoch         int64
 	ExpiresAt     time.Time
+	Mode          string
+	ConnectionID  *ids.UUID
 }
 
 func (q *Queries) InsertPermitForTransaction(ctx context.Context, arg InsertPermitForTransactionParams) error {
@@ -225,6 +240,8 @@ func (q *Queries) InsertPermitForTransaction(ctx context.Context, arg InsertPerm
 		arg.GatewayID,
 		arg.Epoch,
 		arg.ExpiresAt,
+		arg.Mode,
+		arg.ConnectionID,
 	)
 	return err
 }
@@ -336,8 +353,8 @@ const updateDecision = `-- name: UpdateDecision :execresult
 UPDATE pc.transactions
 SET decision = $1, reason_code = $2, state = $3,
     evaluations = $4, grant_id = $5, grant_revision = $6,
-    basis_digest = $7, effective_hash = $8
-WHERE org_id = $9 AND id = $10 AND state = 'OPEN' AND evaluations = $11
+    basis_digest = $7, effective_hash = $8, mode = $9
+WHERE org_id = $10 AND id = $11 AND state = 'OPEN' AND evaluations = $12
 `
 
 type UpdateDecisionParams struct {
@@ -349,6 +366,7 @@ type UpdateDecisionParams struct {
 	GrantRevision   *int32
 	BasisDigest     *string
 	EffectiveHash   []byte
+	Mode            string
 	OrgID           ids.OrgID
 	ID              ids.UUID
 	PrevEvaluations int32
@@ -364,6 +382,7 @@ func (q *Queries) UpdateDecision(ctx context.Context, arg UpdateDecisionParams) 
 		arg.GrantRevision,
 		arg.BasisDigest,
 		arg.EffectiveHash,
+		arg.Mode,
 		arg.OrgID,
 		arg.ID,
 		arg.PrevEvaluations,

@@ -87,7 +87,11 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		if w.Permit != nil {
-			if err := checkAuthority(ctx, q, org, ev); err != nil {
+			check := checkAuthority
+			if ev.MonitorPermit() {
+				check = checkContainment // a monitor permit binds no authority (HR-184)
+			}
+			if err := check(ctx, q, org, ev); err != nil {
 				return err
 			}
 		}
@@ -122,9 +126,13 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 				}
 			}
 			lines := pgbudgets.Lines(ev.Plan.Budgets, ev.Plan.Counters, rows)
+			mode := pipeline.ModeEnforce
+			if ev.MonitorPermit() {
+				mode = pipeline.ModeMonitor
+			}
 			if err := q.InsertPermitForTransaction(ctx, dbq.InsertPermitForTransactionParams{
 				OrgID: org, ID: w.Permit.ID, TransactionID: w.TransactionID, GatewayID: w.Permit.GatewayID,
-				Epoch: w.Permit.Epoch, ExpiresAt: w.Permit.ExpiresAt,
+				Epoch: w.Permit.Epoch, ExpiresAt: w.Permit.ExpiresAt, Mode: mode, ConnectionID: connectionOf(ev),
 			}); err != nil {
 				return err
 			}
@@ -154,12 +162,8 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 // revisions differ, or waits for this transaction and its epoch increment
 // makes the permit fail BeginDispatch.
 func checkAuthority(ctx context.Context, q *dbq.Queries, org ids.OrgID, ev *pipeline.Evaluation) error {
-	cont, err := q.ShareContainment(ctx, org)
-	if err != nil {
-		return fmt.Errorf("authority: containment: %w", err)
-	}
-	if cont.Epoch != ev.Epoch || cont.KillSwitch {
-		return finalize.ErrConflict
+	if err := checkContainment(ctx, q, org, ev); err != nil {
+		return err
 	}
 	leaf, ok := ev.Chain.Leaf()
 	if !ok {
@@ -196,6 +200,19 @@ func checkAuthority(ctx context.Context, q *dbq.Queries, org ids.OrgID, ev *pipe
 		cur.Envelopes = append(cur.Envelopes, gdomain.Envelope{ID: id, Revision: int(e.Revision), Scope: gdomain.Scope{Kind: gdomain.ScopeKind(e.ScopeKind)}})
 	}
 	if !sameVersions(cur.Versions(), ev.Chain.Versions()) {
+		return finalize.ErrConflict
+	}
+	return nil
+}
+
+// checkContainment takes the containment row FOR SHARE: the epoch must
+// still be the evaluated one and the kill switch off.
+func checkContainment(ctx context.Context, q *dbq.Queries, org ids.OrgID, ev *pipeline.Evaluation) error {
+	cont, err := q.ShareContainment(ctx, org)
+	if err != nil {
+		return fmt.Errorf("authority: containment: %w", err)
+	}
+	if cont.Epoch != ev.Epoch || cont.KillSwitch {
 		return finalize.ErrConflict
 	}
 	return nil
@@ -240,17 +257,28 @@ func (s *Store) idempotency(ctx context.Context, q *dbq.Queries, org ids.OrgID, 
 			k := ev.DedupeKey
 			dedupe = &k
 		}
+		channel, ttype, tid := ev.Channel, ev.Target.Type, ev.Target.ID
 		return q.InsertDecision(ctx, dbq.InsertDecisionParams{
 			OrgID: org, ID: w.TransactionID, RunID: ev.RunID, ActionID: ev.ActionID, ActionHash: act, Operation: ev.Operation,
 			Decision: string(ev.Decision), ReasonCode: w.Reason, GatewayID: w.GatewayID, State: state,
 			GrantID: grantID, GrantRevision: grantRev, BasisDigest: &basis, EffectiveHash: effective, DedupeKey: dedupe,
+			Mode: ev.Mode, ConnectionID: connectionOf(ev), Channel: &channel, TargetType: &ttype, TargetID: &tid,
 		})
 	}
 	return expect(q.UpdateDecision(ctx, dbq.UpdateDecisionParams{
 		Decision: string(ev.Decision), ReasonCode: w.Reason, State: state, Evaluations: int32(w.Evaluation), //nolint:gosec // ≤ 33
-		GrantID: grantID, GrantRevision: grantRev, BasisDigest: &basis, EffectiveHash: effective,
+		GrantID: grantID, GrantRevision: grantRev, BasisDigest: &basis, EffectiveHash: effective, Mode: ev.Mode,
 		OrgID: org, ID: w.TransactionID, PrevEvaluations: int32(w.Prev.Evaluations), //nolint:gosec // ≤ 32
 	}))
+}
+
+// connectionOf is the connection an evaluation accepted, or nil.
+func connectionOf(ev *pipeline.Evaluation) *ids.UUID {
+	if ev.Connection == nil {
+		return nil
+	}
+	id := ev.Connection.ID
+	return &id
 }
 
 // claim takes the dedupe key for this transaction, or parks the request
@@ -339,13 +367,15 @@ func (s *Store) Tamper(ctx context.Context, org ids.OrgID, prev finalize.Stored,
 	})
 }
 
-// BeginDispatch implements finalize.Store (HR-001).
-func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64) error {
+// BeginDispatch implements finalize.Store (HR-001, HR-188).
+func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID string, permit ids.UUID, epoch int64, out finalize.Outbound,
+	mint func(finalize.Dispatching) (*ids.UUID, error),
+) error {
 	return s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		_, err := q.BeginDispatch(ctx, dbq.BeginDispatchParams{OrgID: org, ID: permit, GatewayID: gatewayID, Epoch: epoch})
 		if err == nil {
-			return nil
+			return dispatching(ctx, q, org, permit, out, mint)
 		}
 		if !db.IsNoRows(err) {
 			return err
@@ -369,15 +399,68 @@ func (s *Store) BeginDispatch(ctx context.Context, org ids.OrgID, gatewayID stri
 	})
 }
 
+// dispatching records the outbound request on a permit that just moved to
+// DISPATCHING and lets mint issue its action token over what the permit
+// bound: a monitor permit the requested action, any other the effective
+// one.
+func dispatching(ctx context.Context, q *dbq.Queries, org ids.OrgID, permit ids.UUID, out finalize.Outbound,
+	mint func(finalize.Dispatching) (*ids.UUID, error),
+) error {
+	p, err := q.DispatchingPermit(ctx, org, permit)
+	if err != nil {
+		return err
+	}
+	d := finalize.Dispatching{
+		Transaction: p.TransactionID, Connection: p.ConnectionID, Operation: p.Operation, EffectiveHash: p.EffectiveHash, Now: p.Now,
+	}
+	if p.AccessMode != nil {
+		d.AccessMode = *p.AccessMode
+	}
+	if p.TargetType != nil && p.TargetID != nil {
+		d.TargetType, d.TargetID = *p.TargetType, *p.TargetID
+	}
+	if p.Mode == pipeline.ModeMonitor || len(p.EffectiveHash) == 0 {
+		d.EffectiveHash = p.ActionHash
+	}
+	jti, err := mint(d)
+	if err != nil {
+		return err
+	}
+	rec := dbq.RecordOutboundParams{OrgID: org, ID: permit, ActionTokenJti: jti}
+	if out.Method != "" {
+		rec.OutboundMethod, rec.OutboundUrl = &out.Method, &out.URL
+	}
+	if len(out.BodySHA256) == sha256.Size {
+		rec.OutboundBodySha256 = out.BodySHA256
+	}
+	return q.RecordOutbound(ctx, rec)
+}
+
 // RecordExecution implements finalize.Store: the attempt, the execution
 // receipt and its ledger entry, then the settlement, in one transaction.
 func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID string, e finalize.Execution,
-	sign func(txn ids.UUID, now time.Time) (finalize.Receipt, error),
+	sign func(x finalize.Executed, now time.Time) (finalize.Receipt, error),
 ) (string, error) {
 	var receipt string
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		o, permit := e.Outcome, e.Permit
+		pc, err := q.ExecutionContext(ctx, org, permit, gatewayID)
+		if db.IsNoRows(err) {
+			return finalize.ErrNotDispatching
+		} else if err != nil {
+			return err
+		}
+		x := finalize.Executed{Connection: pc.ConnectionID, AccessMode: finalize.AccessPantherClawHeld, Monitor: pc.Mode == pipeline.ModeMonitor}
+		if pc.AccessMode != nil {
+			x.AccessMode = *pc.AccessMode
+		}
+		if o == finalize.Delegated {
+			if pc.Channel == nil || (*pc.Channel != "hook" && *pc.Channel != "sdk") {
+				return finalize.ErrNotCooperative
+			}
+			x.AccessMode = finalize.AccessAgentHeld // the agent performed it with its own access (HR-186)
+		}
 		to := "DISPATCHED"
 		if o == finalize.Unknown {
 			to = "UNKNOWN"
@@ -389,8 +472,9 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		if err != nil {
 			return err
 		}
+		x.Transaction = txn
 		attempt := dbq.InsertExecutionAttemptParams{
-			OrgID: org, ID: ids.NewV7(), PermitID: permit, TransactionID: txn, Outcome: string(o),
+			OrgID: org, ID: ids.NewV7(), PermitID: permit, TransactionID: txn, Outcome: string(o), AccessMode: &x.AccessMode,
 		}
 		if e.TargetStatus > 0 {
 			attempt.TargetStatus = &e.TargetStatus
@@ -408,7 +492,7 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		if err != nil {
 			return err
 		}
-		r, err := sign(txn, now)
+		r, err := sign(x, now)
 		if err != nil {
 			return err
 		}
@@ -417,7 +501,7 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 		}
 		receipt = r.JWS
 		switch o {
-		case finalize.Accepted:
+		case finalize.Accepted, finalize.Delegated:
 			if err := pgbudgets.Settle(ctx, q, org, permit, bdomain.Commit); err != nil {
 				return err
 			}

@@ -21,11 +21,10 @@
     "permit_ttl": "5s",
     "stale_dispatch_after": "30s"
   },
-  "dev_gateway": {
-    "enabled": false,
-    "gateway_id": "gw-dev-1",
-    "org": "",
-    "token_file": "deploy/dev/secrets/gateway.token"
+  "gateway_api": {
+    "addr": "127.0.0.1:8443",
+    "hostnames": ["127.0.0.1", "localhost"],
+    "url": "https://127.0.0.1:8443"
   },
   "auth": {
     "public_url": "http://127.0.0.1:8080",
