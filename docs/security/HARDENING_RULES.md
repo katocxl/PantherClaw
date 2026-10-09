@@ -146,7 +146,7 @@
 | HR-120 | Red-team runs are server-enforced to simulator-only environments; receipts carry `simulated: true`. | T-038 | M12 |
 | HR-121 | Sandbox closure probes run from a trusted sidecar plus an external canary, require positive and negative controls, and ENFORCED promotion expires. | T-039 | M9 |
 | HR-122 | Sandbox networks block IPv6, ICMP and DNS egress; Docker ≥ 26 required (CVE-2024-29018). | T-039 | M9 |
-| HR-123 | Tool packages are signed by the offline package root with TUF-style expiring metadata; per-org version pins only move forward (anti-rollback). | T-036 | M4 |
+| HR-123 | Tool packages are signed by the offline package root, or, for an org's own packages, by a package-signing key that org registered (HR-162, ADR-0020), with TUF-style expiring metadata; per-org version pins only move forward (anti-rollback). | T-036, T-056 | M4 |
 | HR-124 | Package mappings are reviewed as code (a wrong mapping is a total bypass) and covered by golden tests. | T-036 | M4 |
 
 ## Supply chain and CI
@@ -192,3 +192,4 @@
 |---|---|---|---|
 | HR-160 | Facts are accepted only from the provider registered for that fact name, authenticated as that provider; values a workload sends are never facts. A fact's observation time may be neither later than the database clock nor earlier than the provider's maximum lag allows, and an older observation never replaces a newer one. A required fact that is missing or older than its maximum age ⇒ `CANNOT_AUTHORIZE`. | T-055 | M4 |
 | HR-161 | Workload credentials never issue, widen or change grants or guardrails. Guardrail changes need a person holding `guardrails.manage`. Root grants are issued only by a person holding `grant.issue` for the agent's team, unless G0 M4 decision 7 extends issuance to audited service accounts. A workload can only delegate a subset of its own run's grant to a child run, and only when that grant allows delegation and depth remains. | T-001, T-008 | M4 |
+| HR-162 | Org package-signing keys (ADR-0020, Team edition and above): targets signed with an `org-packages-` key verify only against that org's registered, unrevoked Ed25519 keys, with anti-rollback per key. Only a person holding `package.key.manage` registers a key, at most 5 are active, and a revoked kid is never registered again; every change is audited. An org key never signs a `pc.` name, and within an org an operation is defined by packages of one kind of signer only (package root or org keys; retired versions do not count). Importing never activates. Revoking a key as `COMPROMISED` raises the containment epoch, quarantines its `ACTIVE` and `STALE` versions and retires its others in the same transaction, and no version it signed is activated again. | T-056, T-036 | M4 |

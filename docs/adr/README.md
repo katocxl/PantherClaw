@@ -23,3 +23,4 @@ Format: Context → Decision → Consequences → Alternatives considered. Statu
 | [0017](0017-coding-agents-first-and-proven-coverage.md) | Coding and DevOps agents first; v0.1.0 built around proven coverage (2026-10-09) |
 | [0018](0018-federated-workload-identity-and-represented-principals.md) | Federated workload identity and represented principals from the customer's IdP (M3) |
 | [0019](0019-standards-at-the-edges.md) | Standards at the edges: AuthZEN endpoint (M14) and Shared Signals receiver (M10) |
+| [0020](0020-org-package-signing-keys.md) | Org package-signing keys for customer-written packages (M4 follow-up, Team edition) |

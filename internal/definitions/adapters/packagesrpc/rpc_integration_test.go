@@ -57,6 +57,9 @@ type stack struct {
 	pool   *db.Pool
 	tokens *token.Service
 	url    string
+	// ents is the edition the package service sees (Team unless a test
+	// changes it).
+	ents *ents
 }
 
 func newStack(t *testing.T, roots trust.Roots) *stack {
@@ -95,8 +98,10 @@ func newStack(t *testing.T, roots trust.Roots) *stack {
 	authz := grantsapp.SubjectAuthorizer{}
 	defs := &defspg.Store{Pool: pool}
 	facts := &factspg.Store{Pool: pool}
+	edition := &ents{e: team}
 	pantherclawv1connect.RegisterPackageServiceHandler(s, packagesrpc.New(&defsapp.Admin{
-		Importer: &defsapp.Importer{Roots: roots, Repo: defs, Clock: clock.System{}}, Reads: defs, Authz: authz,
+		Importer: &defsapp.Importer{Roots: roots, Repo: defs, Keys: defs, Clock: clock.System{}}, Reads: defs, Authz: authz,
+		Ents: edition,
 	}))
 	pantherclawv1connect.RegisterPolicyServiceHandler(s, policiesrpc.New(&policyapp.Versions{
 		Store: &pgstore.Store{Pool: pool}, Facts: facts, Definitions: defs, Authz: authz, Limits: celenv.DefaultLimits,
@@ -106,7 +111,7 @@ func newStack(t *testing.T, roots trust.Roots) *stack {
 	rpc.Mount(mux, s)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	return &stack{pool: pool, tokens: tokens, url: ts.URL}
+	return &stack{pool: pool, tokens: tokens, url: ts.URL, ents: edition}
 }
 
 func (s *stack) exec(t *testing.T, org ids.OrgID, sql string, args ...any) {

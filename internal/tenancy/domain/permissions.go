@@ -96,6 +96,13 @@ const (
 	PermPolicyRead         Permission = "policy.read"
 )
 
+// PermPackageKeyManage registers and revokes the org's package-signing keys
+// (HR-162, Team edition). It sits on the Org Admin role, which service
+// accounts may hold, so it is not in the human-only catalog: the use case
+// lets only a person register a key, while revoking one (which only removes
+// trust) is open to any holder.
+const PermPackageKeyManage Permission = "package.key.manage"
+
 // Workload identity permissions (M3). agent.admit (confirming an instance's
 // fingerprint, HR-094) and identity.issuer.activate (switching on a
 // trusted-issuer revision, HR-141) are human only.
@@ -147,7 +154,7 @@ var catalog = []Permission{
 	PermGrantRead, PermGrantIssue, PermGrantRevoke,
 	PermGuardrailsRead, PermGuardrailsManage, PermBudgetRead,
 	PermFactRead, PermFactProviderManage, PermFactWrite,
-	PermPackageRead, PermPackageImport, PermPackageActivate,
+	PermPackageRead, PermPackageImport, PermPackageActivate, PermPackageKeyManage,
 	PermApprovalRespond, PermIncidentRespond, PermEvidenceReadRestricted,
 }
 
