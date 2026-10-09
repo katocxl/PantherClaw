@@ -449,6 +449,8 @@ type Finding struct {
 	Outcome   Outcome
 	Dimension string
 	Detail    string
+	// Code, when set, is the reason code (budgets and counters).
+	Code string
 }
 
 func allowed() Finding { return Finding{Outcome: Allowed} }
