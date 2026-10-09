@@ -242,6 +242,21 @@ CI jobs and pods can attest instead of using an enrollment token: an admin propo
 
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
 
+**Authority: packages, facts, guardrails, grants and policies (M4):** a run's actions use only the grant its run is bound to, so an org needs an active tool package, the facts its definitions require, a grant, and optionally guardrails and a published policy. Each document is a JSON (or YAML package) file; the server decodes it strictly. Importing a package needs a targets document signed by a trusted package root (`pclaw-admin packages sign`); activating packages, changing guardrails, issuing grants, registering fact providers and publishing policies are human only.
+
+```bash
+go run ./cmd/pclaw package import --name pc.mock-payments --version 1.0.0 --targets-file targets.jws --file packages/mock-payments/package.yaml
+go run ./cmd/pclaw package transition pc.mock-payments 1.0.0 --to active
+go run ./cmd/pclaw fact-provider register --name billing --sa <sa id> --fact payments.charge.refundable:boolean:payments.charge:5m
+go run ./cmd/pclaw fact put --name payments.charge.refundable --subject-type payments.charge --subject-id ch_1 --value-file true.json   # as the provider's service account
+go run ./cmd/pclaw guardrail create --scope team:<team id> --name payments --bounds-file team-bounds.json --max-root-lifetime 72h
+go run ./cmd/pclaw grant issue <agent id> --principal user:<user id> --expires 48h --bounds-file bounds.json --limits-file limits.json
+go run ./cmd/pclaw run start <agent id> --instance <instance id> --grant <grant id> --task "refund ch_1"
+go run ./cmd/pclaw grant get <grant id>      # lineage, guardrails and effective bounds
+go run ./cmd/pclaw grant budget <grant id>   # reserved, spent and available per budget account
+go run ./cmd/pclaw policy create --file bundle.json && go run ./cmd/pclaw policy publish <version id>
+```
+
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.
 
 **Browser sign-in, security keys and notifications (M5 part 1):** WebAuthn needs a domain name, so locally use `http://localhost:8080` as `auth.public_url` (the Keycloak development realm accepts both callback URLs). Security keys are off, with a start-up warning, while the public URL is an IP address.
