@@ -45,6 +45,9 @@ type Config struct {
 	Authority         AuthorityConfig  `json:"authority"`
 	DevGateway        DevGatewayConfig `json:"dev_gateway"`
 	Auth              AuthConfig       `json:"auth"`
+	// WebAuthn and Notifications are M5 part 1 (config_m5.go).
+	WebAuthn      WebAuthnConfig      `json:"webauthn"`
+	Notifications NotificationsConfig `json:"notifications"`
 }
 
 // LogConfig configures logging.
@@ -101,6 +104,11 @@ func DefaultConfig() Config {
 		},
 		DevGateway: DevGatewayConfig{ID: "gw-dev-1"},
 		Auth:       AuthConfig{PublicURL: "http://127.0.0.1:8080", APIKeyEnv: string(credential.EnvLive)},
+		WebAuthn:   WebAuthnConfig{RPName: "PantherClaw"},
+		Notifications: NotificationsConfig{
+			Concurrency: 5,
+			SMTP:        SMTPConfig{Port: 587, TLS: "starttls"},
+		},
 	}
 }
 
@@ -131,6 +139,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateAuthority()...)
 	errs = append(errs, c.validateAuth()...)
 	errs = append(errs, c.validateOIDC()...)
+	errs = append(errs, c.validateM5()...)
 	if _, err := c.trustedProxies(); err != nil {
 		errs = append(errs, err)
 	}
