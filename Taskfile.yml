@@ -116,9 +116,19 @@ tasks:
       - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M4"}}
 
   land:
-    desc: Land this branch's pull request on main once every check passes on the result of merging main (docs/PARALLEL_WORK.md)
+    desc: Queue this branch's pull request for the lander and wait for the result (docs/PARALLEL_WORK.md)
     cmds:
       - bash tools/scripts/land.sh {{.CLI_ARGS}}
+
+  land:serve:
+    desc: Be the lander: land queued pull requests one at a time, each after every check passes on main merged in (one lander at a time)
+    cmds:
+      - bash tools/scripts/land.sh --serve {{.CLI_ARGS}}
+
+  land:status:
+    desc: Show the landing queue, the lander and recent results
+    cmds:
+      - bash tools/scripts/land.sh --status
 
   license:check:
     desc: Verify SPDX + copyright headers on every source file
