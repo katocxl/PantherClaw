@@ -22,7 +22,7 @@ FROM pc.verifications v
 JOIN pc.connections c ON c.org_id = v.org_id AND c.id = v.connection_id
 JOIN pc.org_containment o ON o.org_id = v.org_id
 WHERE v.org_id = $1 AND v.state = 'PENDING' AND v.next_at <= now() AND v.deadline_at > now()
-  AND v.transaction_id IS NOT NULL AND c.gateway_id = $2 AND c.state = 'ACTIVE' AND NOT o.kill_switch
+  AND c.gateway_id = $2 AND c.state = 'ACTIVE' AND NOT o.kill_switch
 ORDER BY v.next_at
 LIMIT $3
 FOR UPDATE OF v SKIP LOCKED
@@ -46,7 +46,7 @@ type DueVerificationsRow struct {
 // decisions 1-3, HR-190..192).
 // DueVerifications are the due tasks of the connections a gateway serves.
 // Reads stop when the kill switch is on or the connection is quarantined
-// or retired, as dispatches do (HR-190); target-log tasks are A9's.
+// or retired, as dispatches do (HR-190).
 func (q *Queries) DueVerifications(ctx context.Context, orgID ids.OrgID, gatewayID ids.UUID, maxTasks int32) ([]DueVerificationsRow, error) {
 	rows, err := q.db.Query(ctx, dueVerifications, orgID, gatewayID, maxTasks)
 	if err != nil {
@@ -153,6 +153,77 @@ func (q *Queries) InsertEffectReceipt(ctx context.Context, arg InsertEffectRecei
 	return err
 }
 
+const insertTargetLogRun = `-- name: InsertTargetLogRun :exec
+INSERT INTO pc.target_log_runs (org_id, verification_id, connection_id, window_start, window_end, items_seen, matched, unmatched,
+                                complete)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, $8, $9)
+`
+
+type InsertTargetLogRunParams struct {
+	OrgID          ids.OrgID
+	VerificationID ids.UUID
+	ConnectionID   ids.UUID
+	WindowStart    time.Time
+	WindowEnd      time.Time
+	ItemsSeen      int32
+	Matched        int32
+	Unmatched      int32
+	Complete       bool
+}
+
+func (q *Queries) InsertTargetLogRun(ctx context.Context, arg InsertTargetLogRunParams) error {
+	_, err := q.db.Exec(ctx, insertTargetLogRun,
+		arg.OrgID,
+		arg.VerificationID,
+		arg.ConnectionID,
+		arg.WindowStart,
+		arg.WindowEnd,
+		arg.ItemsSeen,
+		arg.Matched,
+		arg.Unmatched,
+		arg.Complete,
+	)
+	return err
+}
+
+const insertUnreceiptedEffect = `-- name: InsertUnreceiptedEffect :execrows
+INSERT INTO pc.unreceipted_effects (org_id, id, connection_id, operation, object_ref, correlation, target_created_at,
+                                    verification_id)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, $8)
+ON CONFLICT (org_id, connection_id, object_ref) DO NOTHING
+`
+
+type InsertUnreceiptedEffectParams struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	ConnectionID    ids.UUID
+	Operation       string
+	ObjectRef       string
+	Correlation     *string
+	TargetCreatedAt *time.Time
+	VerificationID  ids.UUID
+}
+
+// InsertUnreceiptedEffect records an object no receipt accounts for, once.
+func (q *Queries) InsertUnreceiptedEffect(ctx context.Context, arg InsertUnreceiptedEffectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertUnreceiptedEffect,
+		arg.OrgID,
+		arg.ID,
+		arg.ConnectionID,
+		arg.Operation,
+		arg.ObjectRef,
+		arg.Correlation,
+		arg.TargetCreatedAt,
+		arg.VerificationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const leaseVerification = `-- name: LeaseVerification :execrows
 UPDATE pc.verifications
 SET state = 'LEASED', lease_hash = $1, leased_by = $2, leased_at = now(),
@@ -180,6 +251,50 @@ func (q *Queries) LeaseVerification(ctx context.Context, arg LeaseVerificationPa
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const leasedTargetLog = `-- name: LeasedTargetLog :one
+SELECT v.id, v.connection_id, v.operation, v.request, v.window_start, v.window_end
+FROM pc.verifications v
+WHERE v.org_id = $1 AND v.id = $2 AND v.purpose = 'target_log' AND v.state = 'LEASED'
+  AND v.leased_by = $3 AND v.lease_hash = $4 AND v.lease_expires_at >= now()
+FOR UPDATE OF v
+`
+
+type LeasedTargetLogParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	GatewayID *ids.UUID
+	LeaseHash []byte
+}
+
+type LeasedTargetLogRow struct {
+	ID           ids.UUID
+	ConnectionID ids.UUID
+	Operation    string
+	Request      []byte
+	WindowStart  *time.Time
+	WindowEnd    *time.Time
+}
+
+// LeasedTargetLog is a target-log task under a live lease of this gateway.
+func (q *Queries) LeasedTargetLog(ctx context.Context, arg LeasedTargetLogParams) (LeasedTargetLogRow, error) {
+	row := q.db.QueryRow(ctx, leasedTargetLog,
+		arg.OrgID,
+		arg.ID,
+		arg.GatewayID,
+		arg.LeaseHash,
+	)
+	var i LeasedTargetLogRow
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.Operation,
+		&i.Request,
+		&i.WindowStart,
+		&i.WindowEnd,
+	)
+	return i, err
 }
 
 const leasedVerification = `-- name: LeasedVerification :one
@@ -257,6 +372,45 @@ func (q *Queries) NextEffectSeq(ctx context.Context, orgID ids.OrgID, transactio
 	return column_1, err
 }
 
+const receiptOfCorrelation = `-- name: ReceiptOfCorrelation :one
+SELECT p.id AS permit_id, p.state AS permit_state, a.outcome, t.effect_state, t.effect_level_required,
+       t.effect_level_achieved, p.definition_digest
+FROM pc.transactions t
+JOIN pc.permits p ON p.org_id = t.org_id AND p.transaction_id = t.id
+LEFT JOIN pc.execution_attempts a ON a.org_id = p.org_id AND a.permit_id = p.id
+WHERE t.org_id = $1 AND t.id = $2 AND p.connection_id = $3
+  AND p.state IN ('DISPATCHING', 'DISPATCHED', 'UNKNOWN')
+FOR UPDATE OF t
+`
+
+type ReceiptOfCorrelationRow struct {
+	PermitID            ids.UUID
+	PermitState         string
+	Outcome             *string
+	EffectState         *string
+	EffectLevelRequired *string
+	EffectLevelAchieved *string
+	DefinitionDigest    *string
+}
+
+// ReceiptOfCorrelation is the transaction a listed object names by its
+// idempotency key, when that transaction was dispatched through the
+// connection: its permit, the recorded outcome and its effect.
+func (q *Queries) ReceiptOfCorrelation(ctx context.Context, orgID ids.OrgID, transactionID ids.UUID, connectionID *ids.UUID) (ReceiptOfCorrelationRow, error) {
+	row := q.db.QueryRow(ctx, receiptOfCorrelation, orgID, transactionID, connectionID)
+	var i ReceiptOfCorrelationRow
+	err := row.Scan(
+		&i.PermitID,
+		&i.PermitState,
+		&i.Outcome,
+		&i.EffectState,
+		&i.EffectLevelRequired,
+		&i.EffectLevelAchieved,
+		&i.DefinitionDigest,
+	)
+	return i, err
+}
+
 const releaseExpiredLeases = `-- name: ReleaseExpiredLeases :many
 UPDATE pc.verifications
 SET state = CASE WHEN deadline_at <= now() THEN 'EXPIRED' ELSE 'PENDING' END,
@@ -306,6 +460,36 @@ func (q *Queries) RetryVerification(ctx context.Context, delaySeconds float64, o
 	return err
 }
 
+const scheduleTargetLog = `-- name: ScheduleTargetLog :exec
+INSERT INTO pc.verifications (org_id, id, purpose, connection_id, operation, request, next_at, deadline_at, window_start,
+                              window_end)
+VALUES ($1, $2, 'target_log', $3, $4, $5, now(),
+        now() + interval '15 minutes', $6, $7)
+`
+
+type ScheduleTargetLogParams struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	ConnectionID ids.UUID
+	Operation    string
+	Request      []byte
+	WindowStart  *time.Time
+	WindowEnd    *time.Time
+}
+
+func (q *Queries) ScheduleTargetLog(ctx context.Context, arg ScheduleTargetLogParams) error {
+	_, err := q.db.Exec(ctx, scheduleTargetLog,
+		arg.OrgID,
+		arg.ID,
+		arg.ConnectionID,
+		arg.Operation,
+		arg.Request,
+		arg.WindowStart,
+		arg.WindowEnd,
+	)
+	return err
+}
+
 const setEffectState = `-- name: SetEffectState :exec
 UPDATE pc.transactions SET effect_state = $1, effect_level_achieved = $2
 WHERE org_id = $3 AND id = $4
@@ -326,6 +510,60 @@ func (q *Queries) SetEffectState(ctx context.Context, arg SetEffectStateParams) 
 		arg.ID,
 	)
 	return err
+}
+
+const targetLogConnections = `-- name: TargetLogConnections :many
+
+SELECT c.id, v.raw,
+       coalesce((SELECT max(r.window_end) FROM pc.target_log_runs r
+        WHERE r.org_id = c.org_id AND r.connection_id = c.id AND r.complete), 'epoch'::timestamptz)::timestamptz AS last_end,
+       EXISTS (SELECT 1 FROM pc.verifications o
+               WHERE o.org_id = c.org_id AND o.connection_id = c.id AND o.purpose = 'target_log'
+                 AND o.state IN ('PENDING', 'LEASED')) AS open,
+       now()::timestamptz AS now
+FROM pc.connections c
+JOIN pc.tool_packages t ON t.org_id = c.org_id AND t.name = c.package
+JOIN pc.package_pins p ON p.org_id = t.org_id AND p.package_id = t.id
+JOIN pc.package_versions v ON v.org_id = p.org_id AND v.id = p.version_id
+WHERE c.org_id = $1 AND c.state = 'ACTIVE' AND c.kind = 'http'
+`
+
+type TargetLogConnectionsRow struct {
+	ID      ids.UUID
+	Raw     []byte
+	LastEnd time.Time
+	Open    bool
+	Now     time.Time
+}
+
+// Target logs (HR-112, G0 M7 design decision 6).
+// TargetLogConnections are the org's active HTTP connections with the raw
+// file of their pinned package version, the end of their last complete
+// target-log window, and whether a target-log task is open.
+func (q *Queries) TargetLogConnections(ctx context.Context, orgID ids.OrgID) ([]TargetLogConnectionsRow, error) {
+	rows, err := q.db.Query(ctx, targetLogConnections, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TargetLogConnectionsRow{}
+	for rows.Next() {
+		var i TargetLogConnectionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Raw,
+			&i.LastEnd,
+			&i.Open,
+			&i.Now,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const transactionEffect = `-- name: TransactionEffect :one

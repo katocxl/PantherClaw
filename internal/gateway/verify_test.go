@@ -121,6 +121,40 @@ func TestHR190_TheGatewayReadsOnlyReviewedReadsAndDeclaredFields(t *testing.T) {
 	}
 }
 
+// TestHR112_TheGatewayListsTheTargetLog: a target-log task lists every
+// object the target created since the window's start, with its
+// correlation value, only through the package's reviewed target-log read
+// for this connection and the write it names.
+func TestHR112_TheGatewayListsTheTargetLog(t *testing.T) {
+	sim := payments.New(payments.Faults{}, pclog.Discard())
+	var sent atomic.Int32
+	h := setup(t, simTarget(sim, &sent))
+	refundAt(t, sim, "ch_1", "pc-txn-1")
+	refundAt(t, sim, "ch_2", "console-0001")
+	request := func(conn, effectOf string) []byte {
+		return []byte(`{"mode":"target_log","target":{"type":"pc.connection","id":"` + conn + `"},"params":{"created_gte":"0"},"effect_of":"` + effectOf + `"}`)
+	}
+	ctx := context.Background()
+	o, err := h.gw.engine.VerifyEffect(ctx, h.conn, dispatch.Lease{
+		Purpose: "target_log", Operation: "payments.refund.recent",
+		Request: request(connID, "payments.refund.create"),
+	})
+	if err != nil || !o.Complete || len(o.Items) != 2 || o.Items[0].Correlation != "pc-txn-1" || o.Items[1].Correlation != "console-0001" ||
+		o.Items[0].Created == 0 || !strings.HasPrefix(o.Items[0].ObjectRef, "re_") {
+		t.Fatalf("target log %+v %v", o, err)
+	}
+	for name, l := range map[string]dispatch.Lease{
+		"another connection":  {Purpose: "target_log", Operation: "payments.refund.recent", Request: request("01920000-0000-7000-8000-0000000000ff", "payments.refund.create")},
+		"another write":       {Purpose: "target_log", Operation: "payments.refund.recent", Request: request(connID, "payments.refund.get")},
+		"not the target log":  {Purpose: "target_log", Operation: "payments.refund.list", Request: request(connID, "payments.refund.create")},
+		"a reference request": {Purpose: "target_log", Operation: "payments.refund.recent", Request: reference("re_1")},
+	} {
+		if _, err := h.gw.engine.VerifyEffect(ctx, h.conn, l); !errors.Is(err, dispatch.ErrNotReviewedRead) {
+			t.Errorf("%s: %v, want ErrNotReviewedRead", name, err)
+		}
+	}
+}
+
 type fakeVerifications struct {
 	mu      sync.Mutex
 	leases  []dispatch.Lease
