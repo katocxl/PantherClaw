@@ -279,3 +279,35 @@ func (q *Queries) ReadLedgerTile(ctx context.Context, orgID ids.OrgID, level int
 	err := row.Scan(&hashes)
 	return hashes, err
 }
+
+const resetEvidenceIntegrity = `-- name: ResetEvidenceIntegrity :one
+WITH old AS (
+    SELECT f.org_id, f.failure_code, f.failed_seq, f.failed_at
+    FROM pc.evidence_integrity AS f
+    WHERE f.org_id = $1 AND f.state = 'FAILED'
+    FOR UPDATE
+)
+UPDATE pc.evidence_integrity AS i
+SET state = 'OK', failure_code = NULL, failed_seq = NULL, failed_at = NULL,
+    verified_size = NULL, verified_at = NULL, updated_at = now()
+FROM old
+WHERE i.org_id = old.org_id AND i.state = 'FAILED'
+RETURNING old.failure_code, old.failed_seq, old.failed_at
+`
+
+type ResetEvidenceIntegrityRow struct {
+	FailureCode *string
+	FailedSeq   pgtype.Int8
+	FailedAt    *time.Time
+}
+
+// An operator clears a FAILED status after investigating (HR-004: only a
+// FAILED row changes; no row means it was not FAILED). The last
+// verification goes too, so the daily job verifies the whole chain again
+// at its next dispatch. Returns the failure it cleared.
+func (q *Queries) ResetEvidenceIntegrity(ctx context.Context, orgID ids.OrgID) (ResetEvidenceIntegrityRow, error) {
+	row := q.db.QueryRow(ctx, resetEvidenceIntegrity, orgID)
+	var i ResetEvidenceIntegrityRow
+	err := row.Scan(&i.FailureCode, &i.FailedSeq, &i.FailedAt)
+	return i, err
+}

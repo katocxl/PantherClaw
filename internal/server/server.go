@@ -96,6 +96,9 @@ Usage:
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
+  pantherclaw-server evidence integrity reset --org ID --reason TEXT --confirm [--config FILE]
+                                                     resume checkpointing of an org whose evidence integrity FAILED,
+                                                     after investigating; its ledger is checked again
   pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--gateway-out FILE
                              [--target-url URL [--access-mode M]] [--shell]] [--workload-out FILE [--facts-key-out FILE]]
                                                      DEVELOPMENT ONLY: demo org with the reference package; a gateway
@@ -135,6 +138,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		err = cmdKeys(ctx, args[1:], stdout, stderr, env)
 	case "org":
 		err = cmdOrg(ctx, args[1:], stdout, stderr, env)
+	case "evidence":
+		err = cmdEvidence(ctx, args[1:], stdout, stderr, env)
 	case "dev":
 		err = cmdDev(ctx, args[1:], stdout, stderr, env)
 	default:
