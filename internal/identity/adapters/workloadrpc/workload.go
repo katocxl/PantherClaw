@@ -41,6 +41,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/runs/adapters/runsrpc"
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
+	waitlist "github.com/katocxl/pantherclaw/internal/waitlist/app"
 )
 
 // Prefix is the URL path prefix of WorkloadService procedures.
@@ -89,6 +90,8 @@ type Workload struct {
 	grants    *grantsapp.Service
 	publicURL string
 	waits     *approvals.Waits
+	approvals *approvals.Service
+	access    *waitlist.Writer
 	clk       clock.Clock
 }
 

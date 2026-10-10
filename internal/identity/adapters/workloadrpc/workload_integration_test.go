@@ -58,6 +58,7 @@ import (
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
+	waitlist "github.com/katocxl/pantherclaw/internal/waitlist/app"
 )
 
 type unlimited struct{}
@@ -128,7 +129,8 @@ func newStackAt(t *testing.T, clk clock.Clock) *stack {
 	pantherclawv1connect.RegisterAgentServiceHandler(s, agentsrpc.NewAgents(aapp.NewInventory(pool, unlimited{})))
 	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc, nil))
 	waits := approvals.NewWaits(pool, 1, 0, nil)
-	wl := workloadrpc.NewWorkload(svc, runs, ts.URL, clk).WithGrants(grants).WithWaits(waits)
+	wl := workloadrpc.NewWorkload(svc, runs, ts.URL, clk).WithGrants(grants).WithWaits(waits).
+		WithApprovals(&approvals.Service{Pool: pool}, waitlist.NewWriter(pool))
 	pantherclawv1connect.RegisterWorkloadServiceHandler(s, wl)
 	inner := http.NewServeMux()
 	rpc.Mount(inner, s)

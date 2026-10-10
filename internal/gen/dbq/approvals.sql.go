@@ -278,6 +278,19 @@ func (q *Queries) CloseRequestEntry(ctx context.Context, arg CloseRequestEntryPa
 	return result.RowsAffected(), nil
 }
 
+const completeApprovalBatch = `-- name: CompleteApprovalBatch :execrows
+UPDATE pc.approval_batches SET state = 'COMPLETED', completed_at = now()
+WHERE org_id = $1 AND id = $2 AND state = 'PENDING'
+`
+
+func (q *Queries) CompleteApprovalBatch(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, completeApprovalBatch, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const consumeApprovalRequest = `-- name: ConsumeApprovalRequest :one
 UPDATE pc.approval_requests
 SET state = 'CONSUMED', consumed_at = now(), permit_id = $1, ended_at = now()
@@ -310,6 +323,36 @@ func (q *Queries) ConsumeApprovalRequest(ctx context.Context, arg ConsumeApprova
 	var i ConsumeApprovalRequestRow
 	err := row.Scan(&i.GrantID, &i.RunID)
 	return i, err
+}
+
+const consumeBatchCeremony = `-- name: ConsumeBatchCeremony :execrows
+UPDATE pc.webauthn_ceremonies SET consumed_at = now()
+WHERE org_id = $1 AND id = $2 AND purpose = 'BINDING'
+  AND batch_id = $3 AND user_id = $4 AND session_id = $5
+  AND consumed_at IS NULL AND expires_at > now()
+`
+
+type ConsumeBatchCeremonyParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	BatchID   *ids.UUID
+	UserID    ids.UUID
+	SessionID ids.UUID
+}
+
+// A batch approval's BINDING ceremony, consumed once with its responses.
+func (q *Queries) ConsumeBatchCeremony(ctx context.Context, arg ConsumeBatchCeremonyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeBatchCeremony,
+		arg.OrgID,
+		arg.ID,
+		arg.BatchID,
+		arg.UserID,
+		arg.SessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const consumeBindingCeremony = `-- name: ConsumeBindingCeremony :execrows
@@ -739,6 +782,42 @@ func (q *Queries) HoldCaps(ctx context.Context, orgID ids.OrgID) (HoldCapsRow, e
 	return i, err
 }
 
+const insertApprovalBatch = `-- name: InsertApprovalBatch :exec
+INSERT INTO pc.approval_batches (org_id, id, kind, user_id, session_id, cli_session_id, batch_hash, request_ids, state,
+    completed_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7, $8::uuid[], $9,
+    CASE WHEN $9::text = 'COMPLETED' THEN now() END)
+`
+
+type InsertApprovalBatchParams struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	Kind         string
+	UserID       ids.UUID
+	SessionID    *ids.UUID
+	CliSessionID *ids.UUID
+	BatchHash    []byte
+	RequestIds   []ids.UUID
+	State        string
+}
+
+// Batches (slice 214, HR-175): one decider's batch of up to 25 requests.
+func (q *Queries) InsertApprovalBatch(ctx context.Context, arg InsertApprovalBatchParams) error {
+	_, err := q.db.Exec(ctx, insertApprovalBatch,
+		arg.OrgID,
+		arg.ID,
+		arg.Kind,
+		arg.UserID,
+		arg.SessionID,
+		arg.CliSessionID,
+		arg.BatchHash,
+		arg.RequestIds,
+		arg.State,
+	)
+	return err
+}
+
 const insertApprovalEvidence = `-- name: InsertApprovalEvidence :exec
 INSERT INTO pc.approval_evidence (org_id, id, request_id, author_kind, author_user_id, author_instance_id, note)
 VALUES ($1, $2, $3, $4, $5,
@@ -827,6 +906,11 @@ func (q *Queries) InsertApprovalRequest(ctx context.Context, arg InsertApprovalR
 }
 
 const insertApprovalResponse = `-- name: InsertApprovalResponse :exec
+WITH first_response AS (
+    UPDATE pc.waitlist_entries SET first_response_at = now()
+    WHERE org_id = $1 AND subject_type = 'approval_request' AND subject_id = $3
+      AND first_response_at IS NULL
+)
 INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
     credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
     batch_id)
@@ -856,6 +940,8 @@ type InsertApprovalResponseParams struct {
 	BatchID           *ids.UUID
 }
 
+// The first response to a request is its waitlist entry's first response
+// (SLA metrics, slice 214c).
 func (q *Queries) InsertApprovalResponse(ctx context.Context, arg InsertApprovalResponseParams) error {
 	_, err := q.db.Exec(ctx, insertApprovalResponse,
 		arg.OrgID,
@@ -1022,6 +1108,84 @@ func (q *Queries) LatestApprovalRequest(ctx context.Context, orgID ids.OrgID, ru
 	return i, err
 }
 
+const listApprovalRequests = `-- name: ListApprovalRequests :many
+SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests
+WHERE org_id = $1 AND state = ANY ($2::text[])
+  AND ($3::uuid IS NULL OR id < $3::uuid)
+  AND ($4::uuid IS NULL OR agent_id = $4::uuid)
+  AND ($5::uuid IS NULL OR run_id = $5::uuid)
+ORDER BY id DESC
+LIMIT $6
+`
+
+type ListApprovalRequestsParams struct {
+	OrgID   ids.OrgID
+	States  []string
+	Before  *ids.UUID
+	AgentID *ids.UUID
+	RunID   *ids.UUID
+	Lim     int32
+}
+
+// The org's approval requests, newest first (slice 213), by state and
+// optionally agent and run; each is checked for the caller in Go (T-037).
+func (q *Queries) ListApprovalRequests(ctx context.Context, arg ListApprovalRequestsParams) ([]PcApprovalRequest, error) {
+	rows, err := q.db.Query(ctx, listApprovalRequests,
+		arg.OrgID,
+		arg.States,
+		arg.Before,
+		arg.AgentID,
+		arg.RunID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PcApprovalRequest{}
+	for rows.Next() {
+		var i PcApprovalRequest
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.SubjectKind,
+			&i.AgentID,
+			&i.TransactionID,
+			&i.Evaluation,
+			&i.RunID,
+			&i.GrantID,
+			&i.GrantRevision,
+			&i.VariantKey,
+			&i.RequestedBy,
+			&i.Operation,
+			&i.PreviousID,
+			&i.Binding,
+			&i.BindingInput,
+			&i.Requirements,
+			&i.Display,
+			&i.DisplayHash,
+			&i.State,
+			&i.EndReason,
+			&i.CreatedAt,
+			&i.DeadlineAt,
+			&i.EvidenceDeadlineAt,
+			&i.ApprovedAt,
+			&i.ConsumeBy,
+			&i.ConsumedAt,
+			&i.PermitID,
+			&i.EndedAt,
+			&i.ActionIr,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const liveRequestOfTransaction = `-- name: LiveRequestOfTransaction :one
 SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests
 WHERE org_id = $1 AND transaction_id = $2
@@ -1077,6 +1241,31 @@ func (q *Queries) LiveRestoration(ctx context.Context, orgID ids.OrgID, agentID 
 	var id ids.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockApprovalBatch = `-- name: LockApprovalBatch :one
+SELECT org_id, id, kind, user_id, session_id, cli_session_id, batch_hash, request_ids, state, created_at, completed_at FROM pc.approval_batches
+WHERE org_id = $1 AND id = $2 AND user_id = $3 AND kind = 'APPROVE' AND state = 'PENDING'
+FOR UPDATE
+`
+
+func (q *Queries) LockApprovalBatch(ctx context.Context, orgID ids.OrgID, iD ids.UUID, userID ids.UUID) (PcApprovalBatch, error) {
+	row := q.db.QueryRow(ctx, lockApprovalBatch, orgID, iD, userID)
+	var i PcApprovalBatch
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.Kind,
+		&i.UserID,
+		&i.SessionID,
+		&i.CliSessionID,
+		&i.BatchHash,
+		&i.RequestIds,
+		&i.State,
+		&i.CreatedAt,
+		&i.CompletedAt,
+	)
+	return i, err
 }
 
 const lockApprovalRequest = `-- name: LockApprovalRequest :one
@@ -1416,7 +1605,7 @@ func (q *Queries) RequestRecipients(ctx context.Context, orgID ids.OrgID, reques
 }
 
 const requestResponses = `-- name: RequestResponses :many
-SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at, credential_id, batch_id,
        void_reason
 FROM pc.approval_responses
 WHERE org_id = $1 AND request_id = $2
@@ -1434,6 +1623,8 @@ type RequestResponsesRow struct {
 	ProposedParams  []byte
 	CreatedAt       time.Time
 	VoidedAt        *time.Time
+	CredentialID    *ids.UUID
+	BatchID         *ids.UUID
 	VoidReason      *string
 }
 
@@ -1457,6 +1648,8 @@ func (q *Queries) RequestResponses(ctx context.Context, orgID ids.OrgID, request
 			&i.ProposedParams,
 			&i.CreatedAt,
 			&i.VoidedAt,
+			&i.CredentialID,
+			&i.BatchID,
 			&i.VoidReason,
 		); err != nil {
 			return nil, err

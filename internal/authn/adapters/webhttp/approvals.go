@@ -29,6 +29,8 @@ type Approvals interface {
 	Decline(ctx context.Context, id ids.UUID, reason, alternative, note string) (apapp.Request, error)
 	RequestEvidence(ctx context.Context, id ids.UUID, question, note string, deadline time.Time) (apapp.Request, error)
 	ProposeNarrower(ctx context.Context, id ids.UUID, params []byte, note string, validateOnly bool) (apapp.Proposal, error)
+	BeginBatch(ctx context.Context, org ids.OrgID, r apapp.Responder, requests []ids.UUID) (ids.UUID, [32]byte, error)
+	ApproveBatch(ctx context.Context, org ids.OrgID, r apapp.Responder, batch ids.UUID, a apapp.Assertion) ([]apapp.Request, error)
 }
 
 // Bindings is the BINDING ceremony (authn/app.WebAuthn): a security-key
@@ -51,6 +53,8 @@ func (h *Handler) mountApprovals(m *http.ServeMux) {
 	}
 	p := authnapp.ApprovalsPath
 	h.withSession(m, http.MethodGet, p, h.approvalsPage)
+	h.withSession(m, http.MethodPost, p+"/batch-options", h.batchOptions)
+	h.withSession(m, http.MethodPost, p+"/batch", h.approveBatch)
 	h.withSession(m, http.MethodGet, p+"/{id}", h.approvalPage)
 	h.withSession(m, http.MethodPost, p+"/{id}/approve-options", h.approveOptions)
 	h.withSession(m, http.MethodPost, p+"/{id}/approve", h.approve)

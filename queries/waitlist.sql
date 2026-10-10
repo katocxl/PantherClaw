@@ -1,17 +1,23 @@
 -- SPDX-License-Identifier: BUSL-1.1
 -- Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 --
--- Agent Waitlist reads (M3: ADMISSION entries; PN-004.1). Entries are
+-- Agent Waitlist reads (PN-004.1), by priority and then deadline. Entries are
 -- decided by the service that owns their subject. evidence holds two
 -- objects, "trusted" (established by PantherClaw) and "untrusted" (reported
 -- by a workload or observed at a gateway), which are never mixed.
 
 -- name: ListWaitlistEntries :many
-SELECT * FROM pc.waitlist_entries
-WHERE org_id = sqlc.arg(org_id) AND id > coalesce(sqlc.arg(after)::uuid, '00000000-0000-0000-0000-000000000000')
-  AND state = ANY (sqlc.arg(states)::text[])
-  AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id)::uuid)
-ORDER BY id
+SELECT e.* FROM pc.waitlist_entries e
+WHERE e.org_id = sqlc.arg(org_id) AND e.state = ANY (sqlc.arg(states)::text[])
+  AND (sqlc.narg(agent_id)::uuid IS NULL OR e.agent_id = sqlc.narg(agent_id)::uuid)
+  AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+  AND (cardinality(sqlc.arg(priorities)::smallint[]) = 0 OR e.priority = ANY (sqlc.arg(priorities)::smallint[]))
+  AND (sqlc.narg(assignee)::uuid IS NULL OR e.assignee_user_id = sqlc.narg(assignee)::uuid)
+  AND (NOT sqlc.arg(overdue)::boolean
+       OR (e.state = 'OPEN' AND (e.next_step_at <= now() OR e.deadline_at - now() <= (e.deadline_at - e.created_at) / 10)))
+  AND (sqlc.narg(after)::uuid IS NULL OR (e.priority, e.deadline_at, e.id) >
+       (SELECT a.priority, a.deadline_at, a.id FROM pc.waitlist_entries a WHERE a.org_id = e.org_id AND a.id = sqlc.narg(after)::uuid))
+ORDER BY e.priority, e.deadline_at, e.id
 LIMIT sqlc.arg(page_limit);
 
 -- name: GetWaitlistEntry :one
@@ -170,3 +176,106 @@ LIMIT 500;
 UPDATE pc.waitlist_entries SET routing_health = 'DELIVERY_FAILING'
 WHERE org_id = sqlc.arg(org_id) AND id = ANY (sqlc.arg(entry_ids)::uuid[]) AND state = 'OPEN' AND routing_health = 'OK'
 RETURNING id;
+
+-- Settings (slice 213): one row per org; NULL means the default. The
+-- schema keeps each value within its decision-6 and decision-7 bounds.
+-- name: UpsertWaitlistSettings :exec
+INSERT INTO pc.waitlist_settings (org_id, batch_ceilings, hold_deadline_s, consume_window_s, access_request_deadline_s,
+    tool_review_deadline_s, restoration_deadline_s, reconciliation_deadline_s, max_holds_per_grant, max_holds_per_run,
+    min_account_age_s, min_role_age_s, min_credential_age_s, self_grant_delay_s, updated_by)
+VALUES (sqlc.arg(org_id), sqlc.arg(batch_ceilings), sqlc.narg(hold_deadline_s), sqlc.narg(consume_window_s),
+    sqlc.narg(access_request_deadline_s), sqlc.narg(tool_review_deadline_s), sqlc.narg(restoration_deadline_s),
+    sqlc.narg(reconciliation_deadline_s), sqlc.narg(max_holds_per_grant), sqlc.narg(max_holds_per_run),
+    sqlc.narg(min_account_age_s), sqlc.narg(min_role_age_s), sqlc.narg(min_credential_age_s), sqlc.narg(self_grant_delay_s),
+    sqlc.arg(updated_by))
+ON CONFLICT (org_id) DO UPDATE SET
+    batch_ceilings = EXCLUDED.batch_ceilings, hold_deadline_s = EXCLUDED.hold_deadline_s,
+    consume_window_s = EXCLUDED.consume_window_s, access_request_deadline_s = EXCLUDED.access_request_deadline_s,
+    tool_review_deadline_s = EXCLUDED.tool_review_deadline_s, restoration_deadline_s = EXCLUDED.restoration_deadline_s,
+    reconciliation_deadline_s = EXCLUDED.reconciliation_deadline_s, max_holds_per_grant = EXCLUDED.max_holds_per_grant,
+    max_holds_per_run = EXCLUDED.max_holds_per_run, min_account_age_s = EXCLUDED.min_account_age_s,
+    min_role_age_s = EXCLUDED.min_role_age_s, min_credential_age_s = EXCLUDED.min_credential_age_s,
+    self_grant_delay_s = EXCLUDED.self_grant_delay_s, updated_by = EXCLUDED.updated_by, updated_at = now();
+
+-- SLA metrics (slice 214c, Team). An entry's first response is the first
+-- response to its approval request, or else a person's decision; its time
+-- to decision counts approvals and rejections only. Entries are kept to
+-- the agents the caller may read before anything is aggregated (T-042).
+-- name: WaitlistMetricAgents :many
+SELECT DISTINCT agent_id::uuid AS agent_id FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND created_at >= sqlc.arg(since) AND created_at < sqlc.arg(until) AND agent_id IS NOT NULL
+LIMIT 10000;
+
+-- name: WaitlistMetricsByKind :many
+WITH e AS (
+    SELECT e.kind, e.state, e.escalation_step, e.routing_health,
+        extract(epoch FROM COALESCE(e.first_response_at,
+            CASE WHEN e.state IN ('APPROVED', 'REJECTED') AND e.decided_by LIKE 'user:%' THEN e.decided_at END) - e.created_at)
+            AS first_s,
+        CASE WHEN e.state IN ('APPROVED', 'REJECTED') THEN extract(epoch FROM e.decided_at - e.created_at) END AS decision_s
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = sqlc.arg(org_id) AND e.created_at >= sqlc.arg(since) AND e.created_at < sqlc.arg(until)
+      AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+      AND (sqlc.arg(all_agents)::boolean OR e.agent_id = ANY (sqlc.arg(agents)::uuid[]))
+)
+SELECT kind, count(*) AS entries, count(decision_s) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p90,
+    avg((state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE routing_health <> 'OK') AS routing_failures
+FROM e
+GROUP BY kind
+ORDER BY kind;
+
+-- A decider is a person who responded to an entry's approval request or
+-- decided the entry; their first response is their own.
+-- name: WaitlistMetricsByDecider :many
+WITH e AS (
+    SELECT e.id, e.kind, e.state, e.subject_type, e.subject_id, e.decided_by, e.decided_at, e.created_at, e.escalation_step,
+        e.routing_health
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = sqlc.arg(org_id) AND e.created_at >= sqlc.arg(since) AND e.created_at < sqlc.arg(until)
+      AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+      AND (sqlc.arg(all_agents)::boolean OR e.agent_id = ANY (sqlc.arg(agents)::uuid[]))
+), acts AS (
+    SELECT e.id, r.user_id, r.created_at AS at
+    FROM e JOIN pc.approval_responses r ON r.org_id = sqlc.arg(org_id) AND r.request_id = e.subject_id
+    WHERE e.subject_type = 'approval_request'
+    UNION ALL
+    SELECT e.id, substring(e.decided_by FROM 6)::uuid, e.decided_at FROM e
+    WHERE e.state IN ('APPROVED', 'REJECTED') AND e.decided_by ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+), per AS (
+    SELECT id, user_id, min(at) AS at FROM acts GROUP BY id, user_id
+)
+SELECT e.kind, per.user_id::uuid AS user_id, count(*) AS entries,
+    count(*) FILTER (WHERE e.state IN ('APPROVED', 'REJECTED')) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p90,
+    avg((e.state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((e.escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE e.routing_health <> 'OK') AS routing_failures
+FROM per JOIN e ON e.id = per.id
+GROUP BY e.kind, per.user_id
+ORDER BY e.kind, per.user_id
+LIMIT 1000;
+
+-- Entries decided or expired in [since, until), for the server's
+-- histograms (no org leaves the query); first_s is -1 when nobody
+-- responded.
+-- name: ClosedEntriesBetween :many
+SELECT kind, state,
+    COALESCE(extract(epoch FROM COALESCE(first_response_at,
+        CASE WHEN state IN ('APPROVED', 'REJECTED') AND decided_by LIKE 'user:%' THEN decided_at END) - created_at), -1)::float8
+        AS first_s,
+    extract(epoch FROM decided_at - created_at)::float8 AS decision_s
+FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND state IN ('APPROVED', 'REJECTED', 'EXPIRED') AND decided_at >= sqlc.arg(since)
+  AND decided_at < sqlc.arg(until)
+LIMIT 10000;
