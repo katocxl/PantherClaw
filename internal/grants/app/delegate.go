@@ -73,7 +73,7 @@ func (s *Service) Delegate(ctx context.Context, w Workload, req DelegateRequest)
 	child := domain.Grant{
 		ID: domain.NewGrantID(), Org: w.Org, Revision: 1, State: domain.StateActive,
 		AgentID: childRun.AgentID, Principal: parent.Principal, EnvironmentID: parent.EnvironmentID,
-		TaskRef: req.TaskRef, NotBefore: maxTime(now, parent.NotBefore), ExpiresAt: expires,
+		TaskRef: req.TaskRef, NotBefore: maxTime(now.Add(-domain.IssueSkew), parent.NotBefore), ExpiresAt: expires,
 		Bounds: req.Bounds.Inherit(parent.Bounds), Requirements: req.Requirements, Limits: req.Limits,
 		Delegation: req.Delegation, MinAttestation: max(req.MinAttestation, parent.MinAttestation),
 		Parent: parent.ID, Depth: parent.Depth + 1,
