@@ -16,8 +16,14 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/evidence/bundle"
+	"github.com/katocxl/pantherclaw/internal/evidence/checkpoints"
 	"github.com/katocxl/pantherclaw/internal/evidence/keydocs"
+	"github.com/katocxl/pantherclaw/internal/evidence/note"
+	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/jobs"
 )
 
 // serveForTest starts cmdServe with cfgPath and returns its base URL; the
@@ -118,5 +124,78 @@ func TestIntMLDSACosignNeedsEnterprise(t *testing.T) {
 	err := cmdServe(context.Background(), []string{"--config", cfgPath}, &logs, noEnv, nil)
 	if !errors.Is(err, errMLDSAEdition) {
 		t.Fatalf("serve with co-signing on a Community licence: %v", err)
+	}
+}
+
+// TestHR194_WorkersCheckpointEveryOrgWithTheirPublishedKey: the worker role
+// checkpoints the platform org's chain (its key-creation audit entries),
+// and the checkpoint verifies with the key evidence-keys.json publishes.
+func TestHR194_WorkersCheckpointEveryOrgWithTheirPublishedKey(t *testing.T) {
+	d := dbtest.New(t)
+	base := serveForTest(t, testConfig(t, d, RoleAll, func(c map[string]any) {
+		c["evidence"] = map[string]any{"log_origin": "pc.test", "checkpoint_interval": "1m"}
+	}))
+	p := d.AppPool(t)
+	// The dispatcher ran at start, before the chainer linked the start-up
+	// entries, and runs again only after a minute: once they are chained,
+	// ask for a dispatch now.
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		var n int
+		if err := p.InTenantTx(context.Background(), ids.PlatformOrg, func(ctx context.Context, tx db.TenantTx) error {
+			return tx.QueryRow(ctx, "SELECT count(*) FROM pc.ledger_chain").Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the start-up entries were not chained")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	insert, err := jobs.NewClient(p, nil, jobs.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insert.Insert(context.Background(), checkpoints.CheckpointDispatchArgs{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var signed []byte
+	for deadline := time.Now().Add(30 * time.Second); signed == nil; {
+		err := p.InTenantTx(context.Background(), ids.PlatformOrg, func(ctx context.Context, tx db.TenantTx) error {
+			row, err := dbq.New(tx).LatestCheckpoint(ctx, ids.PlatformOrg)
+			if db.IsNoRows(err) {
+				return nil
+			}
+			signed = row.Note
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if signed == nil && time.Now().After(deadline) {
+			t.Fatal("no checkpoint of the platform org within 30 seconds")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_, b := getBody(t, base+keydocs.EvidenceKeysPath)
+	trust, err := bundle.ParseEvidenceKeys(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := trust.LogOrigin + "/org/" + ids.PlatformOrg.String()
+	var vs []note.Verifier
+	for _, k := range trust.Keys {
+		if k.Purpose == bundle.PurposeCheckpoints {
+			v, err := note.NewEd25519Verifier(origin, k.PublicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vs = append(vs, v)
+		}
+	}
+	if c, _, err := note.OpenCheckpoint(signed, origin, vs...); err != nil || c.Size == 0 {
+		t.Fatalf("the platform org's checkpoint does not verify with the published key: %v", err)
 	}
 }

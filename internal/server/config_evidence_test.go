@@ -7,8 +7,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/billing/domain"
+	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 )
 
@@ -64,5 +66,24 @@ func TestMLDSACosignIsEnterpriseOnly(t *testing.T) {
 	off := Config{}
 	if off.checkEvidenceEdition(domain.Entitlements{Edition: domain.Community}) != nil || off.evidenceKeyPurposes() != nil {
 		t.Fatal("co-signing off must need nothing")
+	}
+}
+
+func TestCheckpointIntervalIsOneToSixtyMinutes(t *testing.T) {
+	base := Config{Auth: AuthConfig{PublicURL: "https://pc.example.com"}}
+	if base.checkpointInterval() != 5*time.Minute {
+		t.Fatalf("default interval %s, want 5m", base.checkpointInterval())
+	}
+	for d, ok := range map[time.Duration]bool{
+		time.Minute: true, time.Hour: true, 30 * time.Second: false, 61 * time.Minute: false,
+	} {
+		c := base
+		c.Evidence.CheckpointInterval = config.Duration(d)
+		if errs := c.validateEvidence(); (len(errs) == 0) != ok {
+			t.Errorf("interval %s: %v", d, errs)
+		}
+		if ok && c.checkpointInterval() != d {
+			t.Errorf("interval %s read as %s", d, c.checkpointInterval())
+		}
 	}
 }

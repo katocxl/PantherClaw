@@ -335,6 +335,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := authority.RegisterSweeper(jreg, pool, svc, cfg.Authority.StaleDispatch.D()); err != nil {
 			return err
 		}
+		evidenceJobs, err := registerEvidenceWorkers(jreg, cfg, pool, reg, m5.notifications, log)
+		if err != nil {
+			return err
+		}
 		if err := authnapp.RegisterJanitor(jreg, pool, log); err != nil {
 			return err
 		}
@@ -353,6 +357,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err != nil {
 			return err
 		}
+		client.PeriodicJobs().AddMany(evidenceJobs)
 		if err := client.Start(ctx); err != nil {
 			return fmt.Errorf("server: start workers: %w", err)
 		}

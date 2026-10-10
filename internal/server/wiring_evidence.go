@@ -5,11 +5,17 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
+	"github.com/riverqueue/river"
+
+	"github.com/katocxl/pantherclaw/internal/evidence/checkpoints"
 	"github.com/katocxl/pantherclaw/internal/evidence/keydocs"
 	"github.com/katocxl/pantherclaw/internal/keystore"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
+	"github.com/katocxl/pantherclaw/internal/platform/jobs"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 )
 
@@ -20,4 +26,18 @@ func mountEvidenceKeys(mux *http.ServeMux, d apiDeps) {
 	keydocs.New(func(ctx context.Context, ps []keys.Purpose) ([]keystore.PublishedKey, error) {
 		return keystore.PublishedKeys(ctx, pool, ps)
 	}, d.publicURL, d.logOrigin, clock.System{}, d.log).Mount(mux)
+}
+
+// registerEvidenceWorkers adds the checkpoint and daily verification jobs
+// (G0 M7 design decision 8, HR-194) and returns their schedules.
+func registerEvidenceWorkers(reg *jobs.Registry, cfg *Config, pool *db.Pool, keyReg *keys.Registry,
+	notify checkpoints.Notifier, log *slog.Logger,
+) ([]*river.PeriodicJob, error) {
+	svc := &checkpoints.Service{
+		Pool: pool, Keys: keyReg, LogOrigin: cfg.logOrigin(), Cosign: cfg.Evidence.MLDSACosign, Notify: notify, Log: log,
+	}
+	if err := checkpoints.Register(reg, svc); err != nil {
+		return nil, err
+	}
+	return checkpoints.PeriodicJobs(cfg.checkpointInterval()), nil
 }

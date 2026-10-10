@@ -7,9 +7,12 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/katocxl/pantherclaw/internal/billing/domain"
+	"github.com/katocxl/pantherclaw/internal/evidence/checkpoints"
+	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 )
 
@@ -22,6 +25,10 @@ type EvidenceConfig struct {
 	// "pantherclaw.example.com". Keep it stable: a new origin starts new
 	// checkpoint histories for verifiers.
 	LogOrigin string `json:"log_origin" env:"PC_EVIDENCE_LOG_ORIGIN"`
+	// CheckpointInterval is how often each org whose chain grew gets a new
+	// signed checkpoint: 1 to 60 minutes, 5 minutes when unset (design
+	// decision 8).
+	CheckpointInterval config.Duration `json:"checkpoint_interval" env:"PC_EVIDENCE_CHECKPOINT_INTERVAL"`
 	// MLDSACosign adds an ML-DSA-65 co-signature from the checkpoints_pq key
 	// to every checkpoint (decision 6, Enterprise). Off by default.
 	MLDSACosign bool `json:"mldsa_cosign" env:"PC_EVIDENCE_MLDSA_COSIGN"`
@@ -52,11 +59,23 @@ func validLogOrigin(o string) bool {
 }
 
 func (c *Config) validateEvidence() []error {
+	var errs []error
 	if !validLogOrigin(c.logOrigin()) {
-		return []error{errors.New("evidence.log_origin must be 1..200 printable bytes without a scheme, spaces or '+' " +
-			"(for example pantherclaw.example.com)")}
+		errs = append(errs, errors.New("evidence.log_origin must be 1..200 printable bytes without a scheme, spaces or '+' "+
+			"(for example pantherclaw.example.com)"))
 	}
-	return nil
+	if d := c.Evidence.CheckpointInterval.D(); d != 0 && (d < time.Minute || d > time.Hour) {
+		errs = append(errs, errors.New("evidence.checkpoint_interval must be 1m..60m"))
+	}
+	return errs
+}
+
+// checkpointInterval returns evidence.checkpoint_interval or its default.
+func (c *Config) checkpointInterval() time.Duration {
+	if d := c.Evidence.CheckpointInterval.D(); d != 0 {
+		return d
+	}
+	return checkpoints.DefaultInterval
 }
 
 // evidenceKeyPurposes are the signing keys the configuration needs beyond
