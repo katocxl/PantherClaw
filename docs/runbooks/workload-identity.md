@@ -25,6 +25,66 @@ How an agent's workload gets an identity PantherClaw can verify: enrollment with
 
 A reused or expired enrollment token is refused and audited. A wrong fingerprint is refused: admit nothing you cannot match.
 
+### Long-running services (`pclaw workload renew`)
+
+A workload token is valid for 10 minutes. A service that runs longer keeps one with `pclaw workload renew` ([brief](../g0/M3-workload-renewal.md)):
+
+```bash
+pclaw workload renew --key-file workload.json --out workload.token [--kubernetes-token FILE | --github]
+```
+
+- It writes the token to `--out` and replaces it halfway through each token's lifetime. Each token goes to a new 0600 file that is renamed over the old one, so a reader never sees half a token. The service reads the file each time it builds a request, and signs the request with the key file as before: the token is useless without the key.
+- Put both files in a directory only the service's user can write (`/run/<service>`, or a memory-backed `emptyDir` in a pod). On Windows the files inherit the folder's ACL.
+- It opens no listener and never prints the token. Each renewal writes one line to stderr with the level and the expiry.
+- Failures (server unreachable or restarting) are retried after 1 s, doubling up to 30 s, and the current token stays in the file meanwhile. Each failure is reported with the time the current token expires.
+- With `--kubernetes-token` it re-attests only after the kubelet has rotated the projected token, because each one can be used once; the token the pod enrolled with is already used, so the first renewal reports a refused attestation and continues without it. With `--github` it re-attests at every renewal. Without a fresh attestation the instance stays L2 until its last attestation expires, then drops to L1; a level change is reported.
+- The kill switch does not stop renewal: it stops actions, not identity, and the gateway refuses each action with `kill_switch`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Stopped (SIGINT, SIGTERM, Ctrl-C). The token stays in the file until it expires; a restarted renewer replaces it. |
+| 1 | It could not run: an unreadable key file, an unwritable `--out`, an unenrolled key. |
+| 2 | Wrong arguments. |
+| 3 | The server refused renewal for good, and the token file was removed. `instance_not_admitted`: the instance was revoked, rejected or never admitted, or its agent is suspended or retired (`pclaw instance get`, `pclaw agent get`). `key_mismatch`: the key file is not the instance's key; enroll the new key as a new instance. `invalid_token`: the server does not know the instance. Do not restart; fix the cause first. |
+
+A systemd unit for a service that runs as `billing`:
+
+```ini
+[Service]
+User=billing
+RuntimeDirectory=billing
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/bin/pclaw workload renew --key-file /etc/billing/workload.json --out /run/billing/workload.token
+Restart=on-failure
+RestartPreventExitStatus=3
+```
+
+In a pod, run it as a native sidecar (Kubernetes 1.29 or later: an init container with `restartPolicy: Always`, so it starts before the agent and stops after it). It shares a memory-backed volume with the agent and runs as the same user:
+
+```yaml
+spec:
+  securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+  initContainers:
+    - name: pantherclaw-renew
+      image: <an image with pclaw>
+      restartPolicy: Always
+      args: [workload, renew, --key-file, /var/run/agent/workload.json, --out, /var/run/pantherclaw/workload.token,
+             --kubernetes-token, /var/run/secrets/pantherclaw/token]
+      volumeMounts:
+        - {name: agent-key, mountPath: /var/run/agent, readOnly: true}
+        - {name: pantherclaw-run, mountPath: /var/run/pantherclaw}
+        - {name: pantherclaw-token, mountPath: /var/run/secrets/pantherclaw, readOnly: true}
+  containers:
+    - name: agent
+      volumeMounts:
+        - {name: agent-key, mountPath: /var/run/agent, readOnly: true}
+        - {name: pantherclaw-run, mountPath: /var/run/pantherclaw, readOnly: true}
+  volumes:
+    - {name: pantherclaw-run, emptyDir: {medium: Memory}}
+    # agent-key holds the enrolled key file (§3 step 4); pantherclaw-token is the projected token (§3 step 4)
+```
+
 ### Desktop MCP clients (`pclaw mcp proxy`, M6)
 
 An MCP client on a developer's machine (an IDE or a desktop assistant) reaches a gateway connection through `pclaw mcp proxy`. The client starts the proxy as a stdio MCP server. The proxy signs every request with the enrolled desktop key (L1, HR-092) in the run you give it, and posts it to the gateway's `/mcp/{connection}`. It never opens a listener, so nothing else on the machine can borrow the workload's identity through it. Its diagnostics go to stderr. Configure the client like this:
@@ -34,7 +94,7 @@ An MCP client on a developer's machine (an IDE or a desktop assistant) reaches a
   "--connection", "payments", "--key-file", "/home/dev/.pantherclaw/workload.json", "--run", "<run id>"]}}}
 ```
 
-The proxy renews the workload token every 4 minutes. It speaks MCP 2026-07-28 or 2025-11-25, whichever the client does, and opens a new 2025-11-25 session by itself when the gateway ends one. Held calls come back as tasks when the client supports them (G0 M6 design decision 15).
+The proxy renews the workload token halfway through each token's lifetime, with the same renewer as `pclaw workload renew` (below). It speaks MCP 2026-07-28 or 2025-11-25, whichever the client does, and opens a new 2025-11-25 session by itself when the gateway ends one. Held calls come back as tasks when the client supports them (G0 M6 design decision 15).
 
 ## 2. GitHub Actions (L2)
 
