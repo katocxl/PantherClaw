@@ -197,6 +197,16 @@ func (g *Gateway) Run(ctx context.Context) error {
 	return eg.Wait()
 }
 
+// ConfigVersion is the version of the configuration the gateway serves, 0
+// before the first load. A change (a new connection, a sealed credential)
+// is served once this reaches the version the server returned for it.
+func (g *Gateway) ConfigVersion() int64 {
+	if c := g.config.Current(); c != nil {
+		return c.Version
+	}
+	return 0
+}
+
 // WaitReady returns once the first containment snapshot and the first
 // configuration arrived: the gateway serves nothing before (HR-010,
 // decision 19).

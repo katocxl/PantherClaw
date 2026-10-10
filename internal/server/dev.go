@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
+	capp "github.com/katocxl/pantherclaw/internal/connections/app"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
@@ -52,6 +54,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	maxCount := fs.Int("max-count", 0, "optional limit on the number of refunds the seeded grant allows (0 = none)")
 	gatewayOut := fs.String("gateway-out", "", "also seed a gateway; write its enrollment file here (0600, never overwritten)")
 	targetURL := fs.String("target-url", "", "with --gateway-out: also seed the connection \"payments\" to this payments API, in enforce mode")
+	access := fs.String("access-mode", "", "with --target-url: "+accessUsage+" (default none)")
 	shell := fs.Bool("shell", false, "with --gateway-out: also seed the pc.shell package and the hook connection \"shell\" (Claude Code), in enforce mode; "+
 		"with --workload-out the grant also allows shell commands")
 	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a grant and a run; write its key file here (0600, never overwritten)")
@@ -85,6 +88,11 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	}
 	if (*targetURL != "" || *shell) && *gatewayOut == "" {
 		return errTargetNeedsGateway
+	}
+	if *access == "" {
+		*access = capp.AccessNone
+	} else if *targetURL == "" || !slices.Contains(devAccessModes, *access) {
+		return errAccessMode
 	}
 	if *gatewayOut != "" && cfg.GatewayAPI.Addr == "" {
 		return errors.New("dev seed: --gateway-out needs gateway_api in the server config (gateways reach the Authority only over mTLS)")
@@ -143,11 +151,12 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 		_, _ = fmt.Fprintf(stdout, "seeded gateway %s; within 15 minutes, start it with: pantherclaw-gateway serve --enroll-file %s\n",
 			gw, *gatewayOut)
 		if *targetURL != "" {
-			c, err := seedConnection(ctx, cfg, pool, org, gw, devConnectionName, *targetURL, "enforce")
+			c, err := seedConnection(ctx, cfg, pool, org, gw, devConnectionName, *targetURL, "enforce", *access)
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s) to %s; agents call the gateway at /%s/v1/refunds\n", c.ID, c.Name, *targetURL, c.Name)
+			_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s, access %s) to %s; agents call the gateway at /%s/v1/refunds\n",
+				c.ID, c.Name, *access, *targetURL, c.Name)
 		}
 		if *shell {
 			c, err := seedShellConnection(ctx, cfg, pool, org, gw)
