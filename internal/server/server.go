@@ -221,6 +221,11 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
+	verification, err := newVerification(pool, reg)
+	if err != nil {
+		return err
+	}
+	m6.verifications = verification
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
@@ -335,10 +340,6 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			return err
 		}
 		if err := m5.registerWorkers(jreg); err != nil {
-			return err
-		}
-		verification, err := newVerification(pool, reg)
-		if err != nil {
 			return err
 		}
 		if err := txapp.Register(jreg, pool, verification); err != nil {

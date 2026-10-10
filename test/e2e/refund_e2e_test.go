@@ -225,6 +225,9 @@ func start(t *testing.T, o options) *stack {
 	// Several sessions' suites share one test database on a laptop; a slow
 	// Authorize there is not the Authority being down (S09 stops it).
 	gc.Control.Timeout = config.Duration(10 * time.Second)
+	// Verification tasks are claimed every second rather than every ten
+	// (G0 M7), so effects are verified within a test's patience.
+	gc.Control.VerifyEvery = config.Duration(time.Second)
 	if o.access == "pantherclaw_held" {
 		// The gateway's broker key, which only it can open credentials with
 		// (HR-061); it registers the public half when it starts.
