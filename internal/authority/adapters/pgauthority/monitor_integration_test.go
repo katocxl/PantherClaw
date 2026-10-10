@@ -24,12 +24,11 @@ func (w *world) withConnection(mode string) ids.UUID { return w.withAccess(mode,
 // withAccess is withConnection with the connection's access mode.
 func (w *world) withAccess(mode, access string) ids.UUID {
 	w.t.Helper()
-	gw, conn := ids.NewV7(), ids.NewV7()
-	exec(w.t, w.pool, w.org, "INSERT INTO pc.gateways (org_id, id, name, created_by) VALUES ($1, $2, 'edge', 'test')", w.org, gw)
+	conn := ids.NewV7()
+	// Names are unique per org: the id's last 12 hex digits.
 	exec(w.t, w.pool, w.org, `INSERT INTO pc.connections (org_id, id, name, kind, gateway_id, package, base_url, access_mode,
-		default_mode, created_by, updated_by) VALUES ($1, $2, 'payments', 'http', $3, 'pc.mock-payments', 'https://payments.example.test',
-		$5, $4, 'test', 'test')`, w.org, conn, gw, mode, access)
-	w.gw = finalize.Gateway{ID: gw.String(), Org: w.org}
+		default_mode, created_by, updated_by) VALUES ($1, $2, $6, 'http', $3, 'pc.mock-payments', 'https://payments.example.test',
+		$5, $4, 'test', 'test')`, w.org, conn, w.gwID, mode, access, "payments-"+conn.String()[24:])
 	return conn
 }
 
