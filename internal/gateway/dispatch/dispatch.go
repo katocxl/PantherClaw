@@ -88,6 +88,7 @@ const (
 	CodeKillSwitch            = "kill_switch"
 	CodeGatewayRevoked        = "gateway_revoked"
 	CodeConnectionQuarantined = "connection_quarantined"
+	CodeCircuitOpen           = "circuit_open"
 	CodeDuplicate             = "duplicate_action"
 	CodeObligation            = "obligation_unsupported"
 	CodeEffective             = "effective_action_mismatch"
@@ -130,7 +131,12 @@ type Options struct {
 	Broker Opener
 	// AllowedPrefixes are the operator's egress.allowed_prefixes (HR-077).
 	AllowedPrefixes []netip.Prefix
-	Log             *slog.Logger
+	// ReportCircuit tells the server a connection's circuit opened
+	// (HR-078); nil reports nothing.
+	ReportCircuit Reporter
+	// Now is the breaker's clock; nil is time.Now.
+	Now func() time.Time
+	Log *slog.Logger
 }
 
 // Engine dispatches mapped actions.
@@ -141,6 +147,7 @@ type Engine struct {
 	containment Containment
 	broker      Opener
 	allowed     []netip.Prefix
+	breaker     *breaker
 	log         *slog.Logger
 	nonces      nonces
 
@@ -163,9 +170,13 @@ func New(o Options) (*Engine, error) {
 	if o.Log == nil {
 		o.Log = pclog.Discard()
 	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 	return &Engine{
 		org: o.Org, authority: o.Authority, permits: newPermitVerifier(o.JWKSURL, o.JWKSClient, o.GatewayID, o.Org),
-		containment: o.Containment, broker: o.Broker, allowed: o.AllowedPrefixes, log: o.Log, clients: map[string]clientEntry{},
+		containment: o.Containment, broker: o.Broker, allowed: o.AllowedPrefixes, breaker: newBreaker(o.Now, o.ReportCircuit, o.Log),
+		log: o.Log, clients: map[string]clientEntry{},
 	}, nil
 }
 
@@ -257,6 +268,9 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	conn := c.Connection
 	if _, class, code := e.contained(conn); class != "" {
 		return Result{Class: class, Code: code}
+	}
+	if e.breaker.open(ctx, conn) {
+		return Result{Class: EnforcementFailed, Code: CodeCircuitOpen}
 	}
 	ar, err := e.authority.Authorize(ctx, &pb.AuthorizeRequest{ActionIr: c.Action.Canonical, Workload: c.Workload})
 	t.lap("authz")
@@ -485,6 +499,7 @@ func (e *Engine) send(ctx context.Context, r Result, conn *control.Connection, d
 	elapsed := time.Since(start)
 	t.lap("target")
 	outcome, class, code := classify(res.Status, err)
+	e.breaker.record(ctx, conn, outcome)
 	if err != nil && res.Status == 0 {
 		e.log.WarnContext(ctx, "gateway.target_error", slog.String("transaction_id", want.Txn), slog.String("outcome", outcome.String()),
 			pclog.Err(err))

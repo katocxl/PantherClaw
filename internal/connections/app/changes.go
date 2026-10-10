@@ -348,6 +348,17 @@ func (s *Service) transition(ctx context.Context, id ids.UUID, from []string, to
 			}
 			details["sealed_revoked"] = strconv.FormatInt(n, 10)
 		}
+		if conn.State == StateQuarantined {
+			// Lifting a quarantine (or retiring) closes the circuits that a
+			// gateway opened (HR-078): only a person gets here.
+			n, err := q.CloseCircuits(ctx, c.Org, id)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				details["circuits_closed"] = strconv.FormatInt(n, 10)
+			}
+		}
 		after, err := s.apply(ctx, tx, c, conn, p, []change{{field: "state", from: conn.State, to: to, weakens: weakens}}, event, details)
 		if err != nil {
 			return err

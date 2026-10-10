@@ -277,7 +277,7 @@ func status(res dispatch.Result) int {
 		return http.StatusForbidden
 	case dispatch.EnforcementFailed:
 		switch res.Code {
-		case dispatch.CodeContainmentStale, dispatch.CodeGatewayRevoked:
+		case dispatch.CodeContainmentStale, dispatch.CodeGatewayRevoked, dispatch.CodeCircuitOpen:
 			return http.StatusServiceUnavailable
 		case dispatch.CodeKillSwitch, dispatch.CodeConnectionQuarantined:
 			return http.StatusForbidden

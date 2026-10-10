@@ -70,6 +70,9 @@ type Deps struct {
 	Broker *Broker
 	// Configuration is what the gateway serves (control.Store).
 	Configuration Configuration
+	// ReportCircuit tells the server a connection's circuit opened
+	// (HR-078); nil reports nothing.
+	ReportCircuit dispatch.Reporter
 	// Run is background work (certificate renewal, the containment stream,
 	// configuration sync); nil for none.
 	Run []func(ctx context.Context) error
@@ -97,6 +100,10 @@ func New(ctx context.Context, cfg *Config, id *control.Identity, log *slog.Logge
 		Org: id.Org.String(), GatewayID: id.Gateway.String(), Authority: ctl.Authority,
 		JWKSURL: ctl.BaseURL() + "/.well-known/pantherclaw/jwks.json", JWKSClient: ctl.HTTPClient(),
 		Containment: k, Configuration: store, Run: []func(context.Context) error{ctl.Run, k.Run, store.Run},
+		ReportCircuit: func(ctx context.Context, conn string, unknown, total int32) error {
+			_, err := ctl.Gateway.ReportCircuit(ctx, &pb.ReportCircuitRequest{ConnectionId: conn, UnknownCount: unknown, TotalCount: total})
+			return err
+		},
 	}
 	if cfg.Broker.KeyFile != "" {
 		key, err := broker.Load(ctx, cfg.Broker.KeyFile, cfg.Broker.KEKFiles)
@@ -122,7 +129,7 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	}
 	o := dispatch.Options{
 		Org: d.Org, GatewayID: d.GatewayID, Authority: d.Authority, JWKSURL: d.JWKSURL, JWKSClient: d.JWKSClient,
-		Containment: d.Containment, AllowedPrefixes: prefixes, Log: log,
+		Containment: d.Containment, AllowedPrefixes: prefixes, ReportCircuit: d.ReportCircuit, Log: log,
 	}
 	if d.Broker != nil {
 		o.Broker = d.Broker
