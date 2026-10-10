@@ -8,6 +8,7 @@ package pgauthority_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"strings"
 	"sync"
 	"testing"
@@ -16,10 +17,13 @@ import (
 	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/finalize"
+	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
 	gapp "github.com/katocxl/pantherclaw/internal/grants/app"
 	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	tdomain "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
 // heldGrant issues a grant whose refunds over 50 USD need one approver.
@@ -103,7 +107,9 @@ func held(t *testing.T, r finalize.Result) ids.UUID {
 // fact changes the binding, so the request is superseded, never updated.
 func TestHR171_AHoldIsRecordedOnceAndSupersededWhenItsBindingChanges(t *testing.T) {
 	w := newWorld(t)
-	w.refundable("ch_1")
+	// The first report is two minutes old, so the later one always changes
+	// the facts digest (it counts whole seconds).
+	w.refundableAt(time.Now().Add(-2*time.Minute), "ch_1")
 	g := w.heldGrant()
 	run := w.run(g.ID, ids.UUID{})
 	req := w.request(run, ids.NewV7(), "ch_1", "85.00")
@@ -324,4 +330,20 @@ func receiptClaims(t *testing.T, jws string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// refundableAt reports a "refundable" fact observed at t, as the provider.
+func (w *world) refundableAt(t time.Time, charge string) {
+	w.t.Helper()
+	ctx := tapp.WithCaller(context.Background(), tapp.Caller{Subject: tdomain.Subject{
+		Org:       w.org,
+		Principal: tdomain.PrincipalRef{Kind: tdomain.KindServiceAccount, ID: w.billing},
+	}})
+	res, err := w.facts.PutFacts(ctx, []fdomain.Observation{{
+		Name: "payments.charge.refundable", SubjectType: "payments.charge", SubjectID: charge,
+		Value: jsontext.Value(`{"bool": true}`), ObservedAt: t,
+	}})
+	if err != nil || res[0].Err != nil {
+		w.t.Fatalf("fact: %v %v", err, res)
+	}
 }
