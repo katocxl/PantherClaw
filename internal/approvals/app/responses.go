@@ -44,36 +44,47 @@ func (s *Service) end(ctx context.Context, id ids.UUID, resp dbq.InsertApprovalR
 	}
 	var out Request
 	err = s.Pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
-		q := dbq.New(tx)
-		l, err := lock(ctx, q, c.Org, id, r.User)
-		if err != nil {
-			return err
-		}
-		if !l.mayRespond(r.User) {
-			return refuse(ctx, q, c, l)
-		}
-		if !waiting(l.row, l.elig.Context.Now, apdomain.StatePending, apdomain.StateEvidenceRequested) {
-			return ErrNotWaiting
-		}
-		resp.OrgID, resp.ID, resp.RequestID, resp.UserID = c.Org, ids.NewV7(), id, r.User
-		resp.SessionID, resp.CliSessionID = r.sessions()
-		if err := q.InsertApprovalResponse(ctx, resp); err != nil {
-			return err
-		}
-		if err := pgapprovals.End(ctx, tx, org(c), id, endReason, "REJECTED"); err != nil {
-			return err
-		}
-		if err := event(ctx, tx, eventName, userActor(r.User), code, id, nil); err != nil {
-			return err
-		}
-		if err := tell(ctx, tx, s.Notify, c.Org, id, string(apdomain.StateDeclined), "approval.decided",
-			map[string]string{"outcome": endReason}); err != nil {
-			return err
-		}
-		out, err = q.GetApprovalRequest(ctx, c.Org, id)
+		out, err = s.endIn(ctx, tx, c, r, id, resp, endReason, eventName, code)
 		return err
 	})
 	return out, err
+}
+
+// endIn is end inside the caller's transaction.
+func (s *Service) endIn(ctx context.Context, tx db.TenantTx, c tenancy.Caller, r Responder, id ids.UUID, resp dbq.InsertApprovalResponseParams,
+	endReason, eventName, code string,
+) (Request, error) {
+	q := dbq.New(tx)
+	l, err := lock(ctx, q, c.Org, id, r.User)
+	if err != nil {
+		return Request{}, err
+	}
+	if !l.mayRespond(r.User) {
+		return Request{}, refuse(ctx, q, c, l)
+	}
+	if !waiting(l.row, l.elig.Context.Now, apdomain.StatePending, apdomain.StateEvidenceRequested) {
+		return Request{}, ErrNotWaiting
+	}
+	resp.OrgID, resp.ID, resp.RequestID, resp.UserID = c.Org, ids.NewV7(), id, r.User
+	resp.SessionID, resp.CliSessionID = r.sessions()
+	if err := q.InsertApprovalResponse(ctx, resp); err != nil {
+		return Request{}, err
+	}
+	if err := pgapprovals.End(ctx, tx, org(c), id, endReason, "REJECTED"); err != nil {
+		return Request{}, err
+	}
+	details := map[string]string(nil)
+	if resp.BatchID != nil {
+		details = map[string]string{"batch": resp.BatchID.String()}
+	}
+	if err := event(ctx, tx, eventName, userActor(r.User), code, id, details); err != nil {
+		return Request{}, err
+	}
+	if err := tell(ctx, tx, s.Notify, c.Org, id, string(apdomain.StateDeclined), "approval.decided",
+		map[string]string{"outcome": endReason}); err != nil {
+		return Request{}, err
+	}
+	return q.GetApprovalRequest(ctx, c.Org, id)
 }
 
 func org(c tenancy.Caller) ids.OrgID { return c.Org }

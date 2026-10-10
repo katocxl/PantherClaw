@@ -739,6 +739,42 @@ func (q *Queries) HoldCaps(ctx context.Context, orgID ids.OrgID) (HoldCapsRow, e
 	return i, err
 }
 
+const insertApprovalBatch = `-- name: InsertApprovalBatch :exec
+INSERT INTO pc.approval_batches (org_id, id, kind, user_id, session_id, cli_session_id, batch_hash, request_ids, state,
+    completed_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7, $8::uuid[], $9,
+    CASE WHEN $9::text = 'COMPLETED' THEN now() END)
+`
+
+type InsertApprovalBatchParams struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	Kind         string
+	UserID       ids.UUID
+	SessionID    *ids.UUID
+	CliSessionID *ids.UUID
+	BatchHash    []byte
+	RequestIds   []ids.UUID
+	State        string
+}
+
+// Batches (slice 214, HR-175): one decider's batch of up to 25 requests.
+func (q *Queries) InsertApprovalBatch(ctx context.Context, arg InsertApprovalBatchParams) error {
+	_, err := q.db.Exec(ctx, insertApprovalBatch,
+		arg.OrgID,
+		arg.ID,
+		arg.Kind,
+		arg.UserID,
+		arg.SessionID,
+		arg.CliSessionID,
+		arg.BatchHash,
+		arg.RequestIds,
+		arg.State,
+	)
+	return err
+}
+
 const insertApprovalEvidence = `-- name: InsertApprovalEvidence :exec
 INSERT INTO pc.approval_evidence (org_id, id, request_id, author_kind, author_user_id, author_instance_id, note)
 VALUES ($1, $2, $3, $4, $5,

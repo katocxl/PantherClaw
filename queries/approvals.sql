@@ -453,3 +453,11 @@ WHERE org_id = sqlc.arg(org_id) AND state = ANY (sqlc.arg(states)::text[])
   AND (sqlc.narg(run_id)::uuid IS NULL OR run_id = sqlc.narg(run_id)::uuid)
 ORDER BY id DESC
 LIMIT sqlc.arg(lim);
+
+-- Batches (slice 214, HR-175): one decider's batch of up to 25 requests.
+-- name: InsertApprovalBatch :exec
+INSERT INTO pc.approval_batches (org_id, id, kind, user_id, session_id, cli_session_id, batch_hash, request_ids, state,
+    completed_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(kind), sqlc.arg(user_id), sqlc.narg(session_id), sqlc.narg(cli_session_id),
+    sqlc.arg(batch_hash), sqlc.arg(request_ids)::uuid[], sqlc.arg(state),
+    CASE WHEN sqlc.arg(state)::text = 'COMPLETED' THEN now() END);

@@ -110,6 +110,8 @@ type Reason struct {
 type Service struct {
 	Pool      *db.Pool
 	Simulator Simulator
+	// Ents gates batch review (Team edition); nil fails closed.
+	Ents Entitlements
 	// Notify sends outcome notices (slice 211); nil sends none.
 	Notify Notifier
 }
