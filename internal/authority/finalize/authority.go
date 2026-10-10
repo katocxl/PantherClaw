@@ -179,12 +179,22 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 			a.log(ctx).InfoContext(ctx, "authz.decision", slog.String("txn_id", res.TransactionID.String()),
 				slog.String("decision", string(res.Decision)), slog.String("reason_code", ev.Decisive().Code))
 			return res, nil
-		case errors.Is(err, ErrParked):
-			ev = override(ev, pipeline.ReasonReconciliation, "an identical irreversible action is in flight, unknown or recently succeeded")
+		case errors.Is(err, ErrParked), errors.Is(err, ErrHoldLimit):
+			code, detail := pipeline.ReasonReconciliation, "an identical irreversible action is in flight, unknown or recently succeeded"
+			if errors.Is(err, ErrHoldLimit) {
+				code, detail = apdomain.ReasonHoldLimitReached, "the grant or the run already has its maximum of pending holds"
+			}
+			ev = override(ev, code, detail)
 			if res, err = a.bind(ctx, gw, ev, prev); err == nil {
 				return res, nil
 			}
 			if !retryable(err) {
+				return Result{}, err
+			}
+		case errors.Is(err, ErrApprovalNotMet):
+			// An approver is no longer eligible (HR-170): record it, then
+			// decide again, which holds the action until the request is met.
+			if err := a.Store.Revalidate(ctx, gw.Org, ev.Hold.Request.ID); err != nil {
 				return Result{}, err
 			}
 		case retryable(err):
@@ -227,6 +237,14 @@ func (a *Authority) evaluate(ctx context.Context, req pipeline.Request, run, act
 		return nil, nil, err
 	}
 	return prev, ev, nil
+}
+
+// Holds reports whether an evaluation records a hold: an enforced
+// REQUIRE_APPROVAL or REQUIRE_STEP_UP with what step 8 established (a
+// DENY or CANNOT_AUTHORIZE never does, even when it lists approvals: S03).
+func Holds(ev *pipeline.Evaluation) bool {
+	return ev.Hold != nil && !ev.MonitorPermit() &&
+		(ev.Decision == adomain.RequireApproval || ev.Decision == adomain.RequireStepUp)
 }
 
 func retryable(err error) bool {
@@ -280,10 +298,16 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 	if prev != nil {
 		w.TransactionID, w.Evaluation = prev.TransactionID, prev.Evaluations+1
 	}
+	if Holds(ev) && !ev.Hold.Keep {
+		w.HoldRequest = ids.NewV7()
+	}
 	res := Result{
 		Decision: ev.Decision, TransactionID: w.TransactionID, Evaluation: w.Evaluation, ActionHash: ev.ActionHash,
 		EffectiveHash: ev.EffectiveHash, BasisDigest: ev.Basis.Digest(), Checklist: ev.Checklist,
 		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode, Wait: waitOf(ev, w.TransactionID),
+	}
+	if res.Wait != nil && !w.HoldRequest.IsZero() {
+		res.Wait.RequestID = w.HoldRequest
 	}
 	if ev.Connection != nil {
 		res.AccessMode = ev.Connection.AccessMode

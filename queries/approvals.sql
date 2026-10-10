@@ -53,3 +53,151 @@ WITH RECURSIVE up (id, depth) AS (
 SELECT p.launcher_user_id, p.launcher_sa_id, p.launcher_instance_id, p.principal_user_id, p.principal_sa_id
 FROM up JOIN pc.runs p ON p.org_id = sqlc.arg(org_id) AND p.id = up.id
 ORDER BY up.depth;
+
+-- The finalization records a hold (HR-171): a new request, inserted once
+-- with its binding fixed.
+-- name: InsertApprovalRequest :exec
+INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id,
+    grant_revision, variant_key, operation, previous_id, binding, binding_input, requirements, display, display_hash,
+    deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ACTION', sqlc.arg(agent_id), sqlc.arg(transaction_id), sqlc.arg(evaluation),
+    sqlc.arg(run_id), sqlc.arg(grant_id), sqlc.arg(grant_revision), sqlc.arg(variant_key), sqlc.arg(operation),
+    sqlc.narg(previous_id), sqlc.arg(binding), sqlc.arg(binding_input), sqlc.arg(requirements), sqlc.arg(display),
+    sqlc.arg(display_hash), sqlc.arg(deadline_at));
+
+-- A live request whose binding no longer matches is superseded, never
+-- updated.
+-- name: SupersedeApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'SUPERSEDED', end_reason = 'BINDING_CHANGED', ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+RETURNING grant_id, run_id;
+
+-- A live request past its deadline, evidence deadline or consume-by time
+-- expires, by the database clock (HR-039).
+-- name: ExpireApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'EXPIRED', end_reason = 'APPROVAL_EXPIRED', ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (deadline_at <= now()
+    OR (state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at <= now())
+    OR (state = 'APPROVED' AND consume_by <= now()))
+RETURNING grant_id, run_id;
+
+-- An approved request is consumed at most once, by the finalization that
+-- issues the permit, before its deadline and its consume-by time (HR-171).
+-- name: ConsumeApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'CONSUMED', consumed_at = now(), permit_id = sqlc.arg(permit_id), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'APPROVED' AND binding = sqlc.arg(binding)
+  AND consume_by > now() AND deadline_at > now()
+RETURNING grant_id, run_id;
+
+-- name: LockApprovalRequest :one
+SELECT id, state FROM pc.approval_requests WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) FOR UPDATE;
+
+-- An approved request a void left short returns to PENDING.
+-- name: ReopenApprovalRequest :execrows
+UPDATE pc.approval_requests SET state = 'PENDING', approved_at = NULL, consume_by = NULL
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'APPROVED';
+
+-- Pending holds per grant and per run (HR-037): a slot is taken by a
+-- conditional update below the cap, so concurrent holds cannot exceed it.
+-- name: TakeHoldSlot :execrows
+INSERT INTO pc.hold_slots (org_id, scope_kind, scope_id, pending)
+VALUES (sqlc.arg(org_id), sqlc.arg(scope_kind), sqlc.arg(scope_id), 1)
+ON CONFLICT (org_id, scope_kind, scope_id) DO UPDATE SET pending = pc.hold_slots.pending + 1, updated_at = now()
+WHERE pc.hold_slots.pending < sqlc.arg(cap)::integer;
+
+-- name: ReleaseHoldSlot :execrows
+UPDATE pc.hold_slots SET pending = pending - 1, updated_at = now()
+WHERE org_id = sqlc.arg(org_id) AND scope_kind = sqlc.arg(scope_kind) AND scope_id = sqlc.arg(scope_id) AND pending > 0;
+
+-- name: HoldCaps :one
+SELECT coalesce(s.max_holds_per_grant, 20)::integer AS per_grant, coalesce(s.max_holds_per_run, 5)::integer AS per_run
+FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = sqlc.arg(org_id);
+
+-- Distinct held transactions of one variant key in the last 24 hours
+-- (HR-037: the third raises security.variant_suspected).
+-- name: CountRecentVariants :one
+SELECT count(DISTINCT transaction_id)::integer FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND variant_key = sqlc.arg(variant_key) AND created_at > now() - interval '24 hours';
+
+-- The ACTION_HOLD entry of a request (HR-177).
+-- name: InsertHoldEntry :exec
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, priority,
+    deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ACTION_HOLD', 'approval_request', sqlc.arg(request_id), sqlc.arg(agent_id),
+    sqlc.arg(run_id), sqlc.arg(transaction_id), sqlc.arg(priority), sqlc.arg(deadline_at));
+
+-- A request that returns to PENDING gets a new open entry with the priority
+-- and deadline of its last one (one open entry per subject).
+-- name: ReopenHoldEntry :execrows
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, priority,
+    deadline_at)
+SELECT e.org_id, sqlc.arg(id), e.kind, e.subject_type, e.subject_id, e.agent_id, e.run_id, e.transaction_id, e.priority,
+       e.deadline_at
+FROM pc.waitlist_entries e
+WHERE e.org_id = sqlc.arg(org_id) AND e.subject_type = 'approval_request' AND e.subject_id = sqlc.arg(request_id)
+  AND e.deadline_at > now()
+ORDER BY e.created_at DESC
+LIMIT 1;
+
+-- name: CloseRequestEntry :execrows
+UPDATE pc.waitlist_entries
+SET state = sqlc.arg(state), decided_by = sqlc.arg(decided_by), decided_at = now(), decision_reason = sqlc.arg(reason)
+WHERE org_id = sqlc.arg(org_id) AND subject_type = 'approval_request' AND subject_id = sqlc.arg(request_id) AND state = 'OPEN';
+
+-- Eligibility (HR-170): the people around a request's agent, run and
+-- grant chain, read again whenever a response counts.
+-- name: ApprovalEligibilityContext :one
+SELECT a.owner_user_id, a.backup_owner_user_id, a.team_id, t.business_unit_id, a.environment_id,
+       r.launcher_user_id, r.launcher_sa_id, r.launcher_instance_id, r.principal_user_id, r.principal_sa_id,
+       ar.run_id, ar.grant_id, ar.requirements, ar.subject_kind, ar.requested_by
+FROM pc.approval_requests ar
+JOIN pc.agents a ON a.org_id = ar.org_id AND a.id = ar.agent_id
+LEFT JOIN pc.teams t ON t.org_id = a.org_id AND t.id = a.team_id
+LEFT JOIN pc.runs r ON r.org_id = ar.org_id AND r.id = ar.run_id
+WHERE ar.org_id = sqlc.arg(org_id) AND ar.id = sqlc.arg(id);
+
+-- Everyone who issued or revised a grant of the chain (decision 3).
+-- name: ChainIssuers :many
+SELECT g.grantor_id AS user_id FROM pc.grant_lineage l
+JOIN pc.grants g ON g.org_id = l.org_id AND g.id = l.ancestor_id
+WHERE l.org_id = sqlc.arg(org_id) AND l.grant_id = sqlc.arg(grant_id) AND g.grantor_kind = 'user'
+UNION
+SELECT substr(v.created_by, 6)::uuid FROM pc.grant_lineage l
+JOIN pc.grant_revisions v ON v.org_id = l.org_id AND v.grant_id = l.ancestor_id
+WHERE l.org_id = sqlc.arg(org_id) AND l.grant_id = sqlc.arg(grant_id) AND v.created_by ~ '^user:[0-9a-f-]{36}$';
+
+-- name: EligibilityUsers :many
+SELECT id, state, created_at FROM pc.users WHERE org_id = sqlc.arg(org_id) AND id = ANY (sqlc.arg(ids)::uuid[]);
+
+-- Bindings of approval roles on the agent's scope path.
+-- name: EligibilityBindings :many
+SELECT user_id::uuid AS user_id, role, created_at, created_by FROM pc.role_bindings
+WHERE org_id = sqlc.arg(org_id) AND user_id = ANY (sqlc.arg(ids)::uuid[]) AND role = ANY (sqlc.arg(roles)::text[])
+  AND (scope_type = 'ORG'
+    OR (scope_type = 'BUSINESS_UNIT' AND business_unit_id = sqlc.narg(business_unit_id)::uuid)
+    OR (scope_type = 'TEAM' AND team_id = sqlc.narg(team_id)::uuid)
+    OR (scope_type = 'ENVIRONMENT' AND environment_id = sqlc.narg(environment_id)::uuid));
+
+-- name: EligibilityCredentials :many
+SELECT id, user_id, created_at FROM pc.webauthn_credentials
+WHERE org_id = sqlc.arg(org_id) AND user_id = ANY (sqlc.arg(ids)::uuid[]) AND state = 'ACTIVE';
+
+-- name: ApprovalCooldowns :one
+SELECT s.min_account_age_s, s.min_role_age_s, s.min_credential_age_s, s.self_grant_delay_s
+FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = sqlc.arg(org_id);
+
+-- The responses that count toward a request's requirements.
+-- name: CountingResponses :many
+SELECT id, user_id, credential_id::uuid AS credential_id, requirement::integer AS requirement
+FROM pc.approval_responses
+WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id) AND kind IN ('APPROVE', 'STEP_UP')
+  AND voided_at IS NULL
+ORDER BY created_at, id;
+
+-- name: VoidResponse :execrows
+UPDATE pc.approval_responses SET voided_at = now(), void_reason = sqlc.arg(reason)
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND voided_at IS NULL;

@@ -15,6 +15,84 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
+const approvalCooldowns = `-- name: ApprovalCooldowns :one
+SELECT s.min_account_age_s, s.min_role_age_s, s.min_credential_age_s, s.self_grant_delay_s
+FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = $1
+`
+
+type ApprovalCooldownsRow struct {
+	MinAccountAgeS    *int32
+	MinRoleAgeS       *int32
+	MinCredentialAgeS *int32
+	SelfGrantDelayS   *int32
+}
+
+func (q *Queries) ApprovalCooldowns(ctx context.Context, orgID ids.OrgID) (ApprovalCooldownsRow, error) {
+	row := q.db.QueryRow(ctx, approvalCooldowns, orgID)
+	var i ApprovalCooldownsRow
+	err := row.Scan(
+		&i.MinAccountAgeS,
+		&i.MinRoleAgeS,
+		&i.MinCredentialAgeS,
+		&i.SelfGrantDelayS,
+	)
+	return i, err
+}
+
+const approvalEligibilityContext = `-- name: ApprovalEligibilityContext :one
+SELECT a.owner_user_id, a.backup_owner_user_id, a.team_id, t.business_unit_id, a.environment_id,
+       r.launcher_user_id, r.launcher_sa_id, r.launcher_instance_id, r.principal_user_id, r.principal_sa_id,
+       ar.run_id, ar.grant_id, ar.requirements, ar.subject_kind, ar.requested_by
+FROM pc.approval_requests ar
+JOIN pc.agents a ON a.org_id = ar.org_id AND a.id = ar.agent_id
+LEFT JOIN pc.teams t ON t.org_id = a.org_id AND t.id = a.team_id
+LEFT JOIN pc.runs r ON r.org_id = ar.org_id AND r.id = ar.run_id
+WHERE ar.org_id = $1 AND ar.id = $2
+`
+
+type ApprovalEligibilityContextRow struct {
+	OwnerUserID        *ids.UUID
+	BackupOwnerUserID  *ids.UUID
+	TeamID             *ids.UUID
+	BusinessUnitID     *ids.UUID
+	EnvironmentID      *ids.UUID
+	LauncherUserID     *ids.UUID
+	LauncherSaID       *ids.UUID
+	LauncherInstanceID *ids.UUID
+	PrincipalUserID    *ids.UUID
+	PrincipalSaID      *ids.UUID
+	RunID              *ids.UUID
+	GrantID            *ids.UUID
+	Requirements       []byte
+	SubjectKind        string
+	RequestedBy        *ids.UUID
+}
+
+// Eligibility (HR-170): the people around a request's agent, run and
+// grant chain, read again whenever a response counts.
+func (q *Queries) ApprovalEligibilityContext(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (ApprovalEligibilityContextRow, error) {
+	row := q.db.QueryRow(ctx, approvalEligibilityContext, orgID, iD)
+	var i ApprovalEligibilityContextRow
+	err := row.Scan(
+		&i.OwnerUserID,
+		&i.BackupOwnerUserID,
+		&i.TeamID,
+		&i.BusinessUnitID,
+		&i.EnvironmentID,
+		&i.LauncherUserID,
+		&i.LauncherSaID,
+		&i.LauncherInstanceID,
+		&i.PrincipalUserID,
+		&i.PrincipalSaID,
+		&i.RunID,
+		&i.GrantID,
+		&i.Requirements,
+		&i.SubjectKind,
+		&i.RequestedBy,
+	)
+	return i, err
+}
+
 const approvalVariants = `-- name: ApprovalVariants :many
 SELECT id, created_at, state FROM pc.approval_requests
 WHERE org_id = $1 AND variant_key = $2
@@ -101,6 +179,297 @@ func (q *Queries) ApprovedForTarget(ctx context.Context, arg ApprovedForTargetPa
 	return items, nil
 }
 
+const chainIssuers = `-- name: ChainIssuers :many
+SELECT g.grantor_id AS user_id FROM pc.grant_lineage l
+JOIN pc.grants g ON g.org_id = l.org_id AND g.id = l.ancestor_id
+WHERE l.org_id = $1 AND l.grant_id = $2 AND g.grantor_kind = 'user'
+UNION
+SELECT substr(v.created_by, 6)::uuid FROM pc.grant_lineage l
+JOIN pc.grant_revisions v ON v.org_id = l.org_id AND v.grant_id = l.ancestor_id
+WHERE l.org_id = $1 AND l.grant_id = $2 AND v.created_by ~ '^user:[0-9a-f-]{36}$'
+`
+
+// Everyone who issued or revised a grant of the chain (decision 3).
+func (q *Queries) ChainIssuers(ctx context.Context, orgID ids.OrgID, grantID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, chainIssuers, orgID, grantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var user_id ids.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const closeRequestEntry = `-- name: CloseRequestEntry :execrows
+UPDATE pc.waitlist_entries
+SET state = $1, decided_by = $2, decided_at = now(), decision_reason = $3
+WHERE org_id = $4 AND subject_type = 'approval_request' AND subject_id = $5 AND state = 'OPEN'
+`
+
+type CloseRequestEntryParams struct {
+	State     string
+	DecidedBy *string
+	Reason    string
+	OrgID     ids.OrgID
+	RequestID ids.UUID
+}
+
+func (q *Queries) CloseRequestEntry(ctx context.Context, arg CloseRequestEntryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeRequestEntry,
+		arg.State,
+		arg.DecidedBy,
+		arg.Reason,
+		arg.OrgID,
+		arg.RequestID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const consumeApprovalRequest = `-- name: ConsumeApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'CONSUMED', consumed_at = now(), permit_id = $1, ended_at = now()
+WHERE org_id = $2 AND id = $3 AND state = 'APPROVED' AND binding = $4
+  AND consume_by > now() AND deadline_at > now()
+RETURNING grant_id, run_id
+`
+
+type ConsumeApprovalRequestParams struct {
+	PermitID *ids.UUID
+	OrgID    ids.OrgID
+	ID       ids.UUID
+	Binding  []byte
+}
+
+type ConsumeApprovalRequestRow struct {
+	GrantID *ids.UUID
+	RunID   *ids.UUID
+}
+
+// An approved request is consumed at most once, by the finalization that
+// issues the permit, before its deadline and its consume-by time (HR-171).
+func (q *Queries) ConsumeApprovalRequest(ctx context.Context, arg ConsumeApprovalRequestParams) (ConsumeApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, consumeApprovalRequest,
+		arg.PermitID,
+		arg.OrgID,
+		arg.ID,
+		arg.Binding,
+	)
+	var i ConsumeApprovalRequestRow
+	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
+}
+
+const countRecentVariants = `-- name: CountRecentVariants :one
+SELECT count(DISTINCT transaction_id)::integer FROM pc.approval_requests
+WHERE org_id = $1 AND variant_key = $2 AND created_at > now() - interval '24 hours'
+`
+
+// Distinct held transactions of one variant key in the last 24 hours
+// (HR-037: the third raises security.variant_suspected).
+func (q *Queries) CountRecentVariants(ctx context.Context, orgID ids.OrgID, variantKey []byte) (int32, error) {
+	row := q.db.QueryRow(ctx, countRecentVariants, orgID, variantKey)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countingResponses = `-- name: CountingResponses :many
+SELECT id, user_id, credential_id::uuid AS credential_id, requirement::integer AS requirement
+FROM pc.approval_responses
+WHERE org_id = $1 AND request_id = $2 AND kind IN ('APPROVE', 'STEP_UP')
+  AND voided_at IS NULL
+ORDER BY created_at, id
+`
+
+type CountingResponsesRow struct {
+	ID           ids.UUID
+	UserID       ids.UUID
+	CredentialID ids.UUID
+	Requirement  int32
+}
+
+// The responses that count toward a request's requirements.
+func (q *Queries) CountingResponses(ctx context.Context, orgID ids.OrgID, requestID ids.UUID) ([]CountingResponsesRow, error) {
+	rows, err := q.db.Query(ctx, countingResponses, orgID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountingResponsesRow{}
+	for rows.Next() {
+		var i CountingResponsesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.Requirement,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const eligibilityBindings = `-- name: EligibilityBindings :many
+SELECT user_id::uuid AS user_id, role, created_at, created_by FROM pc.role_bindings
+WHERE org_id = $1 AND user_id = ANY ($2::uuid[]) AND role = ANY ($3::text[])
+  AND (scope_type = 'ORG'
+    OR (scope_type = 'BUSINESS_UNIT' AND business_unit_id = $4::uuid)
+    OR (scope_type = 'TEAM' AND team_id = $5::uuid)
+    OR (scope_type = 'ENVIRONMENT' AND environment_id = $6::uuid))
+`
+
+type EligibilityBindingsParams struct {
+	OrgID          ids.OrgID
+	Ids            []ids.UUID
+	Roles          []string
+	BusinessUnitID *ids.UUID
+	TeamID         *ids.UUID
+	EnvironmentID  *ids.UUID
+}
+
+type EligibilityBindingsRow struct {
+	UserID    ids.UUID
+	Role      string
+	CreatedAt time.Time
+	CreatedBy string
+}
+
+// Bindings of approval roles on the agent's scope path.
+func (q *Queries) EligibilityBindings(ctx context.Context, arg EligibilityBindingsParams) ([]EligibilityBindingsRow, error) {
+	rows, err := q.db.Query(ctx, eligibilityBindings,
+		arg.OrgID,
+		arg.Ids,
+		arg.Roles,
+		arg.BusinessUnitID,
+		arg.TeamID,
+		arg.EnvironmentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EligibilityBindingsRow{}
+	for rows.Next() {
+		var i EligibilityBindingsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Role,
+			&i.CreatedAt,
+			&i.CreatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const eligibilityCredentials = `-- name: EligibilityCredentials :many
+SELECT id, user_id, created_at FROM pc.webauthn_credentials
+WHERE org_id = $1 AND user_id = ANY ($2::uuid[]) AND state = 'ACTIVE'
+`
+
+type EligibilityCredentialsRow struct {
+	ID        ids.UUID
+	UserID    ids.UUID
+	CreatedAt time.Time
+}
+
+func (q *Queries) EligibilityCredentials(ctx context.Context, orgID ids.OrgID, ids []ids.UUID) ([]EligibilityCredentialsRow, error) {
+	rows, err := q.db.Query(ctx, eligibilityCredentials, orgID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EligibilityCredentialsRow{}
+	for rows.Next() {
+		var i EligibilityCredentialsRow
+		if err := rows.Scan(&i.ID, &i.UserID, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const eligibilityUsers = `-- name: EligibilityUsers :many
+SELECT id, state, created_at FROM pc.users WHERE org_id = $1 AND id = ANY ($2::uuid[])
+`
+
+type EligibilityUsersRow struct {
+	ID        ids.UUID
+	State     string
+	CreatedAt time.Time
+}
+
+func (q *Queries) EligibilityUsers(ctx context.Context, orgID ids.OrgID, ids []ids.UUID) ([]EligibilityUsersRow, error) {
+	rows, err := q.db.Query(ctx, eligibilityUsers, orgID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EligibilityUsersRow{}
+	for rows.Next() {
+		var i EligibilityUsersRow
+		if err := rows.Scan(&i.ID, &i.State, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const expireApprovalRequest = `-- name: ExpireApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'EXPIRED', end_reason = 'APPROVAL_EXPIRED', ended_at = now()
+WHERE org_id = $1 AND id = $2 AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (deadline_at <= now()
+    OR (state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at <= now())
+    OR (state = 'APPROVED' AND consume_by <= now()))
+RETURNING grant_id, run_id
+`
+
+type ExpireApprovalRequestRow struct {
+	GrantID *ids.UUID
+	RunID   *ids.UUID
+}
+
+// A live request past its deadline, evidence deadline or consume-by time
+// expires, by the database clock (HR-039).
+func (q *Queries) ExpireApprovalRequest(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (ExpireApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, expireApprovalRequest, orgID, iD)
+	var i ExpireApprovalRequestRow
+	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
+}
+
 const getWaitlistSettings = `-- name: GetWaitlistSettings :one
 SELECT org_id, batch_ceilings, hold_deadline_s, consume_window_s, access_request_deadline_s, tool_review_deadline_s, restoration_deadline_s, reconciliation_deadline_s, max_holds_per_grant, max_holds_per_run, min_account_age_s, min_role_age_s, min_credential_age_s, self_grant_delay_s, updated_by, updated_at FROM pc.waitlist_settings WHERE org_id = $1
 `
@@ -127,6 +496,111 @@ func (q *Queries) GetWaitlistSettings(ctx context.Context, orgID ids.OrgID) (PcW
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const holdCaps = `-- name: HoldCaps :one
+SELECT coalesce(s.max_holds_per_grant, 20)::integer AS per_grant, coalesce(s.max_holds_per_run, 5)::integer AS per_run
+FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = $1
+`
+
+type HoldCapsRow struct {
+	PerGrant int32
+	PerRun   int32
+}
+
+func (q *Queries) HoldCaps(ctx context.Context, orgID ids.OrgID) (HoldCapsRow, error) {
+	row := q.db.QueryRow(ctx, holdCaps, orgID)
+	var i HoldCapsRow
+	err := row.Scan(&i.PerGrant, &i.PerRun)
+	return i, err
+}
+
+const insertApprovalRequest = `-- name: InsertApprovalRequest :exec
+INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id,
+    grant_revision, variant_key, operation, previous_id, binding, binding_input, requirements, display, display_hash,
+    deadline_at)
+VALUES ($1, $2, 'ACTION', $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15,
+    $16, $17)
+`
+
+type InsertApprovalRequestParams struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	AgentID       ids.UUID
+	TransactionID *ids.UUID
+	Evaluation    *int32
+	RunID         *ids.UUID
+	GrantID       *ids.UUID
+	GrantRevision *int32
+	VariantKey    []byte
+	Operation     string
+	PreviousID    *ids.UUID
+	Binding       []byte
+	BindingInput  []byte
+	Requirements  []byte
+	Display       []byte
+	DisplayHash   []byte
+	DeadlineAt    time.Time
+}
+
+// The finalization records a hold (HR-171): a new request, inserted once
+// with its binding fixed.
+func (q *Queries) InsertApprovalRequest(ctx context.Context, arg InsertApprovalRequestParams) error {
+	_, err := q.db.Exec(ctx, insertApprovalRequest,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.TransactionID,
+		arg.Evaluation,
+		arg.RunID,
+		arg.GrantID,
+		arg.GrantRevision,
+		arg.VariantKey,
+		arg.Operation,
+		arg.PreviousID,
+		arg.Binding,
+		arg.BindingInput,
+		arg.Requirements,
+		arg.Display,
+		arg.DisplayHash,
+		arg.DeadlineAt,
+	)
+	return err
+}
+
+const insertHoldEntry = `-- name: InsertHoldEntry :exec
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, priority,
+    deadline_at)
+VALUES ($1, $2, 'ACTION_HOLD', 'approval_request', $3, $4,
+    $5, $6, $7, $8)
+`
+
+type InsertHoldEntryParams struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	RequestID     ids.UUID
+	AgentID       *ids.UUID
+	RunID         *ids.UUID
+	TransactionID *ids.UUID
+	Priority      int16
+	DeadlineAt    time.Time
+}
+
+// The ACTION_HOLD entry of a request (HR-177).
+func (q *Queries) InsertHoldEntry(ctx context.Context, arg InsertHoldEntryParams) error {
+	_, err := q.db.Exec(ctx, insertHoldEntry,
+		arg.OrgID,
+		arg.ID,
+		arg.RequestID,
+		arg.AgentID,
+		arg.RunID,
+		arg.TransactionID,
+		arg.Priority,
+		arg.DeadlineAt,
+	)
+	return err
 }
 
 const latestApprovalRequest = `-- name: LatestApprovalRequest :one
@@ -182,6 +656,71 @@ func (q *Queries) LatestApprovalRequest(ctx context.Context, orgID ids.OrgID, ru
 	return i, err
 }
 
+const lockApprovalRequest = `-- name: LockApprovalRequest :one
+SELECT id, state FROM pc.approval_requests WHERE org_id = $1 AND id = $2 FOR UPDATE
+`
+
+type LockApprovalRequestRow struct {
+	ID    ids.UUID
+	State string
+}
+
+func (q *Queries) LockApprovalRequest(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (LockApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, lockApprovalRequest, orgID, iD)
+	var i LockApprovalRequestRow
+	err := row.Scan(&i.ID, &i.State)
+	return i, err
+}
+
+const releaseHoldSlot = `-- name: ReleaseHoldSlot :execrows
+UPDATE pc.hold_slots SET pending = pending - 1, updated_at = now()
+WHERE org_id = $1 AND scope_kind = $2 AND scope_id = $3 AND pending > 0
+`
+
+func (q *Queries) ReleaseHoldSlot(ctx context.Context, orgID ids.OrgID, scopeKind string, scopeID ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseHoldSlot, orgID, scopeKind, scopeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const reopenApprovalRequest = `-- name: ReopenApprovalRequest :execrows
+UPDATE pc.approval_requests SET state = 'PENDING', approved_at = NULL, consume_by = NULL
+WHERE org_id = $1 AND id = $2 AND state = 'APPROVED'
+`
+
+// An approved request a void left short returns to PENDING.
+func (q *Queries) ReopenApprovalRequest(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, reopenApprovalRequest, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const reopenHoldEntry = `-- name: ReopenHoldEntry :execrows
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, priority,
+    deadline_at)
+SELECT e.org_id, $1, e.kind, e.subject_type, e.subject_id, e.agent_id, e.run_id, e.transaction_id, e.priority,
+       e.deadline_at
+FROM pc.waitlist_entries e
+WHERE e.org_id = $2 AND e.subject_type = 'approval_request' AND e.subject_id = $3
+  AND e.deadline_at > now()
+ORDER BY e.created_at DESC
+LIMIT 1
+`
+
+// A request that returns to PENDING gets a new open entry with the priority
+// and deadline of its last one (one open entry per subject).
+func (q *Queries) ReopenHoldEntry(ctx context.Context, iD ids.UUID, orgID ids.OrgID, requestID ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, reopenHoldEntry, iD, orgID, requestID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const runAncestors = `-- name: RunAncestors :many
 WITH RECURSIVE up (id, depth) AS (
     SELECT r.parent_run_id, 1 FROM pc.runs r WHERE r.org_id = $1 AND r.id = $2
@@ -228,4 +767,67 @@ func (q *Queries) RunAncestors(ctx context.Context, orgID ids.OrgID, iD ids.UUID
 		return nil, err
 	}
 	return items, nil
+}
+
+const supersedeApprovalRequest = `-- name: SupersedeApprovalRequest :one
+UPDATE pc.approval_requests
+SET state = 'SUPERSEDED', end_reason = 'BINDING_CHANGED', ended_at = now()
+WHERE org_id = $1 AND id = $2 AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+RETURNING grant_id, run_id
+`
+
+type SupersedeApprovalRequestRow struct {
+	GrantID *ids.UUID
+	RunID   *ids.UUID
+}
+
+// A live request whose binding no longer matches is superseded, never
+// updated.
+func (q *Queries) SupersedeApprovalRequest(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (SupersedeApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, supersedeApprovalRequest, orgID, iD)
+	var i SupersedeApprovalRequestRow
+	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
+}
+
+const takeHoldSlot = `-- name: TakeHoldSlot :execrows
+INSERT INTO pc.hold_slots (org_id, scope_kind, scope_id, pending)
+VALUES ($1, $2, $3, 1)
+ON CONFLICT (org_id, scope_kind, scope_id) DO UPDATE SET pending = pc.hold_slots.pending + 1, updated_at = now()
+WHERE pc.hold_slots.pending < $4::integer
+`
+
+type TakeHoldSlotParams struct {
+	OrgID     ids.OrgID
+	ScopeKind string
+	ScopeID   ids.UUID
+	Cap       int32
+}
+
+// Pending holds per grant and per run (HR-037): a slot is taken by a
+// conditional update below the cap, so concurrent holds cannot exceed it.
+func (q *Queries) TakeHoldSlot(ctx context.Context, arg TakeHoldSlotParams) (int64, error) {
+	result, err := q.db.Exec(ctx, takeHoldSlot,
+		arg.OrgID,
+		arg.ScopeKind,
+		arg.ScopeID,
+		arg.Cap,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const voidResponse = `-- name: VoidResponse :execrows
+UPDATE pc.approval_responses SET voided_at = now(), void_reason = $1
+WHERE org_id = $2 AND id = $3 AND voided_at IS NULL
+`
+
+func (q *Queries) VoidResponse(ctx context.Context, reason *string, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, voidResponse, reason, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
