@@ -93,12 +93,13 @@ func (w *Writer) RequestAccess(ctx context.Context, run ids.UUID, note string, t
 
 // RequestWorkloadAccess files an access request from a run's workload,
 // citing one of its own run's denials about the grant's scope, at most 3
-// per run (decision 10). The note is UNTRUSTED. It returns the entry.
-func (w *Writer) RequestWorkloadAccess(ctx context.Context, org ids.OrgID, instance, run, transaction ids.UUID, note string) (ids.UUID, error) {
+// per run (decision 10). The note is UNTRUSTED. It returns the entry (the
+// grant's open one, when there is one).
+func (w *Writer) RequestWorkloadAccess(ctx context.Context, org ids.OrgID, instance, run, transaction ids.UUID, note string) (Entry, error) {
 	if err := checkNote(note); err != nil {
-		return ids.UUID{}, err
+		return Entry{}, err
 	}
-	var out ids.UUID
+	var out Entry
 	err := w.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		r, err := q.GetRun(ctx, org, run)
@@ -124,10 +125,14 @@ func (w *Writer) RequestWorkloadAccess(ctx context.Context, org ids.OrgID, insta
 			return ErrAccessRequestLimit
 		}
 		actor := evdomain.Actor{Type: "instance", ID: instance.String()}
-		out, err = openAccess(ctx, tx, q, org, r.PcRun, pgwaitlist.AccessRequest{
+		id, err := openAccess(ctx, tx, q, org, r.PcRun, pgwaitlist.AccessRequest{
 			Run: run, Agent: r.PcRun.AgentID, Transaction: &transaction, Reason: t.ReasonCode, Note: note,
 			RequestedBy: "instance:" + instance.String(),
 		}, actor)
+		if err != nil {
+			return err
+		}
+		out, err = entryOf(ctx, q, org, id)
 		return err
 	})
 	return out, err

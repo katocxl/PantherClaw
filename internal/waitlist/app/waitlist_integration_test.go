@@ -278,11 +278,11 @@ func TestHR176_AWorkloadCitesOnlyItsOwnScopeDenials(t *testing.T) {
 		}
 	}
 	for i := range 3 {
-		id, err := f.w.RequestWorkloadAccess(context.Background(), f.org, f.instance, f.run, scope, "please")
+		e, err := f.w.RequestWorkloadAccess(context.Background(), f.org, f.instance, f.run, scope, "please")
 		if err != nil {
 			t.Fatalf("request %d: %v", i+1, err)
 		}
-		if _, err := f.w.DismissAccessRequest(f.as(f.ben, td.RoleGrantIssuer), id, "no"); err != nil {
+		if _, err := f.w.DismissAccessRequest(f.as(f.ben, td.RoleGrantIssuer), e.ID, "no"); err != nil {
 			t.Fatal(err)
 		}
 	}
