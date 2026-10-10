@@ -16,6 +16,31 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
+const agentChangeCount = `-- name: AgentChangeCount :one
+SELECT count(*)::bigint FROM pc.agent_changes WHERE org_id = $1 AND agent_id = $2
+`
+
+// An agent's recorded changes: a restoration binds their count, so any
+// later change to the agent gives a different binding.
+func (q *Queries) AgentChangeCount(ctx context.Context, orgID ids.OrgID, agentID ids.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, agentChangeCount, orgID, agentID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const agentSuspendedAt = `-- name: AgentSuspendedAt :one
+SELECT coalesce(max(created_at), now())::timestamptz FROM pc.agent_changes
+WHERE org_id = $1 AND agent_id = $2 AND kind = 'agent.suspended'
+`
+
+func (q *Queries) AgentSuspendedAt(ctx context.Context, orgID ids.OrgID, agentID ids.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, agentSuspendedAt, orgID, agentID)
+	var column_1 time.Time
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const approvalCooldowns = `-- name: ApprovalCooldowns :one
 SELECT s.min_account_age_s, s.min_role_age_s, s.min_credential_age_s, s.self_grant_delay_s
 FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = $1
@@ -313,6 +338,20 @@ func (q *Queries) ConsumeBindingCeremony(ctx context.Context, arg ConsumeBinding
 		arg.UserID,
 		arg.SessionID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const consumeRestoration = `-- name: ConsumeRestoration :execrows
+UPDATE pc.approval_requests SET state = 'CONSUMED', consumed_at = now(), ended_at = now()
+WHERE org_id = $1 AND id = $2 AND subject_kind = 'RESTORATION' AND state = 'APPROVED'
+`
+
+// An approved restoration is used at once, in its approval's transaction.
+func (q *Queries) ConsumeRestoration(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeRestoration, orgID, iD)
 	if err != nil {
 		return 0, err
 	}
@@ -873,6 +912,45 @@ func (q *Queries) InsertHoldEntry(ctx context.Context, arg InsertHoldEntryParams
 	return err
 }
 
+const insertRestorationRequest = `-- name: InsertRestorationRequest :exec
+INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, requested_by, operation, binding, binding_input,
+    requirements, display, display_hash, deadline_at)
+VALUES ($1, $2, 'RESTORATION', $3, $4, 'agent.restore',
+    $5, $6, $7, $8, $9,
+    $10)
+`
+
+type InsertRestorationRequestParams struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	AgentID      ids.UUID
+	RequestedBy  *ids.UUID
+	Binding      []byte
+	BindingInput []byte
+	Requirements []byte
+	Display      []byte
+	DisplayHash  []byte
+	DeadlineAt   time.Time
+}
+
+// Restorations (G0 M5 part 2 slice 210, decision 11): an approval request
+// with subject kind RESTORATION, at most one live per agent.
+func (q *Queries) InsertRestorationRequest(ctx context.Context, arg InsertRestorationRequestParams) error {
+	_, err := q.db.Exec(ctx, insertRestorationRequest,
+		arg.OrgID,
+		arg.ID,
+		arg.AgentID,
+		arg.RequestedBy,
+		arg.Binding,
+		arg.BindingInput,
+		arg.Requirements,
+		arg.Display,
+		arg.DisplayHash,
+		arg.DeadlineAt,
+	)
+	return err
+}
+
 const invalidateApprovalRequest = `-- name: InvalidateApprovalRequest :one
 UPDATE pc.approval_requests SET state = 'INVALIDATED', end_reason = $1, ended_at = now()
 WHERE org_id = $2 AND id = $3 AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
@@ -988,6 +1066,19 @@ func (q *Queries) LiveRequestOfTransaction(ctx context.Context, orgID ids.OrgID,
 	return i, err
 }
 
+const liveRestoration = `-- name: LiveRestoration :one
+SELECT id FROM pc.approval_requests
+WHERE org_id = $1 AND agent_id = $2 AND subject_kind = 'RESTORATION'
+  AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+`
+
+func (q *Queries) LiveRestoration(ctx context.Context, orgID ids.OrgID, agentID ids.UUID) (ids.UUID, error) {
+	row := q.db.QueryRow(ctx, liveRestoration, orgID, agentID)
+	var id ids.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockApprovalRequest = `-- name: LockApprovalRequest :one
 SELECT id, state FROM pc.approval_requests WHERE org_id = $1 AND id = $2 FOR UPDATE
 `
@@ -1062,6 +1153,48 @@ func (q *Queries) MootApprovalRequests(ctx context.Context, orgID ids.OrgID) ([]
 	items := []MootApprovalRequestsRow{}
 	for rows.Next() {
 		var i MootApprovalRequestsRow
+		if err := rows.Scan(&i.ID, &i.Reason); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const mootRestorations = `-- name: MootRestorations :many
+SELECT r.id, (CASE WHEN a.state = 'RETIRED' THEN 'AGENT_RETIRED'
+                   WHEN a.state <> 'SUSPENDED' THEN 'AGENT_NOT_SUSPENDED'
+                   ELSE 'AGENT_CHANGED' END)::text AS reason
+FROM pc.approval_requests r
+JOIN pc.agents a ON a.org_id = r.org_id AND a.id = r.agent_id
+WHERE r.org_id = $1 AND r.subject_kind = 'RESTORATION'
+  AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (a.state <> 'SUSPENDED'
+       OR (convert_from(r.binding_input, 'UTF8')::jsonb ->> 'agent_change_seq')::bigint
+          <> (SELECT count(*) FROM pc.agent_changes c WHERE c.org_id = r.org_id AND c.agent_id = r.agent_id))
+ORDER BY r.created_at
+LIMIT 500
+`
+
+type MootRestorationsRow struct {
+	ID     ids.UUID
+	Reason string
+}
+
+// Live restorations made moot: the agent left SUSPENDED (it was retired)
+// or changed since the request was made.
+func (q *Queries) MootRestorations(ctx context.Context, orgID ids.OrgID) ([]MootRestorationsRow, error) {
+	rows, err := q.db.Query(ctx, mootRestorations, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MootRestorationsRow{}
+	for rows.Next() {
+		var i MootRestorationsRow
 		if err := rows.Scan(&i.ID, &i.Reason); err != nil {
 			return nil, err
 		}

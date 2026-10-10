@@ -361,3 +361,47 @@ SELECT id, author_kind, author_user_id, author_instance_id, note, created_at
 FROM pc.approval_evidence
 WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
 ORDER BY created_at, id;
+
+-- Restorations (G0 M5 part 2 slice 210, decision 11): an approval request
+-- with subject kind RESTORATION, at most one live per agent.
+-- name: InsertRestorationRequest :exec
+INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, requested_by, operation, binding, binding_input,
+    requirements, display, display_hash, deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'RESTORATION', sqlc.arg(agent_id), sqlc.arg(requested_by), 'agent.restore',
+    sqlc.arg(binding), sqlc.arg(binding_input), sqlc.arg(requirements), sqlc.arg(display), sqlc.arg(display_hash),
+    sqlc.arg(deadline_at));
+
+-- name: LiveRestoration :one
+SELECT id FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND subject_kind = 'RESTORATION'
+  AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED');
+
+-- An agent's recorded changes: a restoration binds their count, so any
+-- later change to the agent gives a different binding.
+-- name: AgentChangeCount :one
+SELECT count(*)::bigint FROM pc.agent_changes WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id);
+
+-- name: AgentSuspendedAt :one
+SELECT coalesce(max(created_at), now())::timestamptz FROM pc.agent_changes
+WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND kind = 'agent.suspended';
+
+-- An approved restoration is used at once, in its approval's transaction.
+-- name: ConsumeRestoration :execrows
+UPDATE pc.approval_requests SET state = 'CONSUMED', consumed_at = now(), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND subject_kind = 'RESTORATION' AND state = 'APPROVED';
+
+-- Live restorations made moot: the agent left SUSPENDED (it was retired)
+-- or changed since the request was made.
+-- name: MootRestorations :many
+SELECT r.id, (CASE WHEN a.state = 'RETIRED' THEN 'AGENT_RETIRED'
+                   WHEN a.state <> 'SUSPENDED' THEN 'AGENT_NOT_SUSPENDED'
+                   ELSE 'AGENT_CHANGED' END)::text AS reason
+FROM pc.approval_requests r
+JOIN pc.agents a ON a.org_id = r.org_id AND a.id = r.agent_id
+WHERE r.org_id = sqlc.arg(org_id) AND r.subject_kind = 'RESTORATION'
+  AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (a.state <> 'SUSPENDED'
+       OR (convert_from(r.binding_input, 'UTF8')::jsonb ->> 'agent_change_seq')::bigint
+          <> (SELECT count(*) FROM pc.agent_changes c WHERE c.org_id = r.org_id AND c.agent_id = r.agent_id))
+ORDER BY r.created_at
+LIMIT 500;

@@ -36,7 +36,8 @@ type Swept struct {
 // SweepOrg keeps one org's approval queue honest (decision 6, HR-039,
 // HR-170): it expires requests past a deadline, invalidates live requests
 // made moot by a change of containment, agent, run, grant chain or
-// definition, and checks the people of every counting response again
+// definition (and restorations whose agent was retired or changed), and
+// checks the people of every counting response again
 // (voiding responses of removed roles, disabled users and removed or
 // suspended keys, and returning approvals no longer met to PENDING).
 // Correctness never depends on it: expiry is checked at use, a material
@@ -56,6 +57,13 @@ func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) 
 		}
 		if moot, err = q.MootApprovalRequests(ctx, org); err != nil {
 			return err
+		}
+		restorations, err := q.MootRestorations(ctx, org)
+		if err != nil {
+			return err
+		}
+		for _, r := range restorations {
+			moot = append(moot, dbq.MootApprovalRequestsRow(r))
 		}
 		responded, err = q.RequestsWithResponses(ctx, org)
 		return err

@@ -157,7 +157,7 @@ func (f *fakeApprovals) View(ctx context.Context, id ids.UUID) (apapp.View, erro
 	may := !f.readOnly
 	return apapp.View{
 		MayRespond: may, MayApprove: may, Params: apdomain.Untrusted{Text: `{"amount":{"value":"40.00","currency":"USD"}}`},
-		Request: apapp.Request{ID: id, DeadlineAt: now.Add(time.Hour)},
+		Request: apapp.Request{ID: id, SubjectKind: "ACTION", DeadlineAt: now.Add(time.Hour)},
 		Display: apdomain.Display{
 			V: 1, Kind: "ACTION", Title: "Refund 40.00 USD",
 			Consequence: apdomain.Consequence{

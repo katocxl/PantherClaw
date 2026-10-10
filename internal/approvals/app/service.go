@@ -44,6 +44,7 @@ var (
 		"the evidence deadline must be in the future and before the request's deadline")
 	ErrTooMuchEvidence = pcerr.New(pcerr.ResourceExhausted, "EVIDENCE_LIMIT_REACHED", "the request has its maximum of evidence notes")
 	ErrNoProposals     = pcerr.New(pcerr.FailedPrecondition, "PROPOSAL_UNAVAILABLE", "this request cannot take a narrower proposal")
+	ErrNoEvidence      = pcerr.New(pcerr.FailedPrecondition, "EVIDENCE_UNAVAILABLE", "this request cannot take evidence")
 	// ErrCeremony refuses an approval whose BINDING ceremony is unknown,
 	// used, expired or bound to another session, user or request (HR-033).
 	ErrCeremony = pcerr.New(pcerr.PermissionDenied, "CEREMONY_INVALID", "the security key ceremony is not valid for this approval")

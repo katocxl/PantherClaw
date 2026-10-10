@@ -106,6 +106,9 @@ func (s *Service) RequestEvidence(ctx context.Context, id ids.UUID, question, no
 		if !l.mayRespond(r.User) {
 			return refuse(ctx, q, c, l)
 		}
+		if l.row.SubjectKind != subjectAction {
+			return ErrNoEvidence // a restoration has no run to give it
+		}
 		if !waiting(l.row, l.elig.Context.Now, apdomain.StatePending) {
 			return ErrNotWaiting
 		}
@@ -356,7 +359,7 @@ func (s *Service) Approve(ctx context.Context, orgID ids.OrgID, r Responder, id 
 		} else {
 			return err
 		}
-		if l.row.SubjectKind != "ACTION" || !waiting(l.row, l.elig.Context.Now, apdomain.StatePending) {
+		if !approvalSubject(l.row.SubjectKind) || !waiting(l.row, l.elig.Context.Now, apdomain.StatePending) {
 			return ErrNotWaiting
 		}
 		reqs := l.elig.Requirements
@@ -387,6 +390,15 @@ func (s *Service) Approve(ctx context.Context, orgID ids.OrgID, r Responder, id 
 		if apdomain.Met(reqs, counted) {
 			if err := approved(ctx, tx, q, orgID, l, counted); err != nil {
 				return err
+			}
+			if l.row.SubjectKind == subjectRestoration {
+				if err := restored(ctx, q, orgID, l, r.User); err != nil {
+					return err
+				}
+				if err := event(ctx, tx, "approval.restoration_completed", userActor(r.User), "", id,
+					map[string]string{"agent": l.row.AgentID.String()}); err != nil {
+					return err
+				}
 			}
 		}
 		out, err = q.GetApprovalRequest(ctx, orgID, id)
@@ -479,7 +491,7 @@ func approvable(ctx context.Context, q *dbq.Queries, orgID ids.OrgID, row dbq.Pc
 	if err != nil {
 		return err
 	}
-	if row.SubjectKind != "ACTION" || !waiting(row, e.Context.Now, apdomain.StatePending) {
+	if !approvalSubject(row.SubjectKind) || !waiting(row, e.Context.Now, apdomain.StatePending) {
 		return ErrNotWaiting
 	}
 	me := e.People[user]
