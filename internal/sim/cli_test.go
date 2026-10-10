@@ -37,3 +37,15 @@ func TestPaymentsStopsOnCancel(t *testing.T) {
 		t.Fatalf("no listening log: %s", errb.String())
 	}
 }
+
+func TestMCPStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var out, errb bytes.Buffer
+	if code := Run(ctx, []string{"mcp", "--addr", "127.0.0.1:0", "--legacy", "--ask", "elicitation/create"}, &out, &errb); code != 0 {
+		t.Fatalf("mcp: %d %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "sim.mcp_listening") {
+		t.Fatalf("no listening log: %s", errb.String())
+	}
+}
