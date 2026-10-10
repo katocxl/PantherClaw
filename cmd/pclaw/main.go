@@ -18,7 +18,7 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	code := pclaw.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.LookupEnv, pclaw.Options{OpenBrowser: openBrowser})
+	code := pclaw.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.LookupEnv, pclaw.Options{OpenBrowser: openBrowser, Stdin: os.Stdin})
 	stop()
 	os.Exit(code)
 }

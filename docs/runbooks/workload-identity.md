@@ -25,6 +25,17 @@ How an agent's workload gets an identity PantherClaw can verify: enrollment with
 
 A reused or expired enrollment token is refused and audited. A wrong fingerprint is refused: admit nothing you cannot match.
 
+### Desktop MCP clients (`pclaw mcp proxy`, M6)
+
+An MCP client on a developer's machine (an IDE or a desktop assistant) reaches a gateway connection through `pclaw mcp proxy`. The client starts the proxy as a stdio MCP server. The proxy signs every request with the enrolled desktop key (L1, HR-092) in the run you give it, and posts it to the gateway's `/mcp/{connection}`. It never opens a listener, so nothing else on the machine can borrow the workload's identity through it. Its diagnostics go to stderr. Configure the client like this:
+
+```json
+{"mcpServers": {"payments": {"command": "pclaw", "args": ["mcp", "proxy", "--gateway", "https://gateway.example.com",
+  "--connection", "payments", "--key-file", "/home/dev/.pantherclaw/workload.json", "--run", "<run id>"]}}}
+```
+
+The proxy renews the workload token every 4 minutes. It speaks MCP 2026-07-28 or 2025-11-25, whichever the client does, and opens a new 2025-11-25 session by itself when the gateway ends one. Held calls come back as tasks when the client supports them (G0 M6 design decision 15).
+
 ## 2. GitHub Actions (L2)
 
 1. An admin proposes an entry that pins the repository and owner **ids** (never names) and the workflow refs:

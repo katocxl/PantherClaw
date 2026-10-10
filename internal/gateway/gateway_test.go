@@ -23,6 +23,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	"github.com/katocxl/pantherclaw/internal/credentials/domain"
@@ -30,6 +31,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
+	"github.com/katocxl/pantherclaw/internal/gateway/dispatch"
 	"github.com/katocxl/pantherclaw/internal/gateway/httpproxy"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
@@ -105,6 +107,33 @@ type fakeAuthority struct {
 	creds    *pb.WorkloadCredentials
 	reports  []*pb.ReportUnknownWorkloadRequest
 	actions  []actionir.Parsed
+	verifies int
+	// verifiedRuns are the runs VerifyWorkload was asked about; endedRuns
+	// are refused as run_mismatch.
+	verifiedRuns []string
+	endedRuns    map[string]bool
+}
+
+// VerifyWorkload verifies every workload unless identity is set, as the
+// test instance with testJKT; a named run verifies unless it is in
+// endedRuns, and expires an hour from now.
+func (f *fakeAuthority) VerifyWorkload(_ context.Context, req *pb.VerifyWorkloadRequest) (*pb.VerifyWorkloadResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verifies++
+	f.creds = req.GetWorkload()
+	f.verifiedRuns = append(f.verifiedRuns, req.GetRunId())
+	if f.identity != "" {
+		return &pb.VerifyWorkloadResponse{ErrorCode: f.identity, Nonce: "nonce-2"}, nil
+	}
+	if f.endedRuns[req.GetRunId()] {
+		return &pb.VerifyWorkloadResponse{ErrorCode: "run_mismatch", Nonce: "nonce-2"}, nil
+	}
+	res := &pb.VerifyWorkloadResponse{Verified: true, InstanceId: testAgent, EnvironmentId: testEnv, Jkt: testJKT, Nonce: "nonce-4"}
+	if req.GetRunId() != "" {
+		res.RunExpiresAt = timestamppb.New(time.Now().Add(time.Hour))
+	}
+	return res, nil
 }
 
 func newFakeAuthority(t *testing.T) *fakeAuthority {
@@ -346,18 +375,25 @@ type harness struct {
 	authorityURL string
 	// mutatePkg edits the mock-payments package before it is compiled.
 	mutatePkg func([]byte) []byte
-	broker    *Broker
+	// pkgFile, when set, is the package compiled instead of mock-payments.
+	pkgFile string
+	broker  *Broker
 	// circuits records the gateway's circuit reports.
 	circuitMu sync.Mutex
 	circuits  []string
-	gw        *Gateway
-	url       string
+	// drifts records the gateway's drift reports (under circuitMu).
+	drifts []string
+	gw     *Gateway
+	url    string
 }
 
-// compile decodes and compiles the mock-payments package.
-func compile(t *testing.T, mutate func([]byte) []byte) (*control.Connection, error) {
+// compile decodes and compiles a package file (mock-payments when empty).
+func compile(t *testing.T, file string, mutate func([]byte) []byte) (*control.Connection, error) {
 	t.Helper()
-	raw, err := os.ReadFile("../../packages/mock-payments/package.yaml")
+	if file == "" {
+		file = "../../packages/mock-payments/package.yaml"
+	}
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +427,7 @@ func setup(t *testing.T, opts ...func(*harness)) *harness {
 	for _, o := range opts {
 		o(h)
 	}
-	c, err := compile(t, h.mutatePkg)
+	c, err := compile(t, h.pkgFile, h.mutatePkg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,6 +476,12 @@ func setup(t *testing.T, opts ...func(*harness)) *harness {
 			h.circuitMu.Lock()
 			defer h.circuitMu.Unlock()
 			h.circuits = append(h.circuits, fmt.Sprintf("%s %d/%d", conn, unknown, total))
+			return nil
+		},
+		ReportDrift: func(_ context.Context, conn string, d dispatch.Drift) error {
+			h.circuitMu.Lock()
+			defer h.circuitMu.Unlock()
+			h.drifts = append(h.drifts, fmt.Sprintf("%s %s %s %s", conn, d.Tool, d.Expected, d.Observed))
 			return nil
 		},
 	}, pclog.Discard())
@@ -871,10 +913,21 @@ func TestHR010_AQuarantinedConnectionDispatchesNothing(t *testing.T) {
 
 // testWorkloadToken is a token-shaped string naming testAgent in testEnv.
 // The gateway reads it without verifying; the Authority verifies it.
-func testWorkloadToken() string {
+func testWorkloadToken() string { return workloadTokenFor(testAgent) }
+
+// testJKT is the key thumbprint testWorkloadToken is bound to.
+const testJKT = "jkt-of-the-test-workload-key-0000000000000"
+
+// workloadTokenFor is an unsigned workload token naming instance, bound to
+// testJKT.
+func workloadTokenFor(instance string) string { return workloadTokenWith(instance, testJKT) }
+
+// workloadTokenWith is an unsigned workload token naming instance, bound
+// to the key thumbprint jkt.
+func workloadTokenWith(instance, jkt string) string {
 	enc := base64.RawURLEncoding.EncodeToString
-	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + testAgent +
-		`","pap":{"v":1,"env":"` + testEnv + `"}}`
+	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + instance +
+		`","cnf":{"jkt":"` + jkt + `"},"pap":{"v":1,"env":"` + testEnv + `"}}`
 	return enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(payload)) + ".sig"
 }
 

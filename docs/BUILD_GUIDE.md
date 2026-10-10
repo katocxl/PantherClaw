@@ -204,6 +204,19 @@ Since M4 (slice 214) `dev seed` imports and activates the reference package (sig
 
 Since M6 the gateway serves the routes of its connections at `/{connection}/…`: `--target-url` creates the connection `payments` to the simulator, in enforce mode, so a refund is `POST /payments/v1/refunds` (`dev connection --org ID --target-url URL` adds one to an existing org). The gateway maps the request through the connection's reviewed package to ActionIR, asks the Authority, verifies the permit, builds the request from the package's dispatch template, commits it with `BeginDispatch`, sends that **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. The agent gets the target's answer with `PC-Transaction-Id`, `PC-Outcome` and `PC-Receipt` headers, or a JSON refusal with an `error_class`. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
+**MCP and the Claude Code hook (M6):** the same gateway serves MCP at `/mcp/{connection}` (2026-07-28, and 2025-11-25 with sessions) and cooperative hooks at `/hook/{connection}`.
+
+- **An MCP client** reaches a connection through `pclaw mcp proxy --gateway URL --connection NAME --key-file FILE`, a stdio shim that signs every request. The [workload-identity runbook](runbooks/workload-identity.md) shows a client configuration.
+- **A remote MCP server** sits behind a `kind: mcp` connection. `go run ./cmd/pantherclaw-sim mcp --addr 127.0.0.1:9091` serves the simulated refunds over MCP. Its fault flags (`--legacy`, `--stream`, `--ask`, `--input-required`, `--tool-error`, `--description`) exercise upstream behaviour and drift.
+- **Dogfooding the Claude Code hook** is opt-in per developer and never goes in this repository's shared configuration:
+  1. `dev seed … --gateway-out … --shell --workload-out …` also activates `pc.shell`, creates the `kind: local` connection `shell` in enforce mode, and lets the seeded grant run shell commands;
+  2. set `PANTHERCLAW_GATEWAY`, `PANTHERCLAW_HOOK_CONNECTION=shell`, `PANTHERCLAW_WORKLOAD_KEY_FILE` and `PANTHERCLAW_RUN` in your own environment;
+  3. start Claude Code with `--plugin-dir integrations/claude-code`.
+
+  With the plugin loaded and the stack down, every Bash and PowerShell command is blocked, by design ([integrations/claude-code](../integrations/claude-code/README.md)).
+
+Operator procedures are in the runbooks: [gateways](runbooks/gateway.md), [the kill switch](runbooks/kill-switch.md) and [broker keys and credentials](runbooks/key-rotation.md).
+
 **Sign in and administer (M2):** people sign in through an OpenID provider; locally that is the Keycloak development realm in `deploy/keycloak` (users `alice` / `alice-dev-only` and `bob` / `bob-dev-only`, development only). The server is the relying party; `pclaw` never talks to the provider.
 
 ```bash

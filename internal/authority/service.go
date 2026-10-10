@@ -209,9 +209,9 @@ type Workloads interface {
 	Discover(ctx context.Context, org ids.OrgID, in iapp.DiscoverInput) (ids.UUID, error)
 }
 
-// Runs checks and binds runs (runs app).
+// Runs checks and binds runs (runs app). Bind returns when the run expires.
 type Runs interface {
-	Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) error
+	Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) (time.Time, error)
 }
 
 // WithWorkloads sets the workload identity and run checks (M3) and returns
@@ -271,7 +271,7 @@ func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c
 		return id, identityOutcome(domain.Deny, domain.ReasonIdentityMismatch, "the action names another instance or environment"), false, nil
 	}
 	run, _ := ids.ParseUUID(p.Action.RunID)
-	if err := s.runs.Bind(ctx, gw.Org, run, id.Instance.Agent, id.Instance.Instance); errors.As(err, &pe) {
+	if _, err := s.runs.Bind(ctx, gw.Org, run, id.Instance.Agent, id.Instance.Instance); errors.As(err, &pe) {
 		s.log.WarnContext(ctx, "security.run_mismatch", slog.String("gateway_id", gw.ID),
 			slog.String("instance_id", id.Instance.Instance.String()), slog.String("run_id", run.String()))
 		return id, identityOutcome(domain.Deny, domain.ReasonRunMismatch, string(pe.Code)), false, nil
@@ -279,6 +279,60 @@ func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c
 		return id, domain.Outcome{}, false, err
 	}
 	return id, domain.Outcome{}, true, nil
+}
+
+// Verified is a workload whose credentials verified for a request that
+// decides nothing (VerifyWorkload).
+type Verified struct {
+	Instance, Environment ids.UUID
+	// JKT is the thumbprint of the key that signed the request.
+	JKT string
+	// RunExpires is when the run named in the request expires; zero when
+	// no run was named.
+	RunExpires time.Time
+}
+
+// ErrAgentUnusable reports a verified workload whose agent is suspended or
+// retired.
+var ErrAgentUnusable = errors.New("authority: the agent is suspended or retired")
+
+// Verify checks a workload's PAP/1 credentials for a request that decides
+// nothing, such as an MCP tools/list (HR-021): the token, the proof over
+// this request (consumed, so it cannot be replayed into an action), and
+// that the agent is usable. When the request names a run, the instance must
+// be allowed to use it, as for an action (HR-022; its first use binds it),
+// and Verified says when it expires: an MCP session lives on a run (G0 M6
+// design decision 13). Nothing else is recorded. A failed proof or a run
+// the instance may not use is a *pap.Error; a suspended or retired agent
+// is ErrAgentUnusable.
+func (s *Service) Verify(ctx context.Context, gw Gateway, c *Credentials, run ids.UUID) (Verified, error) {
+	if c == nil {
+		return Verified{}, &pap.Error{Code: pap.CodeInvalidToken}
+	}
+	if s.workloads == nil || (!run.IsZero() && s.runs == nil) {
+		return Verified{}, errors.New("authority: workload identity is not configured")
+	}
+	id, err := s.workloads.Identify(ctx, gw.Org, iapp.IdentifyInput{
+		Request: pap.Request{Method: c.Method, URL: c.URL, BodySHA256: c.BodySHA256, Token: c.Token},
+		Proof:   c.Proof, ClientAddress: c.ClientAddress,
+	})
+	if err != nil {
+		return Verified{}, err
+	}
+	if !adomain.State(id.AgentState).Usable() {
+		return Verified{}, ErrAgentUnusable
+	}
+	v := Verified{Instance: id.Instance.Instance, Environment: id.Environment, JKT: id.JKT}
+	if !run.IsZero() {
+		if v.RunExpires, err = s.runs.Bind(ctx, gw.Org, run, id.Instance.Agent, id.Instance.Instance); err != nil {
+			if errors.As(err, new(*pap.Error)) {
+				s.log.WarnContext(ctx, "security.run_mismatch", slog.String("gateway_id", gw.ID),
+					slog.String("instance_id", id.Instance.Instance.String()), slog.String("run_id", run.String()))
+			}
+			return Verified{}, err
+		}
+	}
+	return v, nil
 }
 
 // Nonce returns the org's current PAP/1 nonce and its expiry, or "" when

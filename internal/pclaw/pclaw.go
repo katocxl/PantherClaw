@@ -40,9 +40,12 @@ type Options struct {
 	OpenBrowser func(context.Context, string) error
 	// HTTPClient overrides the HTTP client (tests).
 	HTTPClient *http.Client
+	// Stdin is the process input (mcp proxy, hook); nil reads nothing.
+	Stdin io.Reader
 }
 
 type app struct {
+	stdin          io.Reader
 	stdout, stderr io.Writer
 	env            Env
 	http           *http.Client
@@ -80,7 +83,10 @@ func usageText() string {
 
 // Run executes pclaw and returns the exit code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env, opts Options) int {
-	a := &app{stdout: stdout, stderr: stderr, env: env, http: opts.HTTPClient, openBrowser: opts.OpenBrowser}
+	a := &app{stdin: opts.Stdin, stdout: stdout, stderr: stderr, env: env, http: opts.HTTPClient, openBrowser: opts.OpenBrowser}
+	if a.stdin == nil {
+		a.stdin = strings.NewReader("")
+	}
 	if a.http == nil {
 		// Only the configured server is contacted; no redirects (HR-070).
 		a.http = httpx.NewControlClient(httpx.ControlConfig{Timeout: 30 * time.Second})
@@ -99,9 +105,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env, 
 		return 2
 	}
 	err := cmd.run(ctx, a, rest)
+	var exit *exitError
 	switch {
 	case err == nil:
 		return 0
+	case errors.As(err, &exit):
+		_, _ = fmt.Fprintln(stderr, exit.msg)
+		return exit.code
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	case errors.Is(err, errUsage):
@@ -124,6 +134,15 @@ func lookup(args []string) (command, []string, bool) {
 }
 
 // describe turns RPC errors into one readable line.
+// exitError ends a command with its own exit code and message (the Claude
+// Code hook blocks with code 2).
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e *exitError) Error() string { return e.msg }
+
 func describe(err error) string {
 	var ce *connect.Error
 	if errors.As(err, &ce) {

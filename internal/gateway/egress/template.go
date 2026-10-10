@@ -107,6 +107,36 @@ func Build(baseURL string, d *defs.Definition, a actionir.ActionIR, transaction 
 	return out, nil
 }
 
+// BuildMCP builds the upstream tools/call of a definition's MCP dispatch
+// template from the canonical action a permit binds: the reviewed upstream
+// tool and its arguments object, each argument a reference resolved as an
+// HTTP body field is (G0 M6 design decision 14).
+func BuildMCP(d *defs.Definition, a actionir.ActionIR) (string, jsontext.Value, error) {
+	if d.Dispatch == nil || d.Dispatch.MCP == nil {
+		return "", nil, fmt.Errorf("%w: %s has no MCP dispatch template", ErrBuild, d.Operation)
+	}
+	vals, err := d.DecodeParams(a.Params)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %w", ErrBuild, err)
+	}
+	r := refs{d: d, a: a, vals: vals}
+	args := make(map[string]any, len(d.Dispatch.MCP.Arguments))
+	for name, ref := range d.Dispatch.MCP.Arguments {
+		v, err := r.value(ref)
+		if err != nil {
+			return "", nil, err
+		}
+		if v != nil {
+			args[name] = v
+		}
+	}
+	b, err := json.Marshal(args, json.Deterministic(true))
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %w", ErrBuild, err)
+	}
+	return d.Dispatch.MCP.Tool, b, nil
+}
+
 type refs struct {
 	d    *defs.Definition
 	a    actionir.ActionIR

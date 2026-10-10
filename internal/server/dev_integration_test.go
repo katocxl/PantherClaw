@@ -394,3 +394,49 @@ func TestIntDevSeedAudits(t *testing.T) {
 		t.Fatalf("org ledger = %v, %v; want %v", kinds, err, want)
 	}
 }
+
+// TestPN014_DevSeedSeedsTheHookConnection: dev seed --shell activates
+// pc.shell, creates the kind-local connection "shell" in enforce mode
+// through the connection checks, and issues a grant that also allows shell
+// commands; without --gateway-out it is refused.
+func TestPN014_DevSeedSeedsTheHookConnection(t *testing.T) {
+	d := dbtest.New(t)
+	cfgPath := testConfig(t, d, RoleAPI, gatewayAt("127.0.0.1:8443"))
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Run(context.Background(), []string{"dev", "seed", "--config", cfgPath, "--shell", "--workload-out", filepath.Join(dir, "w.json")},
+		&out, &errb, noEnv); code == 0 || !strings.Contains(errb.String(), "--shell need --gateway-out") {
+		t.Fatalf("--shell without a gateway = %d %s", code, errb.String())
+	}
+	out.Reset()
+	args := []string{
+		"dev", "seed", "--config", cfgPath, "--shell", "--gateway-out", filepath.Join(dir, "gw.json"), "--workload-out", filepath.Join(dir, "w.json"),
+	}
+	if code := Run(context.Background(), args, &out, &errb, noEnv); code != 0 || !strings.Contains(out.String(), "/hook/shell") {
+		t.Fatalf("dev seed --shell = %d %s %s", code, out.String(), errb.String())
+	}
+	m := seededOrg.FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("dev seed output %q", out.String())
+	}
+	org, err := ids.Parse[ids.Org](m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conn, pkg, grant string
+	err = d.AppPool(t).InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
+		if err := tx.QueryRow(ctx, `SELECT c.kind || ' ' || c.package || ' ' || c.access_mode || ' ' || c.state || ' ' || r.mode
+			FROM pc.connections c JOIN pc.connection_routes r ON r.org_id = c.org_id AND r.connection_id = c.id
+			WHERE c.name = 'shell'`).Scan(&conn); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT v.state FROM pc.package_versions v JOIN pc.tool_packages p
+			ON p.org_id = v.org_id AND p.id = v.package_id WHERE p.name = 'pc.shell'`).Scan(&pkg); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, "SELECT convert_from(bounds, 'UTF8') FROM pc.grant_revisions").Scan(&grant)
+	})
+	if err != nil || conn != "local pc.shell none ACTIVE enforce" || pkg != "ACTIVE" || !strings.Contains(grant, "shell.command.run") {
+		t.Fatalf("seeded connection %q, package %q, grant %q: %v", conn, pkg, grant, err)
+	}
+}

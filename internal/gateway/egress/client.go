@@ -123,6 +123,59 @@ func (c *Client) Do(req *http.Request) (Response, error) {
 	return out, nil
 }
 
+// ErrTooLarge reports a streamed response longer than the connection's cap.
+var ErrTooLarge = errors.New("egress: the response is larger than the connection's cap")
+
+// Open sends a prepared request and returns its response to be read as it
+// arrives, such as an MCP event stream, which the caller closes. Reading
+// past the connection's cap fails with ErrTooLarge, and a compressed body
+// is refused (it was asked for identity).
+func (c *Client) Open(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != c.scheme || req.URL.Host != c.host {
+		return nil, ErrHost
+	}
+	res, err := c.http.Do(req) //nolint:gosec // G704: pinned to the connection above; the egress client checks the connected address (HR-070..074)
+	if err != nil {
+		return nil, err
+	}
+	if e := res.Header.Get("Content-Encoding"); e != "" && e != "identity" {
+		_ = res.Body.Close()
+		return nil, fmt.Errorf("egress: a %q body on a stream", e)
+	}
+	res.Body = &capped{rc: res.Body, left: c.maxBytes}
+	return res, nil
+}
+
+// RequestID is the target's request id from response headers, if any.
+func RequestID(h http.Header) string { return requestID(h) }
+
+// capped reads at most left bytes and fails, rather than truncating, past
+// them: a cut stream would be misread.
+type capped struct {
+	rc   io.ReadCloser
+	left int64
+}
+
+func (c *capped) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		var one [1]byte
+		if n, err := c.rc.Read(one[:]); n > 0 {
+			return 0, ErrTooLarge
+		} else if err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.rc.Read(p)
+	c.left -= int64(n)
+	return n, err
+}
+
+func (c *capped) Close() error { return c.rc.Close() }
+
 func requestID(h http.Header) string {
 	for _, k := range []string{"X-Request-Id", "Request-Id", "X-Amzn-Requestid"} {
 		if v := h.Get(k); v != "" && len(v) <= 128 {

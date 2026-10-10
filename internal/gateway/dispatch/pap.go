@@ -99,9 +99,10 @@ type Inbound struct {
 	// key-only, HR-148).
 	HasToken bool
 	// Instance and Env come from the token, UNVERIFIED; ok is false when
-	// the token does not name them.
-	Instance, Env string
-	SubjectOK     bool
+	// the token does not name them. JKT is the token's cnf.jkt, the
+	// thumbprint of the key the proof must be signed with, also UNVERIFIED.
+	Instance, Env, JKT string
+	SubjectOK          bool
 	// Run and Action are the PAP-Run-Id and PC-Action-Id headers; empty
 	// when absent or not UUIDs.
 	Run, Action string
@@ -121,7 +122,7 @@ func ReadInbound(r *http.Request, body []byte, htu string) Inbound {
 		HasToken: hasToken,
 	}
 	if hasToken {
-		in.Instance, in.Env, in.SubjectOK = tokenSubject(token)
+		in.Instance, in.Env, in.JKT, in.SubjectOK = tokenSubject(token)
 	}
 	if run, err := ids.ParseUUID(r.Header.Get(HeaderRunID)); err == nil {
 		in.Run = run.String()
@@ -132,33 +133,37 @@ func ReadInbound(r *http.Request, body []byte, htu string) Inbound {
 	return in
 }
 
-// tokenSubject reads, WITHOUT verifying, the instance and environment a
-// workload token names, to put them in the ActionIR. The Authority verifies
-// the token and refuses an action whose instance or environment differs
-// (IDENTITY_MISMATCH).
-func tokenSubject(token string) (instance, env string, ok bool) {
+// tokenSubject reads, WITHOUT verifying, the instance, environment and key
+// thumbprint a workload token names, to put them in the ActionIR and to
+// match an MCP session. The Authority verifies the token, that the proof is
+// signed with that key, and refuses an action whose instance or environment
+// differs (IDENTITY_MISMATCH).
+func tokenSubject(token string) (instance, env, jkt string, ok bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || len(token) > 8192 {
-		return "", "", false
+		return "", "", "", false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	var c struct {
 		Sub string `json:"sub"`
+		Cnf struct {
+			JKT string `json:"jkt"`
+		} `json:"cnf"`
 		PAP struct {
 			Env string `json:"env"`
 		} `json:"pap"`
 	}
 	if json.Unmarshal(payload, &c) != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	id, err := pap.ParseInstance(c.Sub)
 	if err != nil || c.PAP.Env == "" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return id.Instance.String(), c.PAP.Env, true
+	return id.Instance.String(), c.PAP.Env, c.Cnf.JKT, true
 }
 
 // ReportUnknown reports a key-only request to the Authority (HR-148) and
@@ -186,6 +191,43 @@ func (e *Engine) ReportUnknown(ctx context.Context, creds *pb.WorkloadCredential
 		nonce = e.Nonce(ctx)
 	}
 	return code, nonce
+}
+
+// Verified is the Authority's answer about a workload whose request decides
+// nothing (VerifyWorkload).
+type Verified struct {
+	// OK: an admitted instance of a usable agent.
+	OK bool
+	// Code is the PAP-Error code when not OK.
+	Code          pap.Code
+	Instance, Env string
+	// JKT is the thumbprint of the key that signed the request.
+	JKT   string
+	Nonce string
+	// RunExpires is when the run named in the request expires; zero when
+	// none was named.
+	RunExpires time.Time
+}
+
+// Verify asks the Authority to verify a workload for a request that decides
+// nothing, such as an MCP tools/list (HR-021): the gateway never verifies
+// a workload itself. A non-empty run must be one the instance may use, and
+// the answer says when it expires. An error means the Authority could not
+// be asked.
+func (e *Engine) Verify(ctx context.Context, creds *pb.WorkloadCredentials, run string) (Verified, error) {
+	res, err := e.authority.VerifyWorkload(ctx, &pb.VerifyWorkloadRequest{Workload: creds, RunId: run})
+	if err != nil {
+		return Verified{}, err
+	}
+	e.nonces.set(res.GetNonce(), time.Time{})
+	v := Verified{
+		OK: res.GetVerified(), Code: pap.Code(res.GetErrorCode()), Instance: res.GetInstanceId(), Env: res.GetEnvironmentId(),
+		JKT: res.GetJkt(), Nonce: res.GetNonce(),
+	}
+	if res.GetRunExpiresAt() != nil {
+		v.RunExpires = res.GetRunExpiresAt().AsTime()
+	}
+	return v, nil
 }
 
 // clientAddress is the workload's address as the gateway saw it. It is

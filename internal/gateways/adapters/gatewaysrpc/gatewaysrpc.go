@@ -221,6 +221,7 @@ type GatewayHandler struct {
 	s        *gwapp.Service
 	hub      *gwapp.Hub
 	circuits Circuits
+	drifts   Drifts
 }
 
 // NewGateway returns the GatewayService handler.

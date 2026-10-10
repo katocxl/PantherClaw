@@ -20,6 +20,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
+	pcshell "github.com/katocxl/pantherclaw/packages/pc-shell"
 )
 
 // devSeedActor records `dev seed` in the audit log.
@@ -51,6 +52,8 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	maxCount := fs.Int("max-count", 0, "optional limit on the number of refunds the seeded grant allows (0 = none)")
 	gatewayOut := fs.String("gateway-out", "", "also seed a gateway; write its enrollment file here (0600, never overwritten)")
 	targetURL := fs.String("target-url", "", "with --gateway-out: also seed the connection \"payments\" to this payments API, in enforce mode")
+	shell := fs.Bool("shell", false, "with --gateway-out: also seed the pc.shell package and the hook connection \"shell\" (Claude Code), in enforce mode; "+
+		"with --workload-out the grant also allows shell commands")
 	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a grant and a run; write its key file here (0600, never overwritten)")
 	factsOut := fs.String("facts-key-out", "", "with --workload-out: write the API key of the development fact provider here (0600, never overwritten)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -80,7 +83,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 			return fmt.Errorf("dev seed: %s already exists", out)
 		}
 	}
-	if *targetURL != "" && *gatewayOut == "" {
+	if (*targetURL != "" || *shell) && *gatewayOut == "" {
 		return errTargetNeedsGateway
 	}
 	if *gatewayOut != "" && cfg.GatewayAPI.Addr == "" {
@@ -120,7 +123,11 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if err != nil {
 		return err
 	}
-	if err := seedPackage(ctx, pool, org); err != nil {
+	pkgs := []devPackage{{mockpayments.Name, mockpayments.Version, mockpayments.Package}}
+	if *shell {
+		pkgs = append(pkgs, devPackage{pcshell.Name, pcshell.Version, pcshell.Package})
+	}
+	if err := seedPackages(ctx, pool, org, pkgs...); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "seeded org %s (%q) with package %s@%s active\n", org, *name, mockpayments.Name, mockpayments.Version)
@@ -138,6 +145,14 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 			}
 			_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s) to %s; agents call the gateway at /%s/v1/refunds\n", c.ID, c.Name, *targetURL, c.Name)
 		}
+		if *shell {
+			c, err := seedShellConnection(ctx, cfg, pool, org, gw)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(stdout, "seeded package %s@%s and connection %s (%s); the Claude Code hook asks the gateway at /hook/%s\n",
+				pcshell.Name, pcshell.Version, c.ID, c.Name, c.Name)
+		}
 	}
 	if *workloadOut == "" {
 		return nil
@@ -146,7 +161,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if err != nil {
 		return err
 	}
-	g, err := seedGrant(ctx, pool, org, w, devGrantTerms{MaxPerAction: maxPer, Limit: lim, MaxCount: *maxCount})
+	g, err := seedGrant(ctx, pool, org, w, devGrantTerms{MaxPerAction: maxPer, Limit: lim, MaxCount: *maxCount, Shell: *shell})
 	if err != nil {
 		return err
 	}

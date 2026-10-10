@@ -466,3 +466,94 @@ func TestHR078_AGatewaysCircuitReportQuarantinesItsConnection(t *testing.T) {
 		t.Fatalf("closed circuits after the restore: %d", n)
 	}
 }
+
+const upstreamPackage = "acme.mcp-payments"
+
+// upstreamDigest is the reviewed digest of the upstream get_refund tool in
+// mcpPayments.
+var upstreamDigest = "sha256:" + strings.Repeat("0f", 32)
+
+// mcpPayments is the mock payments package with refunds read from an
+// upstream MCP server's get_refund tool.
+func mcpPayments(t *testing.T) []byte {
+	t.Helper()
+	raw := string(mockpayments.Package)
+	for _, r := range [][2]string{
+		{"name: " + mockpayments.Name + "\n", "name: " + upstreamPackage + "\n"},
+		{
+			"    dispatch:\n      http:\n        method: GET\n        path: /v1/refunds/{target.id}\n",
+			"    dispatch:\n      mcp:\n        tool: get_refund\n        arguments:\n          refund: target.id\n        upstream_digest: " + upstreamDigest + "\n",
+		},
+	} {
+		if strings.Count(raw, r[0]) != 1 {
+			t.Fatalf("mock payments package: %q not found once", r[0])
+		}
+		raw = strings.Replace(raw, r[0], r[1], 1)
+	}
+	return []byte(raw)
+}
+
+// TestHR081_UpstreamDriftQuarantinesThePinnedPackage: a gateway's report
+// that an upstream tool changed quarantines the org's pinned version of the
+// connection's package, in one transaction with an epoch raise, an audit
+// entry with the gateway as actor and a notification; a repeat changes
+// nothing more. A report about another gateway's connection, an HTTP
+// connection, a tool or digest the package did not review, or a tool that
+// did not change is refused, and other packages are untouched.
+func TestHR081_UpstreamDriftQuarantinesThePinnedPackage(t *testing.T) {
+	e := newEnv(t)
+	e.pin(t, upstreamPackage, "1.0.0", mcpPayments(t))
+	c, err := e.svc.Create(e.admin, app.CreateInput{
+		Name: "upstream", Kind: app.KindMCP, Package: upstreamPackage, BaseURL: "https://mcp.example.test/mcp", Gateway: e.gateway,
+		AccessMode: app.AccessNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payments := e.payments(t, "payments")
+	other := ids.NewV7()
+	e.exec(t, "INSERT INTO pc.gateways (org_id, id, name, created_by) VALUES ($1, $2, 'other', 'test')", e.org, other)
+	ctx := context.Background()
+	observed := "sha256:" + strings.Repeat("ab", 32)
+	for name, tc := range map[string]struct {
+		gateway, conn               ids.UUID
+		tool, expected, observedNow string
+		want                        error
+	}{
+		"another gateway's connection": {other, c.ID, "get_refund", upstreamDigest, observed, app.ErrNotFound},
+		"an http connection":           {e.gateway, payments.ID, "get_refund", upstreamDigest, observed, app.ErrNotFound},
+		"an unreviewed tool":           {e.gateway, c.ID, "delete_everything", upstreamDigest, observed, app.ErrDrift},
+		"another reviewed digest":      {e.gateway, c.ID, "get_refund", "sha256:" + strings.Repeat("11", 32), observed, app.ErrDrift},
+		"no change":                    {e.gateway, c.ID, "get_refund", upstreamDigest, upstreamDigest, app.ErrDrift},
+	} {
+		if _, err := e.svc.ReportDrift(ctx, e.org, tc.gateway, tc.conn, tc.tool, tc.expected, tc.observedNow); !is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", name, err, tc.want)
+		}
+	}
+	state := func(pkg string) int64 {
+		return e.int64(t, `SELECT count(*) FROM pc.package_versions v JOIN pc.tool_packages p ON p.org_id = v.org_id AND p.id = v.package_id
+			WHERE p.name = $1 AND v.state = 'QUARANTINED'`, pkg)
+	}
+	ledger := func() int64 {
+		return e.int64(t, `SELECT count(*) FROM pc.ledger_entries WHERE kind = 'audit.package.transitioned' AND actor_type = 'gateway'
+			AND actor_id = $1`, e.gateway.String())
+	}
+	epoch := e.epoch(t)
+	if state(upstreamPackage) != 0 || ledger() != 0 {
+		t.Fatal("a refused report changed something")
+	}
+	if q, err := e.svc.ReportDrift(ctx, e.org, e.gateway, c.ID, "get_refund", upstreamDigest, observed); err != nil || !q {
+		t.Fatalf("report: %v %v", q, err)
+	}
+	if state(upstreamPackage) != 1 || e.epoch(t) != epoch+1 || ledger() != 1 || e.notes.count("security.package_quarantined") != 1 ||
+		e.notes.last["package"] != upstreamPackage || e.notes.last["reason"] != app.ReasonUpstreamDrift {
+		t.Fatalf("after the report: quarantined %d, epoch %d (was %d), audit %d, notes %v", state(upstreamPackage), e.epoch(t), epoch, ledger(), e.notes.last)
+	}
+	if q, err := e.svc.ReportDrift(ctx, e.org, e.gateway, c.ID, "get_refund", upstreamDigest, ""); err != nil || !q ||
+		e.epoch(t) != epoch+1 || ledger() != 1 {
+		t.Fatalf("a repeat (tool gone): %v %v, epoch %d, audit %d", q, err, e.epoch(t), ledger())
+	}
+	if state(mockpayments.Name) != 0 {
+		t.Fatal("another package was quarantined")
+	}
+}

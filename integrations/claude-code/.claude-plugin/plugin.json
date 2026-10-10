@@ -1,0 +1,9 @@
+{
+  "name": "pantherclaw",
+  "version": "0.1.0",
+  "description": "Asks PantherClaw before Claude Code runs a Bash or PowerShell command, and blocks it unless PantherClaw allowed it (fails closed).",
+  "author": {
+    "name": "PantherClaw"
+  },
+  "license": "Apache-2.0"
+}

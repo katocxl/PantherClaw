@@ -44,6 +44,7 @@ var procedurePermissions = map[string]td.Permission{
 	pantherclawv1connect.AuthorityServiceAuthorizeProcedure:                    "gateway.authorize",
 	pantherclawv1connect.AuthorityServiceGetNonceProcedure:                     "gateway.authorize",
 	pantherclawv1connect.AuthorityServiceReportUnknownWorkloadProcedure:        "gateway.observe",
+	pantherclawv1connect.AuthorityServiceVerifyWorkloadProcedure:               "gateway.authorize",
 	pantherclawv1connect.AuthorityServiceBeginDispatchProcedure:                "gateway.dispatch",
 	pantherclawv1connect.AuthorityServiceRecordExecutionProcedure:              "gateway.dispatch",
 	pantherclawv1connect.FactServiceDisableProviderProcedure:                   "fact.provider.manage",

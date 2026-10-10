@@ -40,6 +40,9 @@ const (
 	// AuthorityServiceReportUnknownWorkloadProcedure is the procedure name of the AuthorityService's
 	// ReportUnknownWorkload RPC.
 	AuthorityServiceReportUnknownWorkloadProcedure = "/pantherclaw.v1.AuthorityService/ReportUnknownWorkload"
+	// AuthorityServiceVerifyWorkloadProcedure is the procedure name of the AuthorityService's
+	// VerifyWorkload RPC.
+	AuthorityServiceVerifyWorkloadProcedure = "/pantherclaw.v1.AuthorityService/VerifyWorkload"
 )
 
 var (
@@ -78,6 +81,13 @@ var (
 			Procedure:  AuthorityServiceReportUnknownWorkloadProcedure,
 		}
 	})
+	authorityServiceVerifyWorkloadSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_authority_proto.Services().ByName("AuthorityService").Methods().ByName("VerifyWorkload"),
+			Procedure:  AuthorityServiceVerifyWorkloadProcedure,
+		}
+	})
 )
 
 // AuthorityServiceClient is a client for the pantherclaw.v1.AuthorityService service.
@@ -103,6 +113,12 @@ type AuthorityServiceClient interface {
 	// (HR-148). The request itself is refused.
 	// permission: gateway.observe
 	ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error)
+	// VerifyWorkload checks a workload's PAP/1 credentials for a request
+	// that decides nothing, such as an MCP `tools/list` or `server/discover`
+	// (HR-021: the gateway never verifies a workload itself). The proof is
+	// consumed like any other; nothing is decided or recorded.
+	// permission: gateway.authorize
+	VerifyWorkload(context.Context, *v1.VerifyWorkloadRequest) (*v1.VerifyWorkloadResponse, error)
 }
 
 // NewAuthorityServiceClient constructs a client for the pantherclaw.v1.AuthorityService service.
@@ -134,6 +150,12 @@ type AuthorityServiceHandler interface {
 	// (HR-148). The request itself is refused.
 	// permission: gateway.observe
 	ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error)
+	// VerifyWorkload checks a workload's PAP/1 credentials for a request
+	// that decides nothing, such as an MCP `tools/list` or `server/discover`
+	// (HR-021: the gateway never verifies a workload itself). The proof is
+	// consumed like any other; nothing is decided or recorded.
+	// permission: gateway.authorize
+	VerifyWorkload(context.Context, *v1.VerifyWorkloadRequest) (*v1.VerifyWorkloadResponse, error)
 }
 
 // RegisterAuthorityServiceHandler registers svc as the pantherclaw.v1.AuthorityService
@@ -146,6 +168,7 @@ func RegisterAuthorityServiceHandler(server *connect.Server, svc AuthorityServic
 		connect.Method{Spec: authorityServiceRecordExecutionSpec(), Handler: adapter.recordExecution},
 		connect.Method{Spec: authorityServiceGetNonceSpec(), Handler: adapter.getNonce},
 		connect.Method{Spec: authorityServiceReportUnknownWorkloadSpec(), Handler: adapter.reportUnknownWorkload},
+		connect.Method{Spec: authorityServiceVerifyWorkloadSpec(), Handler: adapter.verifyWorkload},
 	)
 }
 
@@ -170,6 +193,10 @@ func (UnimplementedAuthorityServiceHandler) GetNonce(context.Context, *v1.GetNon
 
 func (UnimplementedAuthorityServiceHandler) ReportUnknownWorkload(context.Context, *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AuthorityService.ReportUnknownWorkload is not implemented")
+}
+
+func (UnimplementedAuthorityServiceHandler) VerifyWorkload(context.Context, *v1.VerifyWorkloadRequest) (*v1.VerifyWorkloadResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AuthorityService.VerifyWorkload is not implemented")
 }
 
 type authorityServiceClient struct {
@@ -211,6 +238,14 @@ func (c *authorityServiceClient) GetNonce(ctx context.Context, req *v1.GetNonceR
 func (c *authorityServiceClient) ReportUnknownWorkload(ctx context.Context, req *v1.ReportUnknownWorkloadRequest) (*v1.ReportUnknownWorkloadResponse, error) {
 	var res v1.ReportUnknownWorkloadResponse
 	if err := c.client.CallUnary(ctx, authorityServiceReportUnknownWorkloadSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *authorityServiceClient) VerifyWorkload(ctx context.Context, req *v1.VerifyWorkloadRequest) (*v1.VerifyWorkloadResponse, error) {
+	var res v1.VerifyWorkloadResponse
+	if err := c.client.CallUnary(ctx, authorityServiceVerifyWorkloadSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -272,6 +307,18 @@ func (h authorityServiceHandler) reportUnknownWorkload(ctx context.Context, _ co
 		return err
 	}
 	res, err := h.svc.ReportUnknownWorkload(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h authorityServiceHandler) verifyWorkload(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.VerifyWorkloadRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.VerifyWorkload(ctx, &req)
 	if err != nil {
 		return err
 	}
