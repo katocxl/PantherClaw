@@ -23,40 +23,42 @@ func PointerValue(doc []byte, ptr string) (string, bool) {
 	v := jsontext.Value(doc)
 	for _, tok := range strings.Split(ptr[1:], "/") {
 		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
-		switch v.Kind() {
-		case '{':
-			var m map[string]jsontext.Value
-			if json.Unmarshal(v, &m) != nil {
-				return "", false
-			}
-			next, ok := m[tok]
-			if !ok {
-				return "", false
-			}
-			v = next
-		case '[':
-			var a []jsontext.Value
-			i, err := strconv.Atoi(tok)
-			if err != nil || json.Unmarshal(v, &a) != nil || i < 0 || i >= len(a) || (len(tok) > 1 && tok[0] == '0') {
-				return "", false
-			}
-			v = a[i]
-		default:
+		next, ok := member(v, tok)
+		if !ok {
 			return "", false
 		}
+		v = next
 	}
-	switch v.Kind() {
-	case '"':
+	if k := v.Kind(); k == jsontext.KindString {
 		var s string
 		if json.Unmarshal(v, &s) != nil {
 			return "", false
 		}
 		return s, true
-	case '0', 't', 'f':
-		if !v.IsValid() {
-			return "", false
-		}
+	} else if (k == jsontext.KindNumber || k == jsontext.KindTrue || k == jsontext.KindFalse) && v.IsValid() {
 		return string(v), true
 	}
 	return "", false
+}
+
+// member returns the member tok of an object, or the element at index tok
+// of an array (decimal, no leading zero); anything else is absent.
+func member(v jsontext.Value, tok string) (jsontext.Value, bool) {
+	if v.Kind() == jsontext.KindBeginObject {
+		var m map[string]jsontext.Value
+		if json.Unmarshal(v, &m) != nil {
+			return nil, false
+		}
+		next, ok := m[tok]
+		return next, ok
+	}
+	if v.Kind() != jsontext.KindBeginArray {
+		return nil, false
+	}
+	var a []jsontext.Value
+	i, err := strconv.Atoi(tok)
+	if err != nil || json.Unmarshal(v, &a) != nil || i < 0 || i >= len(a) || (len(tok) > 1 && tok[0] == '0') {
+		return nil, false
+	}
+	return a[i], true
 }
