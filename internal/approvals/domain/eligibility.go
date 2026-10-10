@@ -25,9 +25,9 @@ const (
 	IneligibleSelfGrant         = "SELF_GRANT_COOLDOWN"
 	IneligibleRoleCooldown      = "ROLE_COOLDOWN"
 	IneligibleAccountTooNew     = "ACCOUNT_TOO_NEW"
-	IneligibleNoCredential      = "NO_ACTIVE_CREDENTIAL"
-	IneligibleCredentialTooNew  = "CREDENTIAL_TOO_NEW"
-	IneligibleCredentialRevoked = "CREDENTIAL_NOT_ACTIVE"
+	IneligibleNoCredential      = "NO_ACTIVE_CREDENTIAL"  //nolint:gosec // G101: a reason code, not a credential
+	IneligibleCredentialTooNew  = "CREDENTIAL_TOO_NEW"    //nolint:gosec // G101: a reason code, not a credential
+	IneligibleCredentialRevoked = "CREDENTIAL_NOT_ACTIVE" //nolint:gosec // G101: a reason code, not a credential
 	IneligibleNotStepUpSubject  = "NOT_STEP_UP_SUBJECT"
 )
 

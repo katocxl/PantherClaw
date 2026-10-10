@@ -270,12 +270,12 @@ func TestVariantKeyGroupsGrantOperationAndTarget(t *testing.T) {
 		}
 		return v
 	}
-	if k(g, "payments.refund.create", "ch_1") != k(g, "payments.refund.create", "ch_1") {
+	first, again := k(g, "payments.refund.create", "ch_1"), k(g, "payments.refund.create", "ch_1")
+	if first != again {
 		t.Fatal("variant key is not deterministic")
 	}
-	if k(g, "payments.refund.create", "ch_1") == k(g, "payments.refund.create", "ch_2") ||
-		k(g, "payments.refund.create", "ch_1") == k(ids.NewV7(), "payments.refund.create", "ch_1") ||
-		k(g, "payments.refund.create", "ch_1") == k(g, "payments.charge.capture", "ch_1") {
+	if first == k(g, "payments.refund.create", "ch_2") || first == k(ids.NewV7(), "payments.refund.create", "ch_1") ||
+		first == k(g, "payments.charge.capture", "ch_1") {
 		t.Fatal("variant key merges different grants, operations or targets")
 	}
 	if _, err := domain.VariantKey(g, "", domain.Target{Type: "x", ID: "y"}); err == nil {
