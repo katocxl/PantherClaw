@@ -47,6 +47,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	"github.com/katocxl/pantherclaw/internal/gateway/egress"
+	"github.com/katocxl/pantherclaw/internal/gateway/upstream"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
@@ -102,6 +103,11 @@ const (
 	CodeTargetRefused         = "target_refused"
 	CodeTargetUncertain       = "target_uncertain"
 	CodeNotRecorded           = "outcome_not_recorded"
+	// An upstream MCP tool reported an error (isError).
+	CodeToolError = "tool_error"
+	// An upstream MCP server asked for input the gateway never gives
+	// (HR-082).
+	CodeInputRequired = "upstream_input_required"
 )
 
 // Containment is the gateway's containment view (control.Containment).
@@ -155,11 +161,14 @@ type Engine struct {
 	clients map[string]clientEntry
 }
 
-// clientEntry is a connection's egress client for one revision of it.
+// clientEntry is a connection's egress client for one revision of it, and
+// for a kind-mcp connection its MCP client, which keeps the server's
+// version and session.
 type clientEntry struct {
 	revision int32
 	base     string
 	client   *egress.Client
+	mcp      *upstream.Client
 }
 
 // New returns an Engine.
@@ -209,6 +218,9 @@ type Result struct {
 	// Response is the target's response, the credential removed; nil when
 	// there was none.
 	Response *egress.Response
+	// ToolResult: Response.Body is an upstream MCP server's CallToolResult
+	// (a kind-mcp connection).
+	ToolResult bool
 	// Receipt is the execution receipt.
 	Receipt string
 	// Nonce is the org's current nonce, for the PAP-Nonce header.
@@ -335,6 +347,9 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	if want.Epoch < epoch {
 		return r.fail(EnforcementFailed, CodeEpochStale)
 	}
+	if conn.GetKind() == "mcp" {
+		return e.sendMCP(ctx, r, conn, def, bound, want, t)
+	}
 	return e.send(ctx, r, conn, def, bound, want, t)
 }
 
@@ -413,10 +428,16 @@ func effective(def *defs.Definition, p actionir.Parsed, obligations []*pb.Obliga
 
 // client returns the connection's egress client, new for each revision.
 func (e *Engine) client(conn *control.Connection) (*egress.Client, error) {
+	ce, err := e.entry(conn)
+	return ce.client, err
+}
+
+// entry returns the connection's clients, new for each revision.
+func (e *Engine) entry(conn *control.Connection) (clientEntry, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if ce, ok := e.clients[conn.GetId()]; ok && ce.revision == conn.GetRevision() && ce.base == conn.GetBaseUrl() {
-		return ce.client, nil
+		return ce, nil
 	}
 	timeout := time.Duration(conn.GetTimeoutMs()) * time.Millisecond
 	if timeout <= 0 {
@@ -424,10 +445,14 @@ func (e *Engine) client(conn *control.Connection) (*egress.Client, error) {
 	}
 	c, err := egress.NewClient(conn.GetBaseUrl(), timeout, conn.GetMaxResponseBytes(), e.allowed)
 	if err != nil {
-		return nil, err
+		return clientEntry{}, err
 	}
-	e.clients[conn.GetId()] = clientEntry{revision: conn.GetRevision(), base: conn.GetBaseUrl(), client: c}
-	return c, nil
+	ce := clientEntry{revision: conn.GetRevision(), base: conn.GetBaseUrl(), client: c}
+	if conn.GetKind() == "mcp" {
+		ce.mcp = upstream.New(conn.GetBaseUrl(), c)
+	}
+	e.clients[conn.GetId()] = ce
+	return ce, nil
 }
 
 // prepared is the outbound request, built and checked.
@@ -520,6 +545,20 @@ func (e *Engine) send(ctx context.Context, r Result, conn *control.Connection, d
 
 // credential opens the connection's sealed credential and places it on req.
 func (e *Engine) credential(conn *control.Connection, req *http.Request) ([]byte, error) {
+	secret, err := e.openCredential(conn)
+	if err != nil {
+		return nil, err
+	}
+	if err := placeCredential(conn, req, secret); err != nil {
+		clear(secret)
+		return nil, err
+	}
+	return secret, nil
+}
+
+// openCredential opens the connection's sealed credential; the caller
+// clears it.
+func (e *Engine) openCredential(conn *control.Connection) ([]byte, error) {
 	cred := conn.Credential
 	if cred == nil {
 		return nil, errors.New("the connection has no active credential")
@@ -527,17 +566,16 @@ func (e *Engine) credential(conn *control.Connection, req *http.Request) ([]byte
 	if e.broker == nil {
 		return nil, broker.ErrNoBroker
 	}
-	secret, err := e.broker.Open(e.org, conn.GetId(), cred.GetAllowedHosts(), broker.Sealed{
+	return e.broker.Open(e.org, conn.GetId(), cred.GetAllowedHosts(), broker.Sealed{
 		Version: cred.GetVersion(), BrokerKey: cred.GetBrokerKeyId(), Blob: cred.GetSealed(), Header: cred.GetHeader(), Scheme: cred.GetScheme(),
 	})
-	if err != nil {
-		return nil, err
-	}
-	if err := broker.Place(req, cred.GetAllowedHosts(), cred.GetHeader(), cred.GetScheme(), secret); err != nil {
-		clear(secret)
-		return nil, err
-	}
-	return secret, nil
+}
+
+// placeCredential places an opened credential on req, for the
+// credential's allowed hosts only.
+func placeCredential(conn *control.Connection, req *http.Request, secret []byte) error {
+	cred := conn.Credential
+	return broker.Place(req, cred.GetAllowedHosts(), cred.GetHeader(), cred.GetScheme(), secret)
 }
 
 // classify maps a target's answer to an outcome (design decision 10): 2xx

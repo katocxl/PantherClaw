@@ -715,8 +715,10 @@ type content struct {
 // toolResult is a CallToolResult; resultType is 2026-07-28's and is left
 // out in 2025-11-25.
 type toolResult struct {
-	ResultType        string         `json:"resultType,omitzero"`
-	Content           []content      `json:"content"`
+	ResultType string `json:"resultType,omitzero"`
+	// Content is []content, or an upstream server's content array as it
+	// sent it.
+	Content           any            `json:"content"`
 	StructuredContent jsontext.Value `json:"structuredContent,omitzero"`
 	IsError           bool           `json:"isError"`
 	Meta              map[string]any `json:"_meta"`
@@ -752,6 +754,21 @@ func callResult(res dispatch.Result) toolResult {
 			"transaction_id": res.TransactionID, "outcome": outcome(res), "decision": decision(res), "mode": mode(res),
 			"receipt": res.Receipt, "target_status": res.Response.Status, "truncated": res.Response.Truncated,
 		}},
+	}
+	if res.ToolResult {
+		// An upstream MCP tool's result: its content and structured content
+		// pass through; its _meta is the server's and does not.
+		var up struct {
+			Content           jsontext.Value `json:"content"`
+			StructuredContent jsontext.Value `json:"structuredContent"`
+		}
+		if json.Unmarshal(res.Response.Body, &up) == nil && up.Content.Kind() == '[' {
+			out.Content = up.Content
+			if up.StructuredContent.Kind() == '{' {
+				out.StructuredContent = up.StructuredContent
+			}
+			return out
+		}
 	}
 	if v := jsontext.Value(res.Response.Body); v.IsValid() && (v.Kind() == '{' || v.Kind() == '[') {
 		out.StructuredContent = v
