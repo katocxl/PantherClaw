@@ -75,6 +75,34 @@ func (q *Queries) CountWorkloadAccessRequests(ctx context.Context, orgID ids.Org
 	return column_1, err
 }
 
+const currentChain = `-- name: CurrentChain :one
+SELECT revision, steps, created_by, created_at FROM pc.escalation_chains
+WHERE org_id = $1 AND team_id IS NOT DISTINCT FROM $2::uuid
+ORDER BY revision DESC
+LIMIT 1
+`
+
+type CurrentChainRow struct {
+	Revision  int32
+	Steps     []byte
+	CreatedBy string
+	CreatedAt time.Time
+}
+
+// Escalation (slice 211b, decision 8). escalation_step counts the steps an
+// entry has taken; 0 means it has not been routed yet.
+func (q *Queries) CurrentChain(ctx context.Context, orgID ids.OrgID, teamID *ids.UUID) (CurrentChainRow, error) {
+	row := q.db.QueryRow(ctx, currentChain, orgID, teamID)
+	var i CurrentChainRow
+	err := row.Scan(
+		&i.Revision,
+		&i.Steps,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const deciderCandidates = `-- name: DeciderCandidates :many
 SELECT b.user_id::uuid AS user_id,
        min(CASE b.scope_type WHEN 'ORG' THEN 2 WHEN 'BUSINESS_UNIT' THEN 1 ELSE 0 END)::integer AS rank
@@ -134,8 +162,36 @@ func (q *Queries) DeciderCandidates(ctx context.Context, arg DeciderCandidatesPa
 	return items, nil
 }
 
+const dueEscalations = `-- name: DueEscalations :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step > 0 AND next_step_at <= now()
+  AND deadline_at > now()
+ORDER BY priority, next_step_at, id
+LIMIT $2
+`
+
+func (q *Queries) DueEscalations(ctx context.Context, orgID ids.OrgID, lim int32) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, dueEscalations, orgID, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const entryForRouting = `-- name: EntryForRouting :one
-SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at,
+SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at, e.escalation_step,
        a.team_id, t.business_unit_id, a.environment_id
 FROM pc.waitlist_entries e
 LEFT JOIN pc.agents a ON a.org_id = e.org_id AND a.id = e.agent_id
@@ -153,6 +209,7 @@ type EntryForRoutingRow struct {
 	RequestedBy    *string
 	DeadlineAt     time.Time
 	CreatedAt      time.Time
+	EscalationStep int16
 	TeamID         *ids.UUID
 	BusinessUnitID *ids.UUID
 	EnvironmentID  *ids.UUID
@@ -170,11 +227,37 @@ func (q *Queries) EntryForRouting(ctx context.Context, orgID ids.OrgID, iD ids.U
 		&i.RequestedBy,
 		&i.DeadlineAt,
 		&i.CreatedAt,
+		&i.EscalationStep,
 		&i.TeamID,
 		&i.BusinessUnitID,
 		&i.EnvironmentID,
 	)
 	return i, err
+}
+
+const entryRecipients = `-- name: EntryRecipients :many
+SELECT DISTINCT user_id::uuid AS user_id FROM pc.waitlist_routes
+WHERE org_id = $1 AND entry_id = $2 AND user_id IS NOT NULL
+`
+
+func (q *Queries) EntryRecipients(ctx context.Context, orgID ids.OrgID, entryID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, entryRecipients, orgID, entryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var user_id ids.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const expireWaitlistEntries = `-- name: ExpireWaitlistEntries :many
@@ -255,6 +338,60 @@ func (q *Queries) GrantCurrentRevision(ctx context.Context, orgID ids.OrgID, iD 
 	var current_revision int32
 	err := row.Scan(&current_revision)
 	return current_revision, err
+}
+
+const healthyRoutedEntries = `-- name: HealthyRoutedEntries :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step > 0 AND routing_health = 'OK'
+ORDER BY id
+LIMIT 500
+`
+
+// The routed open entries whose health is OK, to check their deliveries.
+func (q *Queries) HealthyRoutedEntries(ctx context.Context, orgID ids.OrgID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, healthyRoutedEntries, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertChain = `-- name: InsertChain :exec
+INSERT INTO pc.escalation_chains (org_id, id, team_id, revision, steps, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertChainParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	TeamID    *ids.UUID
+	Revision  int32
+	Steps     []byte
+	CreatedBy string
+}
+
+func (q *Queries) InsertChain(ctx context.Context, arg InsertChainParams) error {
+	_, err := q.db.Exec(ctx, insertChain,
+		arg.OrgID,
+		arg.ID,
+		arg.TeamID,
+		arg.Revision,
+		arg.Steps,
+		arg.CreatedBy,
+	)
+	return err
 }
 
 const insertWaitlistRoute = `-- name: InsertWaitlistRoute :exec
@@ -354,6 +491,34 @@ func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntri
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markDeliveryFailing = `-- name: MarkDeliveryFailing :many
+UPDATE pc.waitlist_entries SET routing_health = 'DELIVERY_FAILING'
+WHERE org_id = $1 AND id = ANY ($2::uuid[]) AND state = 'OPEN' AND routing_health = 'OK'
+RETURNING id
+`
+
+// A failed delivery of an open entry's notice marks it DELIVERY_FAILING;
+// it never counts as a decision (HR-039).
+func (q *Queries) MarkDeliveryFailing(ctx context.Context, orgID ids.OrgID, entryIds []ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, markDeliveryFailing, orgID, entryIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -554,13 +719,13 @@ func (q *Queries) TransactionOfRun(ctx context.Context, orgID ids.OrgID, iD ids.
 
 const unroutedEntries = `-- name: UnroutedEntries :many
 SELECT id FROM pc.waitlist_entries
-WHERE org_id = $1 AND state = 'OPEN' AND next_step_at IS NULL AND escalation_step = 0
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step = 0
 ORDER BY priority, deadline_at, id
 LIMIT $2
 `
 
-// Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry with
-// no next step time has not been routed yet.
+// Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry that
+// has taken no escalation step has not been routed yet.
 func (q *Queries) UnroutedEntries(ctx context.Context, orgID ids.OrgID, lim int32) ([]ids.UUID, error) {
 	rows, err := q.db.Query(ctx, unroutedEntries, orgID, lim)
 	if err != nil {

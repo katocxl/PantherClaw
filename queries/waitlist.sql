@@ -80,16 +80,16 @@ WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND run_id = sqlc.arg(run_
 -- name: GrantCurrentRevision :one
 SELECT current_revision FROM pc.grants WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);
 
--- Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry with
--- no next step time has not been routed yet.
+-- Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry that
+-- has taken no escalation step has not been routed yet.
 -- name: UnroutedEntries :many
 SELECT id FROM pc.waitlist_entries
-WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN' AND next_step_at IS NULL AND escalation_step = 0
+WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN' AND escalation_step = 0
 ORDER BY priority, deadline_at, id
 LIMIT sqlc.arg(lim);
 
 -- name: EntryForRouting :one
-SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at,
+SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at, e.escalation_step,
        a.team_id, t.business_unit_id, a.environment_id
 FROM pc.waitlist_entries e
 LEFT JOIN pc.agents a ON a.org_id = e.org_id AND a.id = e.agent_id
@@ -133,3 +133,40 @@ JOIN pc.users u ON u.org_id = b.org_id AND u.id = b.user_id
 WHERE b.org_id = sqlc.arg(org_id) AND b.role = ANY (sqlc.arg(roles)::text[]) AND b.scope_type = 'ORG' AND u.state = 'ACTIVE'
 ORDER BY u.id
 LIMIT 50;
+
+-- Escalation (slice 211b, decision 8). escalation_step counts the steps an
+-- entry has taken; 0 means it has not been routed yet.
+-- name: CurrentChain :one
+SELECT revision, steps, created_by, created_at FROM pc.escalation_chains
+WHERE org_id = sqlc.arg(org_id) AND team_id IS NOT DISTINCT FROM sqlc.narg(team_id)::uuid
+ORDER BY revision DESC
+LIMIT 1;
+
+-- name: InsertChain :exec
+INSERT INTO pc.escalation_chains (org_id, id, team_id, revision, steps, created_by)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.narg(team_id), sqlc.arg(revision), sqlc.arg(steps), sqlc.arg(created_by));
+
+-- name: DueEscalations :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN' AND escalation_step > 0 AND next_step_at <= now()
+  AND deadline_at > now()
+ORDER BY priority, next_step_at, id
+LIMIT sqlc.arg(lim);
+
+-- name: EntryRecipients :many
+SELECT DISTINCT user_id::uuid AS user_id FROM pc.waitlist_routes
+WHERE org_id = sqlc.arg(org_id) AND entry_id = sqlc.arg(entry_id) AND user_id IS NOT NULL;
+
+-- The routed open entries whose health is OK, to check their deliveries.
+-- name: HealthyRoutedEntries :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN' AND escalation_step > 0 AND routing_health = 'OK'
+ORDER BY id
+LIMIT 500;
+
+-- A failed delivery of an open entry's notice marks it DELIVERY_FAILING;
+-- it never counts as a decision (HR-039).
+-- name: MarkDeliveryFailing :many
+UPDATE pc.waitlist_entries SET routing_health = 'DELIVERY_FAILING'
+WHERE org_id = sqlc.arg(org_id) AND id = ANY (sqlc.arg(entry_ids)::uuid[]) AND state = 'OPEN' AND routing_health = 'OK'
+RETURNING id;

@@ -4,6 +4,7 @@
 package domain_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -104,8 +105,38 @@ func TestHR173_TheFirstNoticeGoesToTheNearestDeciders(t *testing.T) {
 	}
 	created := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 	deadline := created.Add(time.Hour)
-	if domain.NextStep(created, deadline, 0) != created.Add(30*time.Minute) || domain.NextStep(created, deadline, 1) != created.Add(45*time.Minute) ||
-		!domain.NextStep(created, deadline, 2).IsZero() {
-		t.Fatal("next steps")
+	c := domain.DefaultChain
+	if domain.StepAt(c, 1, created, deadline) != created.Add(30*time.Minute) || domain.StepAt(c, 2, created, deadline) != created.Add(45*time.Minute) ||
+		!domain.StepAt(c, 3, created, deadline).IsZero() {
+		t.Fatal("the default chain's steps")
+	}
+	org := domain.Step{Scope: domain.ScopeOrg}
+	if got := domain.Reach(org, []domain.Candidate{{Rank: 0}, {Rank: 2}, {Rank: 1}}); len(got) != 3 {
+		t.Fatalf("an org-scope step reaches every decider: %d", len(got))
+	}
+	if got := domain.Reach(domain.Step{Scope: domain.ScopeBusinessUnit}, []domain.Candidate{{Rank: 0}, {Rank: 2}, {Rank: 1}}); len(got) != 2 {
+		t.Fatalf("a business-unit step: %d", len(got))
+	}
+}
+
+// TestHR173_ChainsOnlyWidenAndStayBeforeTheDeadline: a chain starts at 0%,
+// has 1 to 5 steps at increasing times below 100%, and never narrows.
+func TestHR173_ChainsOnlyWidenAndStayBeforeTheDeadline(t *testing.T) {
+	if err := domain.ValidateChain(domain.DefaultChain); err != nil {
+		t.Fatal(err)
+	}
+	near, bu := domain.ScopeNearest, domain.ScopeBusinessUnit
+	for name, steps := range map[string][]domain.Step{
+		"empty":         nil,
+		"six steps":     {{0, near, false, false, true}, {10, near, false, false, false}, {20, near, false, false, false}, {30, bu, false, false, false}, {40, bu, false, false, false}, {50, bu, false, false, false}},
+		"late start":    {{10, near, false, false, true}},
+		"not later":     {{0, near, false, false, true}, {0, bu, false, false, false}},
+		"at 100%":       {{0, near, false, false, true}, {100, bu, false, false, false}},
+		"narrows":       {{0, bu, false, false, true}, {50, near, false, false, false}},
+		"unknown scope": {{0, "TEAM", false, false, true}},
+	} {
+		if err := domain.ValidateChain(steps); !errors.Is(err, domain.ErrChainInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

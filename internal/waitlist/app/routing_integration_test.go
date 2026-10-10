@@ -7,6 +7,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -15,8 +16,10 @@ import (
 	notifdomain "github.com/katocxl/pantherclaw/internal/notifications/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/pgwaitlist"
 	waitlist "github.com/katocxl/pantherclaw/internal/waitlist/app"
+	wdomain "github.com/katocxl/pantherclaw/internal/waitlist/domain"
 )
 
 // fakeNotifier renders each message from its template, as the real
@@ -25,6 +28,20 @@ type fakeNotifier struct {
 	mu   sync.Mutex
 	sent []notifapp.Message
 	link []string
+	// failed are the subjects whose notices failed to deliver.
+	failed []ids.UUID
+}
+
+func (n *fakeNotifier) FailedSubjects(_ context.Context, _ db.TenantTx, _ ids.OrgID, _ string, subjects []ids.UUID) ([]ids.UUID, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []ids.UUID
+	for _, s := range subjects {
+		if slices.Contains(n.failed, s) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 func (n *fakeNotifier) Enqueue(_ context.Context, _ db.TenantTx, m notifapp.Message) (notifapp.Enqueued, error) {
@@ -155,7 +172,8 @@ func TestHR173_RoutingReachesOnlyTheNearestEligibleDeciders(t *testing.T) {
 	}
 	var health string
 	var half bool
-	f.d.AdminQueryRow(t, `SELECT routing_health, next_step_at = created_at + (deadline_at - created_at) / 2 FROM pc.waitlist_entries WHERE id = $1`,
+	f.d.AdminQueryRow(t, `SELECT routing_health, abs(extract(epoch FROM next_step_at - (created_at + (deadline_at - created_at) / 2))) < 0.001 AND escalation_step = 1
+		FROM pc.waitlist_entries WHERE id = $1`,
 		[]any{entry}, &health, &half)
 	if health != "OK" || !half {
 		t.Fatalf("health %s, next step at half %v", health, half)
@@ -206,5 +224,119 @@ func TestHR173_OtherKindsReachTheirPermissionHolders(t *testing.T) {
 	}
 	if len(f.n.sent) != 1 || f.n.sent[0].Type != "waitlist.entry_created" || f.n.sent[0].Params["kind"] != "RECONCILIATION" {
 		t.Fatalf("notice %+v", f.n.sent)
+	}
+}
+
+// due makes an entry's next escalation step due now.
+func (f *rfx) due(entry ids.UUID) {
+	f.d.AdminExec(f.t, "UPDATE pc.waitlist_entries SET next_step_at = now() - interval '1 second' WHERE id = $1", entry)
+}
+
+// sentTo returns the notice types sent to u, in order.
+func (f *rfx) sentTo(u ids.UUID) []string {
+	var out []string
+	for _, m := range f.n.sent {
+		if slices.Contains(m.Personal, u) {
+			out = append(out, m.Type)
+		}
+	}
+	return out
+}
+
+// TestHR173_EscalationWidensRemindsAndTellsTheOwners (decision 8): at half
+// the time the business unit's deciders are added and the first ones
+// reminded; at three quarters the org's deciders are added and the agent's
+// owner (the launcher, who gets no vote) is told; then nothing more.
+func TestHR173_EscalationWidensRemindsAndTellsTheOwners(t *testing.T) {
+	f := newRFx(t)
+	near, bu, org := f.person("approver", "TEAM"), f.person("approver", "BUSINESS_UNIT"), f.person("approver", "ORG")
+	entry, _ := f.hold()
+	f.route()
+	f.due(entry)
+	f.route()
+	f.due(entry)
+	f.route()
+	for u, want := range map[ids.UUID][]string{
+		near:  {"approval.requested", "approval.reminder"},
+		bu:    {"approval.escalated"},
+		org:   {"approval.escalated"},
+		f.ann: {"approval.escalated"},
+	} {
+		if got := f.sentTo(u); !slices.Equal(got, want) {
+			t.Errorf("%s: %v, want %v", u, got, want)
+		}
+	}
+	if got := f.routes(entry); !slices.Contains(got, "owner:"+f.ann.String()) || !slices.Contains(got, "decider:"+org.String()) {
+		t.Fatalf("routes %v", got)
+	}
+	var step int
+	var next *string
+	f.d.AdminQueryRow(t, "SELECT escalation_step, next_step_at::text FROM pc.waitlist_entries WHERE id = $1", []any{entry}, &step, &next)
+	if step != 3 || next != nil {
+		t.Fatalf("after the last step: %d %v", step, next)
+	}
+	sent := len(f.n.sent)
+	if f.route(); len(f.n.sent) != sent {
+		t.Fatal("a finished chain sent more")
+	}
+}
+
+// TestHR173_AChainIsReplacedOnlyByAnAdmin: setting a chain needs
+// waitlist.manage, a valid chain and the current revision; a team without
+// its own chain uses the org's; routing follows the team's chain.
+func TestHR173_AChainIsReplacedOnlyByAnAdmin(t *testing.T) {
+	f := newRFx(t)
+	everyone := []wdomain.Step{{AtPercent: 0, Scope: wdomain.ScopeOrg, NotifyChannels: true}}
+	if _, err := f.w.SetEscalationChain(f.as(f.ben, td.RoleApprover), nil, everyone, 0); err == nil {
+		t.Fatal("an approver set the chain")
+	}
+	admin := f.as(f.ben, td.RoleOrgAdmin)
+	if _, err := f.w.SetEscalationChain(admin, nil, []wdomain.Step{{AtPercent: 10, Scope: wdomain.ScopeOrg}}, 0); !errors.Is(err, waitlist.ErrChainInvalid) {
+		t.Fatalf("an invalid chain: %v", err)
+	}
+	c, err := f.w.SetEscalationChain(admin, nil, wdomain.DefaultChain, 0)
+	if err != nil || c.Revision != 1 || c.CreatedBy != "user:"+f.ben.String() {
+		t.Fatalf("org chain: %+v, %v", c, err)
+	}
+	if _, err := f.w.SetEscalationChain(admin, nil, wdomain.DefaultChain, 0); !errors.Is(err, waitlist.ErrChainChanged) {
+		t.Fatalf("a stale revision: %v", err)
+	}
+	rd := waitlist.NewReader(f.p)
+	if got, err := rd.GetEscalationChain(f.as(f.ben, td.RoleApprover), &f.team); err != nil || got.Revision != 1 || !got.Team.IsZero() {
+		t.Fatalf("a team without its own chain: %+v, %v", got, err)
+	}
+	if _, err := f.w.SetEscalationChain(admin, &f.team, everyone, 0); err != nil {
+		t.Fatal(err)
+	}
+	near, org := f.person("approver", "TEAM"), f.person("approver", "ORG")
+	entry, _ := f.hold()
+	f.route()
+	if !slices.Equal(f.sentTo(near), []string{"approval.requested"}) || !slices.Equal(f.sentTo(org), []string{"approval.requested"}) {
+		t.Fatalf("the team's one-step chain: %v %v", f.sentTo(near), f.sentTo(org))
+	}
+	var step int
+	var next *string
+	f.d.AdminQueryRow(t, "SELECT escalation_step, next_step_at::text FROM pc.waitlist_entries WHERE id = $1", []any{entry}, &step, &next)
+	if step != 1 || next != nil {
+		t.Fatalf("after its only step: %d %v", step, next)
+	}
+	if n := f.route(); n != 0 {
+		t.Fatalf("routed again: %d", n)
+	}
+}
+
+// TestHR039_AFailedDeliveryMarksTheEntryAndDecidesNothing: an entry whose
+// notice failed is DELIVERY_FAILING and still open.
+func TestHR039_AFailedDeliveryMarksTheEntryAndDecidesNothing(t *testing.T) {
+	f := newRFx(t)
+	f.person("approver", "TEAM")
+	entry, _ := f.hold()
+	f.route()
+	f.n.failed = []ids.UUID{entry}
+	f.route()
+	var health, state string
+	f.d.AdminQueryRow(t, "SELECT routing_health, state FROM pc.waitlist_entries WHERE id = $1", []any{entry}, &health, &state)
+	if health != "DELIVERY_FAILING" || state != "OPEN" {
+		t.Fatalf("%s %s", health, state)
 	}
 }
