@@ -24,6 +24,26 @@ CREATE INDEX reservations_pending_rows ON pc.reservations (org_id, account_id) W
 GRANT UPDATE (pending) ON pc.reservations TO pc_app;
 GRANT SELECT (org_id, pending) ON pc.reservations TO pc_lister;
 
+-- The lister below replaces the whole function. Refuse to run if the
+-- current one has purposes it does not carry (a migration merged before
+-- this one added them), rather than drop them: add them below and to this
+-- list first.
+-- +goose StatementBegin
+DO $$
+DECLARE
+    found text[];
+BEGIN
+    SELECT array_agg(m[1] ORDER BY m[1]) INTO found
+    FROM regexp_matches(
+        (SELECT prosrc FROM pg_proc WHERE oid = 'pc.cross_org_list(text, integer)'::regprocedure),
+        'WHEN ''([a-z_]+)'' THEN', 'g') AS m;
+    IF found IS DISTINCT FROM ARRAY['ledger_unchained', 'orgs', 'permits_sweep', 'verifications_due'] THEN
+        RAISE EXCEPTION '00070_budget_settlement: pc.cross_org_list has purposes %; carry the new ones into this migration', found;
+    END IF;
+END
+$$;
+-- +goose StatementEnd
+
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION pc.cross_org_list(p_purpose text, p_max_rows integer)
 RETURNS TABLE (org_id uuid, id uuid)
