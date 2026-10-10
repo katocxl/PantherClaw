@@ -429,3 +429,56 @@ func approved(ctx context.Context, tx db.TenantTx, q *dbq.Queries, orgID ids.Org
 	}
 	return event(ctx, tx, "approval.multi_person_completed", userActor(rs[len(rs)-1].UserID), "", l.row.ID, nil)
 }
+
+// BeginApproval checks that a person may approve or step up now, before the
+// approval page starts the BINDING ceremony (design decision 7): the
+// request is PENDING, they have not responded yet, and they are eligible,
+// with one of their active keys, for a requirement still short. It returns
+// the binding, which is the ceremony's challenge (HR-033). The page has
+// already checked that the person may see the request.
+func (s *Service) BeginApproval(ctx context.Context, orgID ids.OrgID, r Responder, id ids.UUID) ([32]byte, error) {
+	var binding [32]byte
+	if r.Browser.IsZero() || r.User.IsZero() {
+		return binding, ErrHumanSession
+	}
+	err := s.Pool.InTenantTx(ctx, orgID, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		row, err := q.GetApprovalRequest(ctx, orgID, id)
+		if db.IsNoRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		rows, err := q.CountingResponses(ctx, orgID, id)
+		if err != nil {
+			return err
+		}
+		users := []ids.UUID{r.User}
+		var counted []apdomain.Response
+		for _, x := range rows {
+			if x.UserID == r.User {
+				return ErrNotEligible // one response per person (HR-035)
+			}
+			users = append(users, x.UserID)
+			counted = append(counted, apdomain.Response{UserID: x.UserID, CredentialID: x.CredentialID, Requirement: int(x.Requirement)})
+		}
+		e, err := pgapprovals.LoadEligibility(ctx, q, orgID, id, users)
+		if err != nil {
+			return err
+		}
+		if row.SubjectKind != "ACTION" || !waiting(row, e.Context.Now, apdomain.StatePending) {
+			return ErrNotWaiting
+		}
+		me := e.People[r.User]
+		if _, ok := apdomain.Next(e.Requirements, counted, func(i int) bool {
+			ok, _ := apdomain.Check(e.Requirements[i], me, e.Context, ids.UUID{})
+			return ok
+		}); !ok {
+			return ErrNotEligible
+		}
+		copy(binding[:], row.Binding)
+		return nil
+	}, db.ReadOnly())
+	return binding, err
+}

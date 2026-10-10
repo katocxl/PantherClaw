@@ -416,3 +416,39 @@ func TestHR170_RemovingTheRoleDisablingTheUserOrTheKeyVoidsResponses(t *testing.
 		})
 	}
 }
+
+// TestHR033_OnlyAnEligibleDeciderGetsTheBindingToSign: approve-options
+// gives the binding (the ceremony's challenge) only to a person who may
+// approve now, once.
+func TestHR033_OnlyAnEligibleDeciderGetsTheBindingToSign(t *testing.T) {
+	f := newFx(t, 1)
+	req := f.request(1)
+	ctx := context.Background()
+	b, err := f.svc.BeginApproval(ctx, f.org, approvals.Responder{User: f.bob.id, Browser: f.bob.browser}, req)
+	if err != nil || f.str("SELECT encode(binding, 'hex') FROM pc.approval_requests WHERE id = $1", req) != hexString(b[:]) {
+		t.Fatalf("bob: %x, %v", b, err)
+	}
+	for name, p := range map[string]person{"the launcher": f.alice, "someone without the role": f.carol} {
+		if _, err := f.svc.BeginApproval(ctx, f.org, approvals.Responder{User: p.id, Browser: p.browser}, req); !errors.Is(err, approvals.ErrNotEligible) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := f.svc.BeginApproval(ctx, f.org, approvals.Responder{User: f.bob.id, CLI: f.bob.cli}, req); !errors.Is(err, approvals.ErrHumanSession) {
+		t.Fatalf("from the CLI: %v", err)
+	}
+	if _, err := f.approve(f.bob, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BeginApproval(ctx, f.org, approvals.Responder{User: f.dave.id, Browser: f.dave.browser}, req); !errors.Is(err, approvals.ErrNotWaiting) {
+		t.Fatalf("after approval: %v", err)
+	}
+}
+
+func hexString(b []byte) string {
+	const digits = "0123456789abcdef"
+	out := make([]byte, 0, 2*len(b))
+	for _, c := range b {
+		out = append(out, digits[c>>4], digits[c&15])
+	}
+	return string(out)
+}
