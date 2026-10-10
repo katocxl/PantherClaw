@@ -175,6 +175,8 @@ Before sending any byte to the target the gateway MUST call `BeginDispatch{permi
 ### 7.4 RecordExecution
 `RecordExecution{permit_id, outcome: accepted|failed|unknown|delegated, target_response_digest, timings}` → execution receipt. The target-facing idempotency key (where the target supports one) MUST be derived from `transaction_id`, never from agent-supplied ids. `delegated` is used only by cooperative channels (hooks, SDK authorize), where the agent performs the allowed action itself: its reservations are committed as if the action happened, and the receipt says the gateway did not perform it.
 
+`RecordExecution` MAY also carry `target_ref`: the identifier of the object the target created, which the gateway reads from a 2xx response at the place the action definition's verifier names (`verifier.reference`); it is the only part of a response body sent to the Authority, apart from payload captures under a capture profile. An `unknown` outcome opens a reconciliation task and keeps the reservations (§9.3). When the sweeper has already marked the permit `UNKNOWN`, a later `RecordExecution` for it is kept as evidence: `accepted` resolves the reconciliation as occurred, and any other outcome resolves nothing.
+
 ## 8. Holds, waiting and approvals
 
 - `REQUIRE_APPROVAL` / `REQUIRE_STEP_UP` return `wait.handle`. SDKs MAY long-poll `Wait{handle}` or subscribe via SSE; MCP clients receive a structured pending result, or a task when they support one (the tasks extension of MCP 2026-07-28, or a task-augmented call in 2025-11-25).
@@ -195,13 +197,17 @@ Before sending any byte to the target the gateway MUST call `BeginDispatch{permi
 Signed JWS (`typ: "pap-decision+jwt"`) containing: transaction id, action hash, decision, reasons, checklist, obligations, versions (decision-basis digest, grant revision, definition digest), facts digest, identity summary (instance, att_lvl, launcher, principal), timestamps, `simulated` flag.
 
 ### 9.2 Execution receipt
-Effective action hash, permit id, gateway id, access mode (target-enforced, narrow temporary, PantherClaw-held, constrained runtime, agent-held), attempts, dispatch time, outcome, target response digest, `simulated` flag.
+Signed JWS (`typ: "pap-execution+jwt"`, `jti` = permit id) containing: transaction id, effective action hash (`effective`), permit id, gateway id, connection, access mode (target-enforced, narrow temporary, PantherClaw-held, constrained runtime, agent-held), attempt number, dispatch time (`dispatched_at`), outcome, target status, target response digest, `target_ref` when the target returned one, who recorded it (`recorded_by`: `gateway`, or `sweeper` for a dispatch that never reported), `monitor` when applicable, `simulated` flag.
 
 ### 9.3 Effect receipt
-Verifier identity and authority, verification level (transport/acceptance · follow-up state · domain effect · downstream consequence), expected vs observed effect, result state (§ARCHITECTURE 6.2), basis, limitations, timestamps.
+Signed JWS (`typ: "pap-effect+jwt"`, `jti` = transaction id and sequence) appended for every change of a transaction's effect state, never rewritten. It contains: transaction id, sequence, the verifier (read operation, gateway, connection, what it `establishes`), the verification level required and achieved (`acceptance` · `follow_up` · `domain_effect` · `downstream`), the expected and observed values as digests, the result state (`CONFIRMED`, `NONE_CONFIRMED`, `PARTIAL`, `PROPAGATION_PENDING`, `CONFLICTING`, `UNVERIFIABLE`, `UNKNOWN`, `COMPENSATED`; ARCHITECTURE §6.2), one result per declared effect kind, the basis (observation ids, or the person who resolved a reconciliation), the definition's limits text, timestamps and the `simulated` flag. A target's acceptance, the executor's report and anything the agent says are never observations: on their own they reach only the `acceptance` level. An `unknown` outcome stays unresolved, with its reservations held, until an observation shows the effect happened (resolved automatically) or an independent person releases it with a WebAuthn assertion bound to the resolution.
 
 ### 9.4 Signatures and chaining
 Receipts are Ed25519-signed; the format reserves `sigs[]` for an additional ML-DSA-65 signature. Receipts are linked into a per-org hash chain (`entry_hash = SHA-256(prev_hash ‖ JCS(entry))`) and summarized in signed Merkle checkpoints. A global root over all orgs MAY be anchored in a public transparency log.
+
+- **Tree and checkpoints.** Each org's chain is an RFC 9162 Merkle tree whose leaves are the `entry_hash` values in sequence order, stored as C2SP tlog tiles. A checkpoint is a C2SP signed note: origin `<log origin>/org/<org id>`, tree size and base64 root, signed by the deployment's `checkpoints` Ed25519 key, and optionally co-signed with ML-DSA-65 under a separate key name that verifiers which do not know it ignore.
+- **Anchors.** A global tree has one leaf per org per anchor, `SHA-256(0x00 ‖ "pantherclaw.anchor-leaf.v1" ‖ nonce ‖ SHA-256(checkpoint note))` with a fresh 32-byte nonce, so leaves reveal neither the org nor its activity. The statement `{"v":1,"type":"pantherclaw.anchor","origin":…,"period":…,"size":…,"root":…}` (JCS) is signed with the `anchors` key (ECDSA P-256), entered in a Rekor v2 log as a `hashedrekord` entry, and its signature is timestamped by an RFC 3161 authority. Logs and authorities are configuration, never fixed.
+- **Verification.** A verifier checks receipts against keys it pinned from `evidence-keys.json` (§11), chain links, inclusion proofs to a checkpoint, consistency proofs between checkpoints (including one it saved earlier), the checkpoint signatures, the org's anchor leaf and its inclusion in the global root, the log's checkpoint and inclusion proof, and the timestamp. It reports each check as passed, failed or not available. Integrity of the evidence it was given is all a passing check shows: not completeness, not that an external effect happened.
 
 ## 10. Target-enforced mode (action tokens)
 
@@ -219,6 +225,7 @@ The verifier MUST check signature (JWKS), `aud`, expiry, `bh` against the receiv
 
 - JWKS: `GET /.well-known/pantherclaw/jwks.json` (Authority signing keys, with `use`, `alg`, `kid`).
 - Rotation every 90 days with ≥ 7-day overlap; revoked keys published in `/.well-known/pantherclaw/revoked-keys.json`.
+- Evidence keys: `GET /.well-known/pantherclaw/evidence-keys.json` lists the keys that sign receipts, checkpoints (Ed25519 and the optional ML-DSA-65 co-signature), anchors (ECDSA P-256) and evidence-pack manifests, each with `kid`, purpose, algorithm, `not_before`, `not_after` and state. Offline verifiers pin this document once and compare fingerprints through another channel; they never fetch keys while verifying (§9.4).
 - Tool packages and licence keys are signed by separate offline roots (not in the JWKS).
 
 ## 12. Error codes (`PAP-Error`)
