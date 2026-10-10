@@ -475,6 +475,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
 	}
 	d.m6.registerPublic(rs)
+	registerM7(rs, pool)
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)

@@ -4,11 +4,21 @@
 package server
 
 import (
+	"connectrpc.com/connect/v2"
+
+	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/keys"
 	"github.com/katocxl/pantherclaw/internal/transactions/adapters/pgtransactions"
+	"github.com/katocxl/pantherclaw/internal/transactions/adapters/transactionsrpc"
 	txapp "github.com/katocxl/pantherclaw/internal/transactions/app"
 )
+
+// registerM7 mounts the M7 track A services people use: the transaction
+// list and the evidence explorer.
+func registerM7(rs *connect.Server, pool *db.Pool) {
+	pantherclawv1connect.RegisterTransactionServiceHandler(rs, transactionsrpc.New(&txapp.Explorer{Pool: pool}))
+}
 
 // newVerification builds the server side of verification (G0 M7 track A):
 // leases, reports and the expiry of leases and windows. Effect receipts are

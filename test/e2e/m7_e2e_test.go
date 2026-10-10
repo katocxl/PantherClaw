@@ -15,8 +15,10 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/sim/payments"
+	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 	"github.com/katocxl/pantherclaw/internal/transactions/adapters/pgtransactions"
 	txapp "github.com/katocxl/pantherclaw/internal/transactions/app"
+	txdomain "github.com/katocxl/pantherclaw/internal/transactions/domain"
 )
 
 // row reads one text row of the seeded org.
@@ -63,6 +65,21 @@ func TestE2E_M7_ARefundIsConfirmedByItsVerifier(t *testing.T) {
 		r.TransactionID)
 	if got := s.row(t, "SELECT effect_state FROM pc.transactions WHERE id = $1", r.TransactionID); got != "CONFIRMED" {
 		t.Fatalf("transaction effect %q", got)
+	}
+
+	// The explorer shows the execution state beside the effect state, with
+	// every receipt (F479).
+	txn, err := ids.ParseUUID(r.TransactionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := (&txapp.Explorer{Pool: s.pool}).TransactionEvidence(s.person(t, "reconciler", td.RoleReconciler).ctx, txn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Transaction.Execution != txdomain.Accepted || ev.Transaction.Effect != txdomain.Confirmed || len(ev.Decisions) != 1 ||
+		ev.Execution == nil || ev.Execution.TargetRef == "" || len(ev.Observations) == 0 || len(ev.Effects) == 0 {
+		t.Fatalf("evidence %+v", ev)
 	}
 }
 

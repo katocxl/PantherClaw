@@ -11,11 +11,13 @@ import (
 )
 
 // m7aProcedures are the procedures of M7 track A (G0 M7): the
-// gateway-facing verification leases and reports. TestProcedurePermissionsMatchProtos
-// checks the merged map.
+// gateway-facing verification leases and reports, and the evidence
+// explorer. TestProcedurePermissionsMatchProtos checks the merged map.
 var m7aProcedures = map[string]td.Permission{
-	pantherclawv1connect.GatewayServiceClaimVerificationsProcedure: "gateway.verify",
-	pantherclawv1connect.GatewayServiceReportObservationProcedure:  "gateway.verify",
+	pantherclawv1connect.GatewayServiceClaimVerificationsProcedure:         "gateway.verify",
+	pantherclawv1connect.GatewayServiceReportObservationProcedure:          "gateway.verify",
+	pantherclawv1connect.TransactionServiceListTransactionsProcedure:       "evidence.read",
+	pantherclawv1connect.TransactionServiceGetTransactionEvidenceProcedure: "evidence.read",
 }
 
 func init() { maps.Copy(procedurePermissions, m7aProcedures) }
