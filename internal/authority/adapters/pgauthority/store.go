@@ -29,6 +29,7 @@ import (
 	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pgwaitlist "github.com/katocxl/pantherclaw/internal/waitlist/adapters/pgwaitlist"
 )
 
 const (
@@ -428,10 +429,9 @@ func (s *Store) Tamper(ctx context.Context, org ids.OrgID, prev finalize.Stored,
 		if prev.Final || receipt == nil {
 			return nil
 		}
-		if err := expect(dbq.New(tx).UpdateDecision(ctx, dbq.UpdateDecisionParams{
-			Decision: "DENY", ReasonCode: "ACTION_TAMPERED", State: "FINAL", Evaluations: int32(prev.Evaluations + 1), //nolint:gosec // ≤ 33
-			OrgID: org, ID: prev.TransactionID, PrevEvaluations: int32(prev.Evaluations), //nolint:gosec // ≤ 32
-		})); err != nil {
+		// Only the decision changes: the transaction keeps its mode, grant
+		// and hashes.
+		if err := expect(dbq.New(tx).CloseTampered(ctx, org, prev.TransactionID, int32(prev.Evaluations))); err != nil { //nolint:gosec // ≤ 32
 			return err
 		}
 		return writeReceipt(ctx, tx, org, prev.TransactionID, prev.Evaluations+1, gatewayID, *receipt)
@@ -588,8 +588,14 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 				return err
 			}
 			return q.SettleDedupeClaim(ctx, string(pipeline.ClaimReleased), org, txn)
-		case finalize.Unknown: // reservations and claim stay held until reconciled (HR-003, HR-192)
-			return openReconciliation(ctx, q, org, txn)
+		case finalize.Unknown: // reservations and claim stay held until reconciled (HR-003, HR-192, F115)
+			if err := openReconciliation(ctx, q, org, txn); err != nil {
+				return err
+			}
+			// The waitlist entry people work it from (G0 M5 part 2); A11
+			// links it to the reconciliation.
+			_, err := pgwaitlist.OpenReconciliation(ctx, tx, org, txn, evdomain.Actor{Type: "gateway", ID: gatewayID})
+			return err
 		}
 		return nil
 	})
@@ -619,8 +625,13 @@ func (s *Store) Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Durati
 		if err != nil {
 			return err
 		}
+		// Each unknown outcome gets its evidence and a reconciliation, and
+		// waits on the waitlist (G0 M5 part 2).
 		for _, p := range stale {
 			if err := sweptEvidence(ctx, tx, q, org, p, sign); err != nil {
+				return err
+			}
+			if _, err := pgwaitlist.OpenReconciliation(ctx, tx, org, p.TransactionID, pgwaitlist.System); err != nil {
 				return err
 			}
 		}
