@@ -256,8 +256,8 @@ serve() {
   printf 'worktree=%s\npid=%s\nstarted=%s\n' "$(pwd)" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LOCK/owner"
   touch "$BEAT"
   (while kill -0 $$ 2>/dev/null; do touch "$BEAT"; sleep 15; done) &
-  local beat=$!
-  trap 'kill "$beat" 2>/dev/null; rm -rf "$LOCK" "$STATE/current"' EXIT
+  BEAT_PID=$!
+  trap 'kill "$BEAT_PID" 2>/dev/null; rm -rf "$LOCK" "$STATE/current"' EXIT
   say "lander running in $(pwd); queue in $QUEUE"
   # seen is this script as main had it when the lander started: a landing
   # that changes it there restarts the lander with the new version.
@@ -282,7 +282,7 @@ serve() {
       say "land.sh changed on main; restarting the lander with the new version"
       clean_worktree
       git switch --quiet --detach origin/main
-      kill "$beat" 2>/dev/null || true
+      kill "$BEAT_PID" 2>/dev/null || true
       rm -rf "$LOCK"
       trap - EXIT
       if [ "$ONCE" = 1 ]; then
