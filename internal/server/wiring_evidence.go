@@ -8,10 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 
+	"connectrpc.com/connect/v2"
 	"github.com/riverqueue/river"
 
+	"github.com/katocxl/pantherclaw/internal/evidence/adapters/evidencerpc"
+	evapp "github.com/katocxl/pantherclaw/internal/evidence/app"
 	"github.com/katocxl/pantherclaw/internal/evidence/checkpoints"
 	"github.com/katocxl/pantherclaw/internal/evidence/keydocs"
+	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/keystore"
 	"github.com/katocxl/pantherclaw/internal/platform/clock"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -40,4 +44,9 @@ func registerEvidenceWorkers(reg *jobs.Registry, cfg *Config, pool *db.Pool, key
 		return nil, err
 	}
 	return checkpoints.PeriodicJobs(cfg.checkpointInterval()), nil
+}
+
+// registerEvidence serves EvidenceService on the public API.
+func registerEvidence(rs *connect.Server, d apiDeps) {
+	pantherclawv1connect.RegisterEvidenceServiceHandler(rs, evidencerpc.New(evapp.New(d.pool, d.logOrigin)))
 }
