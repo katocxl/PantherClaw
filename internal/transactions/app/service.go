@@ -138,7 +138,14 @@ type Effect struct {
 	Effects []EffectResult
 	Limits  string
 	Reason  string
-	At      time.Time
+	// Person is who resolved it, for the "person" basis.
+	Person *ids.UUID
+	// Compensation is the compensating transaction, for the
+	// "compensation" basis; Reversibility is the original definition's, so
+	// an irreversible effect reads "compensated, not reversed" (HR-193).
+	Compensation  *ids.UUID
+	Reversibility defs.Reversibility
+	At            time.Time
 }
 
 // EffectResult is the state of one declared effect kind.
@@ -242,6 +249,12 @@ func (s *Service) sign(e Effect) (Signed, error) {
 		}
 		basis["observations"] = obs
 	}
+	if e.Person != nil {
+		basis["person"] = e.Person.String()
+	}
+	if e.Compensation != nil {
+		basis["transaction"] = e.Compensation.String()
+	}
 	pap := map[string]any{
 		"v": 1, "kind": "effect", "org": e.Org.String(), "txn": e.Transaction.String(), "seq": e.Seq,
 		"state": string(e.State), "required": string(e.Required), "basis": basis, "simulated": false,
@@ -267,6 +280,9 @@ func (s *Service) sign(e Effect) (Signed, error) {
 	}
 	if e.Reason != "" {
 		pap["reason"] = e.Reason
+	}
+	if e.Reversibility != "" {
+		pap["reversibility"] = string(e.Reversibility)
 	}
 	iss := s.Issuer
 	if iss == "" {
