@@ -1,0 +1,19 @@
+{
+  "description": "PantherClaw decides every Bash and PowerShell command; anything it did not allow is blocked, including when it cannot be reached.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pclaw",
+            "args": ["hook", "claude-code"],
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

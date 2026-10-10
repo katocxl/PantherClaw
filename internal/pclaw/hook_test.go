@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+package pclaw
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json/v2"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeHook is a gateway /hook/{connection} endpoint: it allows "ls",
+// denies "rm", holds "deploy" and stalls on "slow".
+type fakeHook struct {
+	*httptest.Server
+	mu   sync.Mutex
+	reqs []*http.Request
+	body []map[string]any
+}
+
+func newFakeHook(t *testing.T) *fakeHook {
+	t.Helper()
+	f := &fakeHook{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tool  string            `json:"tool"`
+			Input map[string]string `json:"input"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &req)
+		f.mu.Lock()
+		f.reqs = append(f.reqs, r)
+		f.body = append(f.body, map[string]any{"tool": req.Tool, "input": req.Input, "path": r.URL.Path})
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch strings.Fields(req.Input["command"])[0] {
+		case "ls":
+			_, _ = io.WriteString(w, `{"decision":"allow","reason":"PantherClaw allowed this call. Transaction t-1.","transaction_id":"t-1","mode":"enforce"}`)
+		case "deploy":
+			_, _ = io.WriteString(w, `{"decision":"deny","held":true,"reason":"PantherClaw holds this call for an approval by an eligible person, not by you. Transaction t-2.","mode":"enforce"}`)
+		case "slow":
+			time.Sleep(time.Second)
+			_, _ = io.WriteString(w, `{"decision":"allow","reason":"too late","mode":"enforce"}`)
+		default:
+			_, _ = io.WriteString(w, `{"decision":"deny","reason":"PantherClaw denied this call: policy_denied (SHELL_DESTRUCTIVE). Transaction t-3.","mode":"enforce"}`)
+		}
+	}))
+	t.Cleanup(f.Close)
+	return f
+}
+
+func hookEvent(tool, command, cwd, id string) string {
+	b, _ := json.Marshal(map[string]any{
+		"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd, "tool_use_id": id,
+		"tool_input": map[string]any{"command": command, "description": "d"},
+	})
+	return string(b)
+}
+
+// runHook runs pclaw hook claude-code with stdin and the env.
+func runHook(t *testing.T, env map[string]string, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code := Run(context.Background(), append([]string{"hook", "claude-code"}, args...), &out, &errb, envOf(env), Options{Stdin: strings.NewReader(stdin)})
+	return code, out.String(), errb.String()
+}
+
+func hookEnv(t *testing.T, gateway string) map[string]string {
+	t.Helper()
+	keyFile, _, run := proxyFiles(t)
+	// A cached token with ten minutes left, which the hook uses.
+	enc := base64.RawURLEncoding.EncodeToString
+	tok := enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(`{"exp":`+itoa(time.Now().Add(10*time.Minute).Unix())+`}`)) + ".sig"
+	if err := os.WriteFile(keyFile+".token", []byte(tok+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{
+		"PANTHERCLAW_GATEWAY": gateway, "PANTHERCLAW_HOOK_CONNECTION": "shell", "PANTHERCLAW_WORKLOAD_KEY_FILE": keyFile, "PANTHERCLAW_RUN": run,
+	}
+}
+
+// TestHR186_TheHookAllowsOnlyWhatPantherClawAllowed: an allowed command is
+// answered with a PreToolUse allow and exit code 0; a denial and a hold
+// block it (exit code 2, the reason on stderr), and a hold never asks the
+// local user. The request is a PAP/1-signed shell call with the command
+// as sent, the shell, the resolved working directory and the tool use id.
+func TestHR186_TheHookAllowsOnlyWhatPantherClawAllowed(t *testing.T) {
+	f := newFakeHook(t)
+	env := hookEnv(t, f.URL)
+	dir := t.TempDir()
+	code, out, errs := runHook(t, env, hookEvent("Bash", "ls -la  'a b'", dir, "toolu_01"))
+	var got struct {
+		Out struct {
+			Event    string `json:"hookEventName"`
+			Decision string `json:"permissionDecision"`
+			Reason   string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &got) != nil || got.Out.Event != "PreToolUse" || got.Out.Decision != "allow" ||
+		!strings.Contains(got.Out.Reason, "t-1") {
+		t.Fatalf("allow = %d %q %q", code, out, errs)
+	}
+	f.mu.Lock()
+	r, b := f.reqs[0], f.body[0]
+	f.mu.Unlock()
+	in := b["input"].(map[string]string)
+	final, _ := filepath.EvalSymlinks(dir)
+	if b["path"] != "/hook/shell" || b["tool"] != "shell" || in["shell"] != "bash" || in["command"] != "ls -la  'a b'" ||
+		in["cwd"] != final || in["call"] != "toolu_01" || r.Header.Get("PAP-Proof") == "" || r.Header.Get("PAP-Run-Id") != env["PANTHERCLAW_RUN"] ||
+		!strings.HasPrefix(r.Header.Get("Authorization"), "PAP ") {
+		t.Fatalf("request %v %v", b, r.Header)
+	}
+	for name, tc := range map[string]struct{ tool, command, want string }{
+		"denied":     {"PowerShell", "rm -Recurse x", "SHELL_DESTRUCTIVE"},
+		"held":       {"Bash", "deploy prod", "not by you"},
+		"other tool": {"Write", "ls", "only Bash and PowerShell"},
+		"empty":      {"Bash", "", "empty"},
+	} {
+		code, out, errs := runHook(t, env, hookEvent(tc.tool, tc.command, dir, "toolu_02"))
+		if code != 2 || out != "" || !strings.Contains(errs, tc.want) || strings.Contains(errs, `"ask"`) {
+			t.Errorf("%s: %d %q %q", name, code, out, errs)
+		}
+	}
+	f.mu.Lock()
+	ps := f.body[1]["input"].(map[string]string)["shell"]
+	f.mu.Unlock()
+	if ps != "powershell" {
+		t.Fatalf("PowerShell sent as %q", ps)
+	}
+}
+
+// TestHR186_TheHookFailsClosed: an unreachable or slow gateway, input that
+// is not a PreToolUse event, missing configuration and even a help flag
+// block the command with exit code 2, within the hook's own deadline.
+func TestHR186_TheHookFailsClosed(t *testing.T) {
+	f := newFakeHook(t)
+	env := hookEnv(t, f.URL)
+	old := hookDeadline
+	hookDeadline = 200 * time.Millisecond
+	t.Cleanup(func() { hookDeadline = old })
+	dead := hookEnv(t, "http://127.0.0.1:1")
+	missing := map[string]string{}
+	for name, tc := range map[string]struct {
+		env   map[string]string
+		stdin string
+		args  []string
+	}{
+		"unreachable":  {dead, hookEvent("Bash", "ls", t.TempDir(), "toolu_1"), nil},
+		"slow":         {env, hookEvent("Bash", "slow", t.TempDir(), "toolu_1"), nil},
+		"not json":     {env, "{", nil},
+		"another hook": {env, strings.Replace(hookEvent("Bash", "ls", t.TempDir(), "x"), "PreToolUse", "PostToolUse", 1), nil},
+		"no config":    {missing, hookEvent("Bash", "ls", t.TempDir(), "x"), nil},
+		"help flag":    {env, hookEvent("Bash", "ls", t.TempDir(), "x"), []string{"-h"}},
+	} {
+		start := time.Now()
+		code, out, errs := runHook(t, tc.env, tc.stdin, tc.args...)
+		if code != 2 || out != "" || !strings.Contains(errs, "PantherClaw could not decide this command, so it is blocked") ||
+			time.Since(start) > 900*time.Millisecond {
+			t.Errorf("%s: %d %q %q after %s", name, code, out, errs, time.Since(start))
+		}
+	}
+}
+
+// TestHR186_ThePluginBlocksOnFailure: the plugin runs the hook for Bash
+// and PowerShell, with a timeout longer than the hook's own deadline, and
+// blocks the call if the hook fails or times out anyway.
+func TestHR186_ThePluginBlocksOnFailure(t *testing.T) {
+	b, err := os.ReadFile("../../integrations/claude-code/hooks/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type      string   `json:"type"`
+				Command   string   `json:"command"`
+				Args      []string `json:"args"`
+				Timeout   int      `json:"timeout"`
+				OnFailure string   `json:"onFailure"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	pre := cfg.Hooks["PreToolUse"]
+	if len(cfg.Hooks) != 1 || len(pre) != 1 || pre[0].Matcher != "Bash|PowerShell" || len(pre[0].Hooks) != 1 {
+		t.Fatalf("hooks %+v", cfg.Hooks)
+	}
+	h := pre[0].Hooks[0]
+	if h.Type != "command" || h.Command != "pclaw" || strings.Join(h.Args, " ") != "hook claude-code" || h.OnFailure != "block" ||
+		time.Duration(h.Timeout)*time.Second <= hookDeadline {
+		t.Fatalf("hook %+v", h)
+	}
+	var plugin struct {
+		Name string `json:"name"`
+	}
+	if b, err := os.ReadFile("../../integrations/claude-code/.claude-plugin/plugin.json"); err != nil || json.Unmarshal(b, &plugin) != nil ||
+		plugin.Name != "pantherclaw" {
+		t.Fatalf("plugin.json %+v %v", plugin, err)
+	}
+}
+
+// TestHR092_TheHookReusesAFreshToken: a cached token with more than a
+// minute left is used; an expiring one is not.
+func TestHR092_TheHookReusesAFreshToken(t *testing.T) {
+	tok := func(exp time.Time) string {
+		enc := base64.RawURLEncoding.EncodeToString
+		return enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(`{"exp":`+itoa(exp.Unix())+`}`)) + ".sig"
+	}
+	if d := time.Until(tokenExpiry(tok(time.Now().Add(5 * time.Minute)))); d < 4*time.Minute {
+		t.Fatalf("expiry in %s", d)
+	}
+	if !tokenExpiry("not.a.token").IsZero() || !tokenExpiry("garbage").IsZero() {
+		t.Fatal("an unreadable token has an expiry")
+	}
+}
+
+func itoa(n int64) string {
+	b, _ := json.Marshal(n)
+	return string(b)
+}

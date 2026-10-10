@@ -105,9 +105,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env, 
 		return 2
 	}
 	err := cmd.run(ctx, a, rest)
+	var exit *exitError
 	switch {
 	case err == nil:
 		return 0
+	case errors.As(err, &exit):
+		_, _ = fmt.Fprintln(stderr, exit.msg)
+		return exit.code
 	case errors.Is(err, flag.ErrHelp):
 		return 0
 	case errors.Is(err, errUsage):
@@ -130,6 +134,15 @@ func lookup(args []string) (command, []string, bool) {
 }
 
 // describe turns RPC errors into one readable line.
+// exitError ends a command with its own exit code and message (the Claude
+// Code hook blocks with code 2).
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e *exitError) Error() string { return e.msg }
+
 func describe(err error) string {
 	var ce *connect.Error
 	if errors.As(err, &ce) {
