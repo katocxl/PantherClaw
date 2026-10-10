@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
+	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -52,9 +52,6 @@ const (
 	proxyMaxAnswer = 16 << 20
 	// proxyTimeout bounds one request to the gateway.
 	proxyTimeout = 2 * time.Minute
-	// proxyTokenRefresh renews the workload token well inside its
-	// 10-minute lifetime (PAP-1 §3.4).
-	proxyTokenRefresh = 4 * time.Minute
 	// legacyVersion is the MCP revision with sessions.
 	legacyVersion = "2025-11-25"
 )
@@ -111,7 +108,8 @@ func mcpProxy(ctx context.Context, a *app, args []string) error {
 }
 
 // proxyTokens returns the workload token source: the token in tokenFile,
-// or tokens issued by the key file's server and renewed until ctx ends.
+// or tokens issued by the key file's server and renewed halfway through
+// each one's lifetime until ctx ends (workloadclient.Renewer).
 func (a *app) proxyTokens(ctx context.Context, kf workloadclient.KeyFile, tokenFile string) (func() string, error) {
 	if tokenFile != "" {
 		b, err := os.ReadFile(tokenFile) //nolint:gosec // G304: operator-chosen path
@@ -130,31 +128,23 @@ func (a *app) proxyTokens(ctx context.Context, kf workloadclient.KeyFile, tokenF
 	}
 	var mu sync.Mutex
 	var cur string
-	issue := func() error {
-		res, err := wc.IssueToken(ctx, &pantherclawv1.IssueTokenRequest{Identifier: kf.Identifier})
-		if err != nil {
-			return fmt.Errorf("workload token: %w", err)
-		}
+	tr := &tokenRenewal{a: a, wc: wc, identifier: kf.Identifier, name: "pclaw mcp proxy"}
+	r := tr.renewer(func(iss workloadclient.Issued) error {
 		mu.Lock()
-		cur = res.GetWorkloadToken()
+		cur = iss.Token
 		mu.Unlock()
 		return nil
-	}
-	if err := issue(); err != nil {
-		return nil, err
+	})
+	if err := r.Renew(ctx); err != nil {
+		return nil, fmt.Errorf("workload token: %w", err)
 	}
 	go func() {
-		tick := time.NewTicker(proxyTokenRefresh)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				if err := issue(); err != nil {
-					_, _ = fmt.Fprintf(a.stderr, "pclaw mcp proxy: %v (the current token is kept until it expires)\n", err)
-				}
-			}
+		var refusal *workloadclient.RefusalError
+		if err := r.Run(ctx); errors.As(err, &refusal) {
+			inst, _ := pap.ParseInstance(kf.Identifier)
+			tr.report(refusalHelp(refusal.Code, inst, "the key file", kf.Server) + " Requests fail from now on.")
+		} else if err != nil {
+			tr.report(err.Error())
 		}
 	}()
 	return func() string {
