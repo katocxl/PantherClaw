@@ -71,11 +71,18 @@ func serve(t *testing.T, cfgPath string) string {
 	return ""
 }
 
-var seededOrg = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+var (
+	seededOrg        = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+	seededConnection = regexp.MustCompile(`seeded connection ([0-9a-f-]{36}) `)
+)
+
+// devConn is the payments connection of the last seed with a gateway.
+var devConn ids.UUID
 
 // seed runs `dev seed` and returns the org, the gateway enrollment file
 // ("" without withGateway), the workload key file and the fact provider's
-// API key file. The same configuration (and so the same key-encryption key)
+// API key file. With a gateway it also seeds the payments connection and
+// sets devConn. The same configuration (and so the same key-encryption key)
 // must serve afterwards: seeding a gateway creates the CA key.
 func seed(t *testing.T, cfgPath, limit string, withGateway bool) (ids.OrgID, string, string, string) {
 	t.Helper()
@@ -87,7 +94,7 @@ func seed(t *testing.T, cfgPath, limit string, withGateway bool) (ids.OrgID, str
 		"--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if withGateway {
-		args = append(args, "--gateway-out", enrollFile)
+		args = append(args, "--gateway-out", enrollFile, "--target-url", "http://127.0.0.1:9")
 	} else {
 		enrollFile = ""
 	}
@@ -97,6 +104,16 @@ func seed(t *testing.T, cfgPath, limit string, withGateway bool) (ids.OrgID, str
 	m := seededOrg.FindStringSubmatch(out.String())
 	if m == nil {
 		t.Fatalf("dev seed output %q", out.String())
+	}
+	if withGateway {
+		c := seededConnection.FindStringSubmatch(out.String())
+		if c == nil {
+			t.Fatalf("dev seed output %q has no connection", out.String())
+		}
+		var err error
+		if devConn, err = ids.ParseUUID(c[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if code := Run(context.Background(), args, &out, &errb, noEnv); code == 0 {
 		t.Fatal("dev seed overwrote an existing key file")
@@ -187,6 +204,7 @@ func refund(t *testing.T, org ids.OrgID, wl workload, amount string) []byte {
 	}
 	p, err := m.MCP(context.Background(), mapping.Context{
 		Org: org.String(), Env: wl.env, RunID: wl.kf.RunID, ActionID: ids.NewV7().String(), AgentInstance: wl.inst.Instance.String(),
+		Connection: devConn.String(),
 	}, "create_refund", []byte(`{"charge":"ch_1","amount":"`+amount+`","currency":"USD","reason":"duplicate"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +388,7 @@ func TestIntDevSeedAudits(t *testing.T) {
 	})
 	want := []string{
 		"audit.dev.org_seeded", "audit.dev.workload_seeded", "audit.package.imported", "audit.package.transitioned",
-		"audit.dev.gateway_seeded", "audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
+		"audit.dev.gateway_seeded", "audit.connection.created", "audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
 	}
 	if err != nil || !slices.Equal(kinds, want) {
 		t.Fatalf("org ledger = %v, %v; want %v", kinds, err, want)

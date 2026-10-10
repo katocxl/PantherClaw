@@ -150,8 +150,8 @@ type executionReceipt struct {
 
 // TestHR186_DelegatedIsForCooperativeChannelsOnly: a cooperative channel
 // records delegated with access mode agent_held; a channel where the
-// gateway dispatches cannot, and its receipt names the access mode
-// (pantherclaw_held without a connection).
+// gateway dispatches cannot, and its receipt names its connection's access
+// mode.
 func TestHR186_DelegatedIsForCooperativeChannelsOnly(t *testing.T) {
 	s := pipelinetest.NewScenario(t, nil)
 	g := s.Grant(pipelinetest.RootBounds, s.Alice)
@@ -188,7 +188,7 @@ func TestHR186_DelegatedIsForCooperativeChannelsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(pipelinetest.Payload(r), &er); err != nil || er.Pap.AccessMode != "pantherclaw_held" || er.Pap.Monitor {
+	if err := json.Unmarshal(pipelinetest.Payload(r), &er); err != nil || er.Pap.AccessMode != "none" || er.Pap.Monitor {
 		t.Fatalf("accepted receipt %+v %v", er.Pap, err)
 	}
 }

@@ -51,6 +51,7 @@ const (
 	ReasonGrantRequiresStepUp  = "GRANT_REQUIRES_STEP_UP"
 	ReasonActionInstanceDiffer = "ACTION_INSTANCE_MISMATCH"
 	ReasonConnectionUnknown    = "CONNECTION_UNKNOWN"
+	ReasonConnectionRequired   = "CONNECTION_REQUIRED"
 	ReasonConnectionContained  = "CONNECTION_QUARANTINED"
 )
 
@@ -217,7 +218,15 @@ func (p *Pipeline) scope(ctx context.Context, s *state) {
 		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonRouteUnknown, "route "+s.a.Route+" is not a reviewed route of "+d.Operation, "")
 		return
 	}
-	if s.a.Connection != "" && !p.connection(ctx, s, d) {
+	switch {
+	case s.a.Connection != "":
+		if !p.connection(ctx, s, d) {
+			return
+		}
+	case slices.Contains(gatewayChannels, s.a.Channel):
+		// A gateway names the connection a call came through (PAP-1 §6), so
+		// its mode, quarantine and credential always apply.
+		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonConnectionRequired, "an action from the "+s.a.Channel+" channel names its connection", "")
 		return
 	}
 	s.def = d
@@ -248,7 +257,7 @@ func (p *Pipeline) connection(ctx context.Context, s *state, d *defs.Definition)
 	case c.Gateway.String() != s.req.Gateway:
 		return unknown()
 	}
-	if c.Package != s.a.Definition.Package || (c.Kind == "local") != (s.a.Channel == string(defs.ChannelHook)) {
+	if c.Package != s.a.Definition.Package || (c.Kind == "local") != (s.a.Channel == string(defs.ChannelHook)) || !dispatches(c.Kind, d) {
 		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonRouteUnknown,
 			"route "+s.a.Route+" of "+d.Operation+" is not served by this connection", "")
 		return false
@@ -259,6 +268,26 @@ func (p *Pipeline) connection(ctx context.Context, s *state, d *defs.Definition)
 		s.ev.Mode = ModeMonitor
 	}
 	return true
+}
+
+// gatewayChannels are the channels a gateway serves, whose actions always
+// name their connection (PAP-1 §6); cooperative SDKs (sdk) may omit it.
+var gatewayChannels = []string{string(defs.ChannelHTTP), string(defs.ChannelMCP), string(defs.ChannelHook)}
+
+// dispatches reports whether a connection of this kind serves the
+// definition: an HTTP or MCP connection only definitions with a dispatch
+// template of its kind, a local one (the hook) any, because the agent's
+// machine executes it.
+func dispatches(kind string, d *defs.Definition) bool {
+	switch kind {
+	case "http":
+		return d.Dispatch != nil && d.Dispatch.HTTP != nil
+	case "mcp":
+		return d.Dispatch != nil && d.Dispatch.MCP != nil
+	case "local":
+		return true
+	}
+	return false
 }
 
 // Step 2: the verified instance is the run's, and its attestation level
