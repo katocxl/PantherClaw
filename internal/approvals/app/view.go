@@ -139,6 +139,7 @@ func title(display []byte, operation string) string {
 // ResponseLine is one response on a request's page. A decider's note is
 // for people only (design decision 18) and is cleaned like any free text.
 type ResponseLine struct {
+	ID   ids.UUID
 	User ids.UUID
 	Kind string
 	// Requirement is the requirement an approval counted toward, or -1.
@@ -149,11 +150,15 @@ type ResponseLine struct {
 	Proposed string
 	At       time.Time
 	// Voided is the reason a response no longer counts.
-	Voided string
+	Voided   string
+	VoidedAt *time.Time
+	// Credential and Batch are an approval's key and batch, if any.
+	Credential, Batch *ids.UUID
 }
 
 // EvidenceLine is one UNTRUSTED evidence note (HR-034).
 type EvidenceLine struct {
+	ID ids.UUID
 	// Author is "user:<id>" or "instance:<id>".
 	Author string
 	Note   apdomain.Untrusted
@@ -177,6 +182,12 @@ type View struct {
 	// Params are the held action's parameters, cleaned, for a narrower
 	// proposal; empty when the request cannot take one.
 	Params apdomain.Untrusted
+	// Requirements are the merged requirements; Variants the earlier
+	// requests of the same grant, operation and target (HR-037);
+	// Eligibility the caller's, for the API.
+	Requirements []apdomain.Requirement
+	Variants     []Variant
+	Eligibility  Eligibility
 }
 
 // maxParams caps the held parameters shown for a narrower proposal.
@@ -242,7 +253,22 @@ func (s *Service) View(ctx context.Context, id ids.UUID) (View, error) {
 		if out.Responses, err = responseLines(ctx, q, c.Org, id); err != nil {
 			return err
 		}
-		out.Evidence, err = evidenceLines(ctx, q, c.Org, id)
+		if out.Evidence, err = evidenceLines(ctx, q, c.Org, id); err != nil {
+			return err
+		}
+		out.Requirements = e.Requirements
+		if out.Eligibility, err = eligibility(ctx, q, c, l, out.State); err != nil {
+			return err
+		}
+		if len(row.VariantKey) == 0 {
+			return nil
+		}
+		vs, err := q.ApprovalVariants(ctx, c.Org, row.VariantKey)
+		for _, v := range vs {
+			if v.ID != id {
+				out.Variants = append(out.Variants, Variant{Request: v.ID, State: v.State, CreatedAt: v.CreatedAt})
+			}
+		}
 		return err
 	}, db.ReadOnly())
 	return out, err
@@ -265,7 +291,7 @@ func responseLines(ctx context.Context, q *dbq.Queries, org ids.OrgID, id ids.UU
 		l := ResponseLine{
 			User: r.UserID, Kind: r.Kind, Requirement: -1, Reason: deref(r.ReasonCode), Alternative: deref(r.AlternativeCode),
 			Note: apdomain.Clean("note", r.Note, apdomain.MaxNote), Proposed: string(r.ProposedParams), At: r.CreatedAt,
-			Voided: deref(r.VoidReason),
+			Voided: deref(r.VoidReason), VoidedAt: r.VoidedAt, ID: r.ID, Credential: r.CredentialID, Batch: r.BatchID,
 		}
 		if r.Requirement.Valid {
 			l.Requirement = int(r.Requirement.Int16)
@@ -289,7 +315,7 @@ func evidenceLines(ctx context.Context, q *dbq.Queries, org ids.OrgID, id ids.UU
 		case r.AuthorInstanceID != nil:
 			author = "instance:" + r.AuthorInstanceID.String()
 		}
-		out = append(out, EvidenceLine{Author: author, Note: apdomain.Clean("evidence", r.Note, apdomain.MaxUntrustedRunes), At: r.CreatedAt})
+		out = append(out, EvidenceLine{ID: r.ID, Author: author, Note: apdomain.Clean("evidence", r.Note, apdomain.MaxUntrustedRunes), At: r.CreatedAt})
 	}
 	return out, nil
 }

@@ -5,7 +5,6 @@ package domain
 
 import (
 	"slices"
-	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -52,18 +51,4 @@ func Nearest(cs []Candidate) []Candidate {
 		}
 	}
 	return out
-}
-
-// NextStep is when the default chain's step after step is due: half the
-// entry's time after the first notice, then three quarters (decision 8).
-// It is zero after the last step.
-func NextStep(created, deadline time.Time, step int) time.Time {
-	d := deadline.Sub(created)
-	switch step {
-	case 0:
-		return created.Add(d / 2)
-	case 1:
-		return created.Add(d * 3 / 4)
-	}
-	return time.Time{}
 }

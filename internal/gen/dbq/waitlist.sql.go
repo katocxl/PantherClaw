@@ -12,6 +12,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -63,6 +64,53 @@ func (q *Queries) CloseEntryOf(ctx context.Context, arg CloseEntryOfParams) (int
 	return result.RowsAffected(), nil
 }
 
+const closedEntriesBetween = `-- name: ClosedEntriesBetween :many
+SELECT kind, state,
+    COALESCE(extract(epoch FROM COALESCE(first_response_at,
+        CASE WHEN state IN ('APPROVED', 'REJECTED') AND decided_by LIKE 'user:%' THEN decided_at END) - created_at), -1)::float8
+        AS first_s,
+    extract(epoch FROM decided_at - created_at)::float8 AS decision_s
+FROM pc.waitlist_entries
+WHERE org_id = $1 AND state IN ('APPROVED', 'REJECTED', 'EXPIRED') AND decided_at >= $2
+  AND decided_at < $3
+LIMIT 10000
+`
+
+type ClosedEntriesBetweenRow struct {
+	Kind      string
+	State     string
+	FirstS    float64
+	DecisionS float64
+}
+
+// Entries decided or expired in [since, until), for the server's
+// histograms (no org leaves the query); first_s is -1 when nobody
+// responded.
+func (q *Queries) ClosedEntriesBetween(ctx context.Context, orgID ids.OrgID, since *time.Time, until *time.Time) ([]ClosedEntriesBetweenRow, error) {
+	rows, err := q.db.Query(ctx, closedEntriesBetween, orgID, since, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClosedEntriesBetweenRow{}
+	for rows.Next() {
+		var i ClosedEntriesBetweenRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.State,
+			&i.FirstS,
+			&i.DecisionS,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWorkloadAccessRequests = `-- name: CountWorkloadAccessRequests :one
 SELECT count(*)::integer FROM pc.waitlist_entries
 WHERE org_id = $1 AND run_id = $2 AND kind = 'ACCESS_REQUEST' AND requested_by LIKE 'instance:%'
@@ -73,6 +121,34 @@ func (q *Queries) CountWorkloadAccessRequests(ctx context.Context, orgID ids.Org
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const currentChain = `-- name: CurrentChain :one
+SELECT revision, steps, created_by, created_at FROM pc.escalation_chains
+WHERE org_id = $1 AND team_id IS NOT DISTINCT FROM $2::uuid
+ORDER BY revision DESC
+LIMIT 1
+`
+
+type CurrentChainRow struct {
+	Revision  int32
+	Steps     []byte
+	CreatedBy string
+	CreatedAt time.Time
+}
+
+// Escalation (slice 211b, decision 8). escalation_step counts the steps an
+// entry has taken; 0 means it has not been routed yet.
+func (q *Queries) CurrentChain(ctx context.Context, orgID ids.OrgID, teamID *ids.UUID) (CurrentChainRow, error) {
+	row := q.db.QueryRow(ctx, currentChain, orgID, teamID)
+	var i CurrentChainRow
+	err := row.Scan(
+		&i.Revision,
+		&i.Steps,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const deciderCandidates = `-- name: DeciderCandidates :many
@@ -134,8 +210,36 @@ func (q *Queries) DeciderCandidates(ctx context.Context, arg DeciderCandidatesPa
 	return items, nil
 }
 
+const dueEscalations = `-- name: DueEscalations :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step > 0 AND next_step_at <= now()
+  AND deadline_at > now()
+ORDER BY priority, next_step_at, id
+LIMIT $2
+`
+
+func (q *Queries) DueEscalations(ctx context.Context, orgID ids.OrgID, lim int32) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, dueEscalations, orgID, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const entryForRouting = `-- name: EntryForRouting :one
-SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at,
+SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at, e.escalation_step,
        a.team_id, t.business_unit_id, a.environment_id
 FROM pc.waitlist_entries e
 LEFT JOIN pc.agents a ON a.org_id = e.org_id AND a.id = e.agent_id
@@ -153,6 +257,7 @@ type EntryForRoutingRow struct {
 	RequestedBy    *string
 	DeadlineAt     time.Time
 	CreatedAt      time.Time
+	EscalationStep int16
 	TeamID         *ids.UUID
 	BusinessUnitID *ids.UUID
 	EnvironmentID  *ids.UUID
@@ -170,11 +275,37 @@ func (q *Queries) EntryForRouting(ctx context.Context, orgID ids.OrgID, iD ids.U
 		&i.RequestedBy,
 		&i.DeadlineAt,
 		&i.CreatedAt,
+		&i.EscalationStep,
 		&i.TeamID,
 		&i.BusinessUnitID,
 		&i.EnvironmentID,
 	)
 	return i, err
+}
+
+const entryRecipients = `-- name: EntryRecipients :many
+SELECT DISTINCT user_id::uuid AS user_id FROM pc.waitlist_routes
+WHERE org_id = $1 AND entry_id = $2 AND user_id IS NOT NULL
+`
+
+func (q *Queries) EntryRecipients(ctx context.Context, orgID ids.OrgID, entryID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, entryRecipients, orgID, entryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var user_id ids.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const expireWaitlistEntries = `-- name: ExpireWaitlistEntries :many
@@ -257,6 +388,60 @@ func (q *Queries) GrantCurrentRevision(ctx context.Context, orgID ids.OrgID, iD 
 	return current_revision, err
 }
 
+const healthyRoutedEntries = `-- name: HealthyRoutedEntries :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step > 0 AND routing_health = 'OK'
+ORDER BY id
+LIMIT 500
+`
+
+// The routed open entries whose health is OK, to check their deliveries.
+func (q *Queries) HealthyRoutedEntries(ctx context.Context, orgID ids.OrgID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, healthyRoutedEntries, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertChain = `-- name: InsertChain :exec
+INSERT INTO pc.escalation_chains (org_id, id, team_id, revision, steps, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertChainParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	TeamID    *ids.UUID
+	Revision  int32
+	Steps     []byte
+	CreatedBy string
+}
+
+func (q *Queries) InsertChain(ctx context.Context, arg InsertChainParams) error {
+	_, err := q.db.Exec(ctx, insertChain,
+		arg.OrgID,
+		arg.ID,
+		arg.TeamID,
+		arg.Revision,
+		arg.Steps,
+		arg.CreatedBy,
+	)
+	return err
+}
+
 const insertWaitlistRoute = `-- name: InsertWaitlistRoute :exec
 INSERT INTO pc.waitlist_routes (org_id, id, entry_id, step, kind, user_id, channel_id)
 VALUES ($1, $2, $3, $4, $5, $6,
@@ -288,35 +473,49 @@ func (q *Queries) InsertWaitlistRoute(ctx context.Context, arg InsertWaitlistRou
 
 const listWaitlistEntries = `-- name: ListWaitlistEntries :many
 
-SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at FROM pc.waitlist_entries
-WHERE org_id = $1 AND id > coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
-  AND state = ANY ($3::text[])
-  AND ($4::uuid IS NULL OR agent_id = $4::uuid)
-ORDER BY id
-LIMIT $5
+SELECT e.org_id, e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.state, e.evidence, e.deadline_at, e.decided_by, e.decided_at, e.decision_reason, e.created_at, e.priority, e.run_id, e.transaction_id, e.requested_by, e.routing_health, e.escalation_step, e.next_step_at, e.assignee_user_id, e.assigned_at, e.first_response_at FROM pc.waitlist_entries e
+WHERE e.org_id = $1 AND e.state = ANY ($2::text[])
+  AND ($3::uuid IS NULL OR e.agent_id = $3::uuid)
+  AND (cardinality($4::text[]) = 0 OR e.kind = ANY ($4::text[]))
+  AND (cardinality($5::smallint[]) = 0 OR e.priority = ANY ($5::smallint[]))
+  AND ($6::uuid IS NULL OR e.assignee_user_id = $6::uuid)
+  AND (NOT $7::boolean
+       OR (e.state = 'OPEN' AND (e.next_step_at <= now() OR e.deadline_at - now() <= (e.deadline_at - e.created_at) / 10)))
+  AND ($8::uuid IS NULL OR (e.priority, e.deadline_at, e.id) >
+       (SELECT a.priority, a.deadline_at, a.id FROM pc.waitlist_entries a WHERE a.org_id = e.org_id AND a.id = $8::uuid))
+ORDER BY e.priority, e.deadline_at, e.id
+LIMIT $9
 `
 
 type ListWaitlistEntriesParams struct {
-	OrgID     ids.OrgID
-	After     ids.UUID
-	States    []string
-	AgentID   *ids.UUID
-	PageLimit int32
+	OrgID      ids.OrgID
+	States     []string
+	AgentID    *ids.UUID
+	Kinds      []string
+	Priorities []int16
+	Assignee   *ids.UUID
+	Overdue    bool
+	After      *ids.UUID
+	PageLimit  int32
 }
 
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 //
-// Agent Waitlist reads (M3: ADMISSION entries; PN-004.1). Entries are
+// Agent Waitlist reads (PN-004.1), by priority and then deadline. Entries are
 // decided by the service that owns their subject. evidence holds two
 // objects, "trusted" (established by PantherClaw) and "untrusted" (reported
 // by a workload or observed at a gateway), which are never mixed.
 func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntriesParams) ([]PcWaitlistEntry, error) {
 	rows, err := q.db.Query(ctx, listWaitlistEntries,
 		arg.OrgID,
-		arg.After,
 		arg.States,
 		arg.AgentID,
+		arg.Kinds,
+		arg.Priorities,
+		arg.Assignee,
+		arg.Overdue,
+		arg.After,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -354,6 +553,34 @@ func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntri
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markDeliveryFailing = `-- name: MarkDeliveryFailing :many
+UPDATE pc.waitlist_entries SET routing_health = 'DELIVERY_FAILING'
+WHERE org_id = $1 AND id = ANY ($2::uuid[]) AND state = 'OPEN' AND routing_health = 'OK'
+RETURNING id
+`
+
+// A failed delivery of an open entry's notice marks it DELIVERY_FAILING;
+// it never counts as a decision (HR-039).
+func (q *Queries) MarkDeliveryFailing(ctx context.Context, orgID ids.OrgID, entryIds []ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, markDeliveryFailing, orgID, entryIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -554,13 +781,13 @@ func (q *Queries) TransactionOfRun(ctx context.Context, orgID ids.OrgID, iD ids.
 
 const unroutedEntries = `-- name: UnroutedEntries :many
 SELECT id FROM pc.waitlist_entries
-WHERE org_id = $1 AND state = 'OPEN' AND next_step_at IS NULL AND escalation_step = 0
+WHERE org_id = $1 AND state = 'OPEN' AND escalation_step = 0
 ORDER BY priority, deadline_at, id
 LIMIT $2
 `
 
-// Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry with
-// no next step time has not been routed yet.
+// Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry that
+// has taken no escalation step has not been routed yet.
 func (q *Queries) UnroutedEntries(ctx context.Context, orgID ids.OrgID, lim int32) ([]ids.UUID, error) {
 	rows, err := q.db.Query(ctx, unroutedEntries, orgID, lim)
 	if err != nil {
@@ -574,6 +801,280 @@ func (q *Queries) UnroutedEntries(ctx context.Context, orgID ids.OrgID, lim int3
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertWaitlistSettings = `-- name: UpsertWaitlistSettings :exec
+INSERT INTO pc.waitlist_settings (org_id, batch_ceilings, hold_deadline_s, consume_window_s, access_request_deadline_s,
+    tool_review_deadline_s, restoration_deadline_s, reconciliation_deadline_s, max_holds_per_grant, max_holds_per_run,
+    min_account_age_s, min_role_age_s, min_credential_age_s, self_grant_delay_s, updated_by)
+VALUES ($1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, $12, $13, $14,
+    $15)
+ON CONFLICT (org_id) DO UPDATE SET
+    batch_ceilings = EXCLUDED.batch_ceilings, hold_deadline_s = EXCLUDED.hold_deadline_s,
+    consume_window_s = EXCLUDED.consume_window_s, access_request_deadline_s = EXCLUDED.access_request_deadline_s,
+    tool_review_deadline_s = EXCLUDED.tool_review_deadline_s, restoration_deadline_s = EXCLUDED.restoration_deadline_s,
+    reconciliation_deadline_s = EXCLUDED.reconciliation_deadline_s, max_holds_per_grant = EXCLUDED.max_holds_per_grant,
+    max_holds_per_run = EXCLUDED.max_holds_per_run, min_account_age_s = EXCLUDED.min_account_age_s,
+    min_role_age_s = EXCLUDED.min_role_age_s, min_credential_age_s = EXCLUDED.min_credential_age_s,
+    self_grant_delay_s = EXCLUDED.self_grant_delay_s, updated_by = EXCLUDED.updated_by, updated_at = now()
+`
+
+type UpsertWaitlistSettingsParams struct {
+	OrgID                   ids.OrgID
+	BatchCeilings           []byte
+	HoldDeadlineS           *int32
+	ConsumeWindowS          *int32
+	AccessRequestDeadlineS  *int32
+	ToolReviewDeadlineS     *int32
+	RestorationDeadlineS    *int32
+	ReconciliationDeadlineS *int32
+	MaxHoldsPerGrant        pgtype.Int2
+	MaxHoldsPerRun          pgtype.Int2
+	MinAccountAgeS          *int32
+	MinRoleAgeS             *int32
+	MinCredentialAgeS       *int32
+	SelfGrantDelayS         *int32
+	UpdatedBy               string
+}
+
+// Settings (slice 213): one row per org; NULL means the default. The
+// schema keeps each value within its decision-6 and decision-7 bounds.
+func (q *Queries) UpsertWaitlistSettings(ctx context.Context, arg UpsertWaitlistSettingsParams) error {
+	_, err := q.db.Exec(ctx, upsertWaitlistSettings,
+		arg.OrgID,
+		arg.BatchCeilings,
+		arg.HoldDeadlineS,
+		arg.ConsumeWindowS,
+		arg.AccessRequestDeadlineS,
+		arg.ToolReviewDeadlineS,
+		arg.RestorationDeadlineS,
+		arg.ReconciliationDeadlineS,
+		arg.MaxHoldsPerGrant,
+		arg.MaxHoldsPerRun,
+		arg.MinAccountAgeS,
+		arg.MinRoleAgeS,
+		arg.MinCredentialAgeS,
+		arg.SelfGrantDelayS,
+		arg.UpdatedBy,
+	)
+	return err
+}
+
+const waitlistMetricAgents = `-- name: WaitlistMetricAgents :many
+SELECT DISTINCT agent_id::uuid AS agent_id FROM pc.waitlist_entries
+WHERE org_id = $1 AND created_at >= $2 AND created_at < $3 AND agent_id IS NOT NULL
+LIMIT 10000
+`
+
+// SLA metrics (slice 214c, Team). An entry's first response is the first
+// response to its approval request, or else a person's decision; its time
+// to decision counts approvals and rejections only. Entries are kept to
+// the agents the caller may read before anything is aggregated (T-042).
+func (q *Queries) WaitlistMetricAgents(ctx context.Context, orgID ids.OrgID, since time.Time, until time.Time) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, waitlistMetricAgents, orgID, since, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var agent_id ids.UUID
+		if err := rows.Scan(&agent_id); err != nil {
+			return nil, err
+		}
+		items = append(items, agent_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const waitlistMetricsByDecider = `-- name: WaitlistMetricsByDecider :many
+WITH e AS (
+    SELECT e.id, e.kind, e.state, e.subject_type, e.subject_id, e.decided_by, e.decided_at, e.created_at, e.escalation_step,
+        e.routing_health
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = $1 AND e.created_at >= $2 AND e.created_at < $3
+      AND (cardinality($4::text[]) = 0 OR e.kind = ANY ($4::text[]))
+      AND ($5::boolean OR e.agent_id = ANY ($6::uuid[]))
+), acts AS (
+    SELECT e.id, r.user_id, r.created_at AS at
+    FROM e JOIN pc.approval_responses r ON r.org_id = $1 AND r.request_id = e.subject_id
+    WHERE e.subject_type = 'approval_request'
+    UNION ALL
+    SELECT e.id, substring(e.decided_by FROM 6)::uuid, e.decided_at FROM e
+    WHERE e.state IN ('APPROVED', 'REJECTED') AND e.decided_by ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+), per AS (
+    SELECT id, user_id, min(at) AS at FROM acts GROUP BY id, user_id
+)
+SELECT e.kind, per.user_id::uuid AS user_id, count(*) AS entries,
+    count(*) FILTER (WHERE e.state IN ('APPROVED', 'REJECTED')) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p90,
+    avg((e.state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((e.escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE e.routing_health <> 'OK') AS routing_failures
+FROM per JOIN e ON e.id = per.id
+GROUP BY e.kind, per.user_id
+ORDER BY e.kind, per.user_id
+LIMIT 1000
+`
+
+type WaitlistMetricsByDeciderParams struct {
+	OrgID     ids.OrgID
+	Since     time.Time
+	Until     time.Time
+	Kinds     []string
+	AllAgents bool
+	Agents    []ids.UUID
+}
+
+type WaitlistMetricsByDeciderRow struct {
+	Kind            string
+	UserID          ids.UUID
+	Entries         int64
+	Decided         int64
+	FirstP50        float64
+	FirstP90        float64
+	DecisionP50     float64
+	DecisionP90     float64
+	ExpiryRate      float64
+	EscalationRate  float64
+	RoutingFailures int64
+}
+
+// A decider is a person who responded to an entry's approval request or
+// decided the entry; their first response is their own.
+func (q *Queries) WaitlistMetricsByDecider(ctx context.Context, arg WaitlistMetricsByDeciderParams) ([]WaitlistMetricsByDeciderRow, error) {
+	rows, err := q.db.Query(ctx, waitlistMetricsByDecider,
+		arg.OrgID,
+		arg.Since,
+		arg.Until,
+		arg.Kinds,
+		arg.AllAgents,
+		arg.Agents,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WaitlistMetricsByDeciderRow{}
+	for rows.Next() {
+		var i WaitlistMetricsByDeciderRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.UserID,
+			&i.Entries,
+			&i.Decided,
+			&i.FirstP50,
+			&i.FirstP90,
+			&i.DecisionP50,
+			&i.DecisionP90,
+			&i.ExpiryRate,
+			&i.EscalationRate,
+			&i.RoutingFailures,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const waitlistMetricsByKind = `-- name: WaitlistMetricsByKind :many
+WITH e AS (
+    SELECT e.kind, e.state, e.escalation_step, e.routing_health,
+        extract(epoch FROM COALESCE(e.first_response_at,
+            CASE WHEN e.state IN ('APPROVED', 'REJECTED') AND e.decided_by LIKE 'user:%' THEN e.decided_at END) - e.created_at)
+            AS first_s,
+        CASE WHEN e.state IN ('APPROVED', 'REJECTED') THEN extract(epoch FROM e.decided_at - e.created_at) END AS decision_s
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = $1 AND e.created_at >= $2 AND e.created_at < $3
+      AND (cardinality($4::text[]) = 0 OR e.kind = ANY ($4::text[]))
+      AND ($5::boolean OR e.agent_id = ANY ($6::uuid[]))
+)
+SELECT kind, count(*) AS entries, count(decision_s) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p90,
+    avg((state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE routing_health <> 'OK') AS routing_failures
+FROM e
+GROUP BY kind
+ORDER BY kind
+`
+
+type WaitlistMetricsByKindParams struct {
+	OrgID     ids.OrgID
+	Since     time.Time
+	Until     time.Time
+	Kinds     []string
+	AllAgents bool
+	Agents    []ids.UUID
+}
+
+type WaitlistMetricsByKindRow struct {
+	Kind            string
+	Entries         int64
+	Decided         int64
+	FirstP50        float64
+	FirstP90        float64
+	DecisionP50     float64
+	DecisionP90     float64
+	ExpiryRate      float64
+	EscalationRate  float64
+	RoutingFailures int64
+}
+
+func (q *Queries) WaitlistMetricsByKind(ctx context.Context, arg WaitlistMetricsByKindParams) ([]WaitlistMetricsByKindRow, error) {
+	rows, err := q.db.Query(ctx, waitlistMetricsByKind,
+		arg.OrgID,
+		arg.Since,
+		arg.Until,
+		arg.Kinds,
+		arg.AllAgents,
+		arg.Agents,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WaitlistMetricsByKindRow{}
+	for rows.Next() {
+		var i WaitlistMetricsByKindRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.Entries,
+			&i.Decided,
+			&i.FirstP50,
+			&i.FirstP90,
+			&i.DecisionP50,
+			&i.DecisionP90,
+			&i.ExpiryRate,
+			&i.EscalationRate,
+			&i.RoutingFailures,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -32,6 +33,9 @@ import (
 // (notifications/app.Service), so a rolled-back routing sends nothing.
 type Notifier interface {
 	Enqueue(ctx context.Context, tx db.TenantTx, m notifapp.Message) (notifapp.Enqueued, error)
+	// FailedSubjects returns the subjects whose notices failed to deliver;
+	// only the notifications module reads delivery state (HR-039).
+	FailedSubjects(ctx context.Context, tx db.TenantTx, org ids.OrgID, subjectType string, subjects []ids.UUID) ([]ids.UUID, error)
 }
 
 // RouteInterval is how often new entries are routed.
@@ -44,38 +48,50 @@ const (
 	candidateScan = 200
 )
 
-// Router routes new waitlist entries to their eligible deciders (HR-173,
-// decision 8): the nearest ones by scope get a personal notice, channels
-// subscribed to the type get it too, and each recipient is recorded in
-// waitlist_routes. An entry no one may decide is marked
-// NO_ELIGIBLE_DECIDER, and for a hold or a restoration the org's admins are
-// told; the entry still ends as its kind says at its deadline (F635).
+// Router routes waitlist entries to their eligible deciders and escalates
+// them along the chain of the agent's team or the org (HR-173, decision 8).
+// Each step recomputes the eligible deciders, notifies those within its
+// scope that were not told yet (personally, at most 50, and the subscribed
+// channels when the step says so), reminds or tells the agent's owners when
+// the step says so, and records every recipient in waitlist_routes. An
+// entry no one may decide is marked NO_ELIGIBLE_DECIDER and the org's
+// admins are told once; the entry still ends as its kind says at its
+// deadline (F635). No step makes anyone eligible.
 type Router struct {
 	Pool   *db.Pool
 	Notify Notifier
 }
 
-// RouteOrg routes the org's entries that were not routed yet, each in its
-// own transaction, and returns how many it routed.
+// RouteOrg routes the org's new entries, takes the escalation steps that
+// are due and marks entries whose notices failed, each entry in its own
+// transaction. It returns how many entries it routed or escalated.
 func (r *Router) RouteOrg(ctx context.Context, org ids.OrgID) (int, error) {
-	var due []ids.UUID
+	var fresh, due []ids.UUID
 	err := r.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
 		var err error
-		due, err = dbq.New(tx).UnroutedEntries(ctx, org, routeBatch)
+		if fresh, err = q.UnroutedEntries(ctx, org, routeBatch); err != nil {
+			return err
+		}
+		due, err = q.DueEscalations(ctx, org, routeBatch)
 		return err
 	}, db.ReadOnly())
 	if err != nil {
 		return 0, err
 	}
-	for i, id := range due {
-		if err := r.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error { return r.route(ctx, tx, org, id) }); err != nil {
-			return i, err
+	n := 0
+	for _, id := range append(fresh, due...) {
+		if err := r.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error { return r.step(ctx, tx, org, id) }); err != nil {
+			return n, err
 		}
+		n++
 	}
-	return len(due), nil
+	err = r.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error { return r.deliveryHealth(ctx, tx, org) })
+	return n, err
 }
 
-func (r *Router) route(ctx context.Context, tx db.TenantTx, org ids.OrgID, id ids.UUID) error {
+// step takes an entry's next escalation step: the first one routes it.
+func (r *Router) step(ctx context.Context, tx db.TenantTx, org ids.OrgID, id ids.UUID) error {
 	q := dbq.New(tx)
 	e, err := q.EntryForRouting(ctx, org, id)
 	if db.IsNoRows(err) {
@@ -83,57 +99,276 @@ func (r *Router) route(ctx context.Context, tx db.TenantTx, org ids.OrgID, id id
 	} else if err != nil {
 		return err
 	}
+	chain, err := chainOf(ctx, q, org, e.TeamID)
+	if err != nil {
+		return err
+	}
+	i := int(e.EscalationStep)
+	if i >= len(chain) {
+		return nil
+	}
+	s := chain[i]
 	ds, err := deciders(ctx, q, org, e)
 	if err != nil {
 		return err
 	}
-	m, approval, err := notice(ctx, q, org, e)
+	told, err := q.EntryRecipients(ctx, org, id)
 	if err != nil {
 		return err
 	}
-	health, kind := wdomain.HealthOK, "decider"
-	near := wdomain.Nearest(ds)
-	for _, c := range near {
-		m.Personal = append(m.Personal, c.User)
+	base, approval, err := notice(ctx, q, org, e)
+	if err != nil {
+		return err
 	}
-	if len(near) == 0 {
-		health, kind = wdomain.HealthNoDecider, "admin"
-		m.Personal = nil
-		if approval {
-			m.Type, m.DedupeKey = "approval.unroutable", "unroutable:"+id.String()
-			if m.Personal, err = q.OrgUsersWithRoles(ctx, org, []string{string(td.RoleOrgAdmin), string(td.RoleSecurityAdmin)}); err != nil {
+	stepNo := int16(i) //nolint:gosec // < MaxSteps
+	health := wdomain.HealthOK
+	reached := wdomain.Reach(s, ds)
+	if len(ds) == 0 {
+		health = wdomain.HealthNoDecider
+		if err := r.unroutable(ctx, tx, q, org, e, base, approval, stepNo); err != nil {
+			return err
+		}
+	}
+	// The deciders this step reaches for the first time.
+	var fresh []ids.UUID
+	for _, c := range reached {
+		if !slices.Contains(told, c.User) {
+			fresh = append(fresh, c.User)
+		}
+	}
+	if len(fresh) > 0 || (s.NotifyChannels && len(ds) > 0) {
+		m := base
+		m.Personal, m.PersonalOnly = fresh, !s.NotifyChannels
+		m.DedupeKey = "route:" + id.String() + ":" + strconv.Itoa(i)
+		if i > 0 {
+			m.Type = escalatedType(approval)
+		}
+		if err := r.send(ctx, tx, q, org, id, stepNo, "decider", m); err != nil {
+			return err
+		}
+	}
+	if s.Remind {
+		var again []ids.UUID
+		for _, c := range ds { // only people who are still eligible
+			if slices.Contains(told, c.User) {
+				again = append(again, c.User)
+			}
+		}
+		if len(again) > 0 {
+			m := base
+			m.Personal, m.PersonalOnly, m.DedupeKey = again, true, "remind:"+id.String()+":"+strconv.Itoa(i)
+			if approval {
+				m.Type = "approval.reminder"
+			} else {
+				m.Type = "waitlist.entry_escalated"
+			}
+			if err := r.send(ctx, tx, q, org, id, stepNo, "decider", m); err != nil {
 				return err
 			}
 		}
 	}
-	if len(m.Personal) > 0 || approval {
-		enq, err := r.Notify.Enqueue(ctx, tx, m)
-		if err != nil {
-			return err
-		}
-		if err := recordRoutes(ctx, q, org, id, 0, kind, m.Personal, enq.Channels); err != nil {
+	if s.NotifyOwners && e.AgentID != nil {
+		if err := r.owners(ctx, tx, q, org, e, base, approval, stepNo, told, ds); err != nil {
 			return err
 		}
 	}
-	next := wdomain.NextStep(e.CreatedAt, e.DeadlineAt, 0)
-	if _, err := q.SetEntryRouting(ctx, dbq.SetEntryRoutingParams{Health: health, Step: 0, NextStepAt: &next, OrgID: org, ID: id}); err != nil {
+	if i == 0 && e.Kind == wdomain.KindActionHold {
+		if err := r.variants(ctx, tx, q, org, e); err != nil {
+			return err
+		}
+	}
+	var next *time.Time
+	if t := wdomain.StepAt(chain, i+1, e.CreatedAt, e.DeadlineAt); !t.IsZero() && t.Before(e.DeadlineAt) {
+		next = &t
+	}
+	if _, err := q.SetEntryRouting(ctx, dbq.SetEntryRoutingParams{Health: health, Step: stepNo + 1, NextStepAt: next, OrgID: org, ID: id}); err != nil {
 		return err
 	}
 	_, err = audit.Record(ctx, tx, audit.Event{
-		Name: "waitlist.routed", Actor: pgwaitlist.System, Outcome: audit.Success, ReasonCode: health,
-		Object:  &audit.Object{Type: "waitlist_entry", ID: id.String()},
-		Details: map[string]string{"kind": e.Kind, "step": "0", "deciders": strconv.Itoa(len(near))},
+		Name: routedEvent(i), Actor: pgwaitlist.System, Outcome: audit.Success, ReasonCode: health,
+		Object: &audit.Object{Type: "waitlist_entry", ID: id.String()},
+		Details: map[string]string{
+			"kind": e.Kind, "step": strconv.Itoa(i), "scope": s.Scope, "deciders": strconv.Itoa(len(ds)),
+			"notified": strconv.Itoa(len(fresh)),
+		},
 	})
 	return err
 }
 
-// notice is the entry's first notice: approval.requested for a hold or a
+func routedEvent(step int) string {
+	if step == 0 {
+		return "waitlist.routed"
+	}
+	return "waitlist.escalated"
+}
+
+func escalatedType(approval bool) string {
+	if approval {
+		return "approval.escalated"
+	}
+	return "waitlist.entry_escalated"
+}
+
+// unroutable tells the org's admins and Security Admins, once per entry,
+// that no one may decide it.
+func (r *Router) unroutable(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, e dbq.EntryForRoutingRow,
+	base notifapp.Message, approval bool, step int16,
+) error {
+	admins, err := q.OrgUsersWithRoles(ctx, org, []string{string(td.RoleOrgAdmin), string(td.RoleSecurityAdmin)})
+	if err != nil {
+		return err
+	}
+	m := base
+	m.Personal, m.DedupeKey, m.Type = admins, "unroutable:"+e.ID.String(), escalatedType(approval)
+	if approval {
+		m.Type = "approval.unroutable"
+	}
+	return r.send(ctx, tx, q, org, e.ID, step, "admin", m)
+}
+
+// owners tells the agent's owner and backup owner (decision 8). They get
+// no vote unless they are eligible; an eligible one is recorded as a
+// decider.
+func (r *Router) owners(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, e dbq.EntryForRoutingRow,
+	base notifapp.Message, approval bool, step int16, told []ids.UUID, ds []wdomain.Candidate,
+) error {
+	a, err := q.GetAgent(ctx, org, *e.AgentID)
+	if err != nil {
+		return err
+	}
+	var owners []ids.UUID
+	for _, o := range []*ids.UUID{a.OwnerUserID, a.BackupOwnerUserID} {
+		if o != nil && !slices.Contains(told, *o) && !slices.Contains(owners, *o) {
+			owners = append(owners, *o)
+		}
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+	m := base
+	m.Personal, m.PersonalOnly, m.Type = owners, true, escalatedType(approval)
+	m.DedupeKey = "owners:" + e.ID.String() + ":" + strconv.Itoa(int(step))
+	kind := "owner"
+	if slices.ContainsFunc(ds, func(c wdomain.Candidate) bool { return slices.Contains(owners, c.User) }) {
+		kind = "decider"
+	}
+	return r.send(ctx, tx, q, org, e.ID, step, kind, m)
+}
+
+// variants tells the Security Admins, once per request, when a hold is at
+// least the third variant of one grant, operation and target within 24
+// hours (HR-037, decision 7); the detection rule is M10.
+func (r *Router) variants(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, e dbq.EntryForRoutingRow) error {
+	req, err := q.GetApprovalRequest(ctx, org, e.SubjectID)
+	if err != nil || len(req.VariantKey) == 0 {
+		return err
+	}
+	n, err := q.CountRecentVariants(ctx, org, req.VariantKey)
+	if err != nil || n < pgapprovals.VariantThreshold {
+		return err
+	}
+	admins, err := q.OrgUsersWithRoles(ctx, org, []string{string(td.RoleSecurityAdmin)})
+	if err != nil {
+		return err
+	}
+	_, err = r.Notify.Enqueue(ctx, tx, notifapp.Message{
+		Org: org, Type: "security.variant_suspected", Personal: admins, DedupeKey: "variant:" + req.ID.String(),
+		Subject: &notifapp.Subject{Type: "approval_request", ID: req.ID},
+		Params: map[string]string{
+			"operation": req.Operation, "agent": req.AgentID.String(), "count": strconv.Itoa(int(n)), "request": req.ID.String(),
+		},
+	})
+	return err
+}
+
+// send enqueues m and records its recipients.
+func (r *Router) send(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, entry ids.UUID, step int16, kind string, m notifapp.Message) error {
+	enq, err := r.Notify.Enqueue(ctx, tx, m)
+	if err != nil || enq.Duplicate {
+		return err
+	}
+	return recordRoutes(ctx, q, org, entry, step, kind, m.Personal, enq.Channels)
+}
+
+// deliveryHealth marks routed open entries whose notices failed to deliver
+// DELIVERY_FAILING, audited. Only the notifications module reads delivery
+// state, and a failed delivery never counts as a decision (HR-039).
+func (r *Router) deliveryHealth(ctx context.Context, tx db.TenantTx, org ids.OrgID) error {
+	q := dbq.New(tx)
+	open, err := q.HealthyRoutedEntries(ctx, org)
+	if err != nil {
+		return err
+	}
+	failed, err := r.Notify.FailedSubjects(ctx, tx, org, "waitlist_entry", open)
+	if err != nil || len(failed) == 0 {
+		return err
+	}
+	failing, err := q.MarkDeliveryFailing(ctx, org, failed)
+	for _, id := range failing {
+		if err != nil {
+			break
+		}
+		_, err = audit.Record(ctx, tx, audit.Event{
+			Name: "waitlist.delivery_failing", Actor: pgwaitlist.System, Outcome: audit.Failure, ReasonCode: wdomain.HealthDeliveryFailing,
+			Object: &audit.Object{Type: "waitlist_entry", ID: id.String()},
+		})
+	}
+	return err
+}
+
+// chainOf returns the chain in effect for a team: the team's latest
+// revision, else the org's, else decision 8's default.
+func chainOf(ctx context.Context, q *dbq.Queries, org ids.OrgID, team *ids.UUID) ([]wdomain.Step, error) {
+	if team != nil {
+		if c, err := storedChain(ctx, q, org, team); err != nil || c != nil {
+			return c.steps(), err
+		}
+	}
+	c, err := storedChain(ctx, q, org, nil)
+	if err != nil || c != nil {
+		return c.steps(), err
+	}
+	return wdomain.DefaultChain, nil
+}
+
+// Chain is an escalation chain: a team's, the org's (Team zero), or the
+// built-in default (Revision 0).
+type Chain struct {
+	Team      ids.UUID
+	Revision  int
+	Steps     []wdomain.Step
+	CreatedBy string
+	CreatedAt time.Time
+}
+
+func (c *Chain) steps() []wdomain.Step {
+	if c == nil {
+		return nil
+	}
+	return c.Steps
+}
+
+// storedChain returns the latest revision of the team's (or, for nil, the
+// org's) chain, or nil when none is set.
+func storedChain(ctx context.Context, q *dbq.Queries, org ids.OrgID, team *ids.UUID) (*Chain, error) {
+	row, err := q.CurrentChain(ctx, org, team)
+	if db.IsNoRows(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	c := &Chain{Revision: int(row.Revision), CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt}
+	if team != nil {
+		c.Team = *team
+	}
+	return c, json.Unmarshal(row.Steps, &c.Steps)
+}
+
+// notice is an entry's notice: approval.requested for a hold or a
 // restoration (ids, the operation and the deadline only), else
 // waitlist.entry_created.
 func notice(ctx context.Context, q *dbq.Queries, org ids.OrgID, e dbq.EntryForRoutingRow) (notifapp.Message, bool, error) {
-	m := notifapp.Message{
-		Org: org, Subject: &notifapp.Subject{Type: "waitlist_entry", ID: e.ID}, DedupeKey: "route:" + e.ID.String() + ":0",
-	}
+	m := notifapp.Message{Org: org, Subject: &notifapp.Subject{Type: "waitlist_entry", ID: e.ID}}
 	deadline := e.DeadlineAt.UTC().Format(time.RFC3339)
 	if e.Kind != wdomain.KindActionHold && e.Kind != wdomain.KindRestoration {
 		m.Type, m.Params = "waitlist.entry_created", map[string]string{"kind": e.Kind, "deadline": deadline}
