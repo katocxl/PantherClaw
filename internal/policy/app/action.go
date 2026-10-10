@@ -48,6 +48,9 @@ func celType(t defs.ParamType) *types.Type {
 //	action.target.type, .id (.account if the target has one)
 //	action.params.<name>                               typed per definition
 //	action.destinations[i].kind, .id                   string
+//	action.destination_class                           string: "public" or
+//	                                                   "internal", the class of the action's connection
+//	                                                   from the Authority's records (HR-079); "" without one
 //
 // Optional params and an optional account are optional fields (has()
 // required, HR-042). Untrusted text params are not in the schema at all, so
@@ -67,8 +70,9 @@ func ActionSchema(d *defs.Definition) celenv.Schema {
 		actionType: {Name: actionType, Fields: map[string]celenv.Field{
 			"operation": {Type: cel.StringType}, "channel": {Type: cel.StringType}, "route": {Type: cel.StringType},
 			"env": {Type: cel.StringType}, "target": {Type: types.NewObjectType(targetType)},
-			"params":       {Type: types.NewObjectType(paramsType)},
-			"destinations": {Type: cel.ListType(types.NewObjectType(destinationType))},
+			"params":            {Type: types.NewObjectType(paramsType)},
+			"destinations":      {Type: cel.ListType(types.NewObjectType(destinationType))},
+			"destination_class": {Type: cel.StringType},
 		}},
 		targetType:      {Name: targetType, Fields: target},
 		paramsType:      {Name: paramsType, Fields: params},
@@ -79,9 +83,10 @@ func ActionSchema(d *defs.Definition) celenv.Schema {
 // ActionVariable declares `action` for an environment built on ActionSchema.
 var ActionVariable = celenv.Variable{Name: "action", Type: types.NewObjectType(actionType)}
 
-// ActionRecord builds the runtime value of `action` from a parsed ActionIR
-// and its decoded params. Text params are left out (HR-023).
-func ActionRecord(d *defs.Definition, a actionir.ActionIR, vals defs.Values) *celenv.Record {
+// ActionRecord builds the runtime value of `action` from a parsed ActionIR,
+// its decoded params and the destination class of its connection. Text
+// params are left out (HR-023).
+func ActionRecord(d *defs.Definition, a actionir.ActionIR, vals defs.Values, destinationClass string) *celenv.Record {
 	params := map[string]ref.Val{}
 	for name, v := range vals {
 		if val := value(v); val != nil {
@@ -98,10 +103,11 @@ func ActionRecord(d *defs.Definition, a actionir.ActionIR, vals defs.Values) *ce
 	}
 	return &celenv.Record{TypeName: actionType, Fields: map[string]ref.Val{
 		"operation": types.String(a.Operation), "channel": types.String(a.Channel), "route": types.String(a.Route),
-		"env":          types.String(a.Env),
-		"target":       &celenv.Record{TypeName: targetType, Fields: target},
-		"params":       &celenv.Record{TypeName: paramsType, Fields: params},
-		"destinations": types.NewRefValList(types.DefaultTypeAdapter, dests),
+		"env":               types.String(a.Env),
+		"target":            &celenv.Record{TypeName: targetType, Fields: target},
+		"params":            &celenv.Record{TypeName: paramsType, Fields: params},
+		"destinations":      types.NewRefValList(types.DefaultTypeAdapter, dests),
+		"destination_class": types.String(destinationClass),
 	}}
 }
 

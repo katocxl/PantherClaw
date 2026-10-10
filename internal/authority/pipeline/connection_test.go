@@ -12,6 +12,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pdomain "github.com/katocxl/pantherclaw/internal/policy/domain"
 )
 
 // on maps an MCP call through a connection, as the gateway does, and
@@ -145,4 +146,29 @@ func TestPAP1_AConnectionMustBeTheCallingGatewaysOwn(t *testing.T) {
 	expect(t, f.on(gw, local.ID, "create_refund", refund("ch_1", "10.00")), adomain.CannotAuthorize, pipeline.ReasonRouteUnknown)
 	f.w.Fail["Connection"] = true
 	expect(t, f.on(gw, c.ID, "create_refund", refund("ch_1", "10.00")), adomain.CannotAuthorize, pipeline.ReasonEvidenceUnavailable)
+}
+
+// TestHR079_PoliciesSeeTheConnectionsDestinationClass: a policy decides on
+// action.destination_class, which the Authority takes from the record of
+// the connection the action came through.
+func TestHR079_PoliciesSeeTheConnectionsDestinationClass(t *testing.T) {
+	f := newFx(t)
+	rule := pdomain.Rule{
+		ID: "internal-only", Kind: pdomain.Forbid, Summary: "refunds only through internal connections",
+		Operations: []string{"payments.refund.create"}, When: `action.destination_class != "internal"`, Reason: "PUBLIC_DESTINATION",
+	}
+	if err := f.w.SetPolicy([]pdomain.Rule{rule}, nil); err != nil {
+		t.Fatal(err)
+	}
+	gw := ids.NewV7()
+	public, internal := connection(gw), connection(gw)
+	public.DestinationClass, internal.DestinationClass = "public", "internal"
+	f.w.PutConnection(public)
+	f.w.PutConnection(internal)
+	expect(t, f.on(gw, public.ID, "create_refund", refund("ch_1", "10.00")), adomain.Deny, "PUBLIC_DESTINATION")
+	ev := f.on(gw, internal.ID, "create_refund", refund("ch_1", "10.00"))
+	expect(t, ev, adomain.Allow, pipeline.ReasonGrantCovers)
+	if ev.Connection == nil || ev.Connection.DestinationClass != "internal" {
+		t.Fatalf("evaluated connection %+v", ev.Connection)
+	}
 }
