@@ -15,7 +15,7 @@ import (
 )
 
 const getWaitlistEntry = `-- name: GetWaitlistEntry :one
-SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at FROM pc.waitlist_entries WHERE org_id = $1 AND id = $2
+SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at FROM pc.waitlist_entries WHERE org_id = $1 AND id = $2
 `
 
 func (q *Queries) GetWaitlistEntry(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (PcWaitlistEntry, error) {
@@ -35,13 +35,23 @@ func (q *Queries) GetWaitlistEntry(ctx context.Context, orgID ids.OrgID, iD ids.
 		&i.DecidedAt,
 		&i.DecisionReason,
 		&i.CreatedAt,
+		&i.Priority,
+		&i.RunID,
+		&i.TransactionID,
+		&i.RequestedBy,
+		&i.RoutingHealth,
+		&i.EscalationStep,
+		&i.NextStepAt,
+		&i.AssigneeUserID,
+		&i.AssignedAt,
+		&i.FirstResponseAt,
 	)
 	return i, err
 }
 
 const listWaitlistEntries = `-- name: ListWaitlistEntries :many
 
-SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at FROM pc.waitlist_entries
+SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at FROM pc.waitlist_entries
 WHERE org_id = $1 AND id > coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
   AND state = ANY ($3::text[])
   AND ($4::uuid IS NULL OR agent_id = $4::uuid)
@@ -93,6 +103,16 @@ func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntri
 			&i.DecidedAt,
 			&i.DecisionReason,
 			&i.CreatedAt,
+			&i.Priority,
+			&i.RunID,
+			&i.TransactionID,
+			&i.RequestedBy,
+			&i.RoutingHealth,
+			&i.EscalationStep,
+			&i.NextStepAt,
+			&i.AssigneeUserID,
+			&i.AssignedAt,
+			&i.FirstResponseAt,
 		); err != nil {
 			return nil, err
 		}

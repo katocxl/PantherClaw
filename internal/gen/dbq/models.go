@@ -96,6 +96,85 @@ type PcApiKey struct {
 	LastUsedAt       *time.Time
 }
 
+type PcApprovalBatch struct {
+	OrgID        ids.OrgID
+	ID           ids.UUID
+	Kind         string
+	UserID       ids.UUID
+	SessionID    *ids.UUID
+	CliSessionID *ids.UUID
+	BatchHash    []byte
+	RequestIds   []ids.UUID
+	State        string
+	CreatedAt    time.Time
+	CompletedAt  *time.Time
+}
+
+type PcApprovalEvidence struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	RequestID        ids.UUID
+	AuthorKind       string
+	AuthorUserID     *ids.UUID
+	AuthorInstanceID *ids.UUID
+	Note             string
+	CreatedAt        time.Time
+}
+
+type PcApprovalRequest struct {
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+	SubjectKind        string
+	AgentID            ids.UUID
+	TransactionID      *ids.UUID
+	Evaluation         *int32
+	RunID              *ids.UUID
+	GrantID            *ids.UUID
+	GrantRevision      *int32
+	VariantKey         []byte
+	RequestedBy        *ids.UUID
+	Operation          string
+	PreviousID         *ids.UUID
+	Binding            []byte
+	BindingInput       []byte
+	Requirements       []byte
+	Display            []byte
+	DisplayHash        []byte
+	State              string
+	EndReason          *string
+	CreatedAt          time.Time
+	DeadlineAt         time.Time
+	EvidenceDeadlineAt *time.Time
+	ApprovedAt         *time.Time
+	ConsumeBy          *time.Time
+	ConsumedAt         *time.Time
+	PermitID           *ids.UUID
+	EndedAt            *time.Time
+}
+
+type PcApprovalResponse struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	RequestID         ids.UUID
+	UserID            ids.UUID
+	SessionID         *ids.UUID
+	CliSessionID      *ids.UUID
+	Kind              string
+	Requirement       pgtype.Int2
+	CredentialID      *ids.UUID
+	AuthenticatorData []byte
+	ClientDataJson    []byte
+	Signature         []byte
+	ReasonCode        *string
+	AlternativeCode   *string
+	Note              string
+	ProposedParams    []byte
+	BatchID           *ids.UUID
+	CreatedAt         time.Time
+	VoidedAt          *time.Time
+	VoidReason        *string
+}
+
 type PcAttestation struct {
 	OrgID            ids.OrgID
 	ID               ids.UUID
@@ -449,6 +528,16 @@ type PcEnvironment struct {
 	UpdatedAt   time.Time
 }
 
+type PcEscalationChain struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	TeamID    *ids.UUID
+	Revision  int32
+	Steps     []byte
+	CreatedBy string
+	CreatedAt time.Time
+}
+
 type PcExecutionAttempt struct {
 	OrgID          ids.OrgID
 	ID             ids.UUID
@@ -581,6 +670,14 @@ type PcGrantRevision struct {
 	Widens          bool
 	CreatedBy       string
 	CreatedAt       time.Time
+}
+
+type PcHoldSlot struct {
+	OrgID     ids.OrgID
+	ScopeKind string
+	ScopeID   ids.UUID
+	Pending   int32
+	UpdatedAt time.Time
 }
 
 type PcInvitation struct {
@@ -1020,19 +1117,59 @@ type PcUser struct {
 }
 
 type PcWaitlistEntry struct {
-	OrgID          ids.OrgID
-	ID             ids.UUID
-	Kind           string
-	SubjectType    string
-	SubjectID      ids.UUID
-	AgentID        ids.UUID
-	State          string
-	Evidence       []byte
-	DeadlineAt     time.Time
-	DecidedBy      *string
-	DecidedAt      *time.Time
-	DecisionReason string
-	CreatedAt      time.Time
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	Kind            string
+	SubjectType     string
+	SubjectID       ids.UUID
+	AgentID         *ids.UUID
+	State           string
+	Evidence        []byte
+	DeadlineAt      time.Time
+	DecidedBy       *string
+	DecidedAt       *time.Time
+	DecisionReason  string
+	CreatedAt       time.Time
+	Priority        int16
+	RunID           *ids.UUID
+	TransactionID   *ids.UUID
+	RequestedBy     *string
+	RoutingHealth   string
+	EscalationStep  int16
+	NextStepAt      *time.Time
+	AssigneeUserID  *ids.UUID
+	AssignedAt      *time.Time
+	FirstResponseAt *time.Time
+}
+
+type PcWaitlistRoute struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	EntryID   ids.UUID
+	Step      int16
+	Kind      string
+	UserID    *ids.UUID
+	ChannelID *ids.UUID
+	RoutedAt  time.Time
+}
+
+type PcWaitlistSetting struct {
+	OrgID                   ids.OrgID
+	BatchCeilings           []byte
+	HoldDeadlineS           *int32
+	ConsumeWindowS          *int32
+	AccessRequestDeadlineS  *int32
+	ToolReviewDeadlineS     *int32
+	RestorationDeadlineS    *int32
+	ReconciliationDeadlineS *int32
+	MaxHoldsPerGrant        pgtype.Int2
+	MaxHoldsPerRun          pgtype.Int2
+	MinAccountAgeS          *int32
+	MinRoleAgeS             *int32
+	MinCredentialAgeS       *int32
+	SelfGrantDelayS         *int32
+	UpdatedBy               string
+	UpdatedAt               time.Time
 }
 
 type PcWebauthnCeremony struct {
@@ -1046,6 +1183,8 @@ type PcWebauthnCeremony struct {
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
 	ConsumedAt         *time.Time
+	ApprovalRequestID  *ids.UUID
+	BatchID            *ids.UUID
 }
 
 type PcWebauthnCredential struct {
