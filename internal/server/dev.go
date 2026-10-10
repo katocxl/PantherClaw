@@ -5,9 +5,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,48 +12,33 @@ import (
 	"os"
 
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
-	"github.com/katocxl/pantherclaw/internal/authority"
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
-	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
-	"github.com/katocxl/pantherclaw/internal/platform/rpc"
 	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
 )
 
 // devSeedActor records `dev seed` in the audit log.
 var devSeedActor = evdomain.Actor{Type: "operator", ID: "dev-seed"}
 
-// devGatewayAuth returns the development gateway authenticator, or nil when
-// the dev gateway is disabled (every non-public procedure is then refused).
-func devGatewayAuth(cfg *Config) (rpc.Authenticator, error) {
-	if !cfg.DevGateway.Enabled {
-		return nil, nil
-	}
-	token, err := config.ReadSecretFile(cfg.DevGateway.TokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("server: dev gateway token: %w", err)
-	}
-	if len(token.Reveal()) < 32 {
-		return nil, errors.New("server: dev gateway token is too short (use `pantherclaw-server dev seed --token-out FILE`)")
-	}
-	org, err := ids.Parse[ids.Org](cfg.DevGateway.Org)
-	if err != nil {
-		return nil, err
-	}
-	return authority.DevGatewayAuthenticator(sha256.Sum256(token.Reveal()), authority.Gateway{ID: cfg.DevGateway.ID, Org: org}), nil
-}
-
 // cmdDev implements `dev seed`: a demo org with its containment row and the
-// reference payments package imported and active, and optionally a new
-// development gateway token and a ready-to-use workload: an admitted
-// instance, a fact provider for refundable charges, a grant and a run bound
-// to both. DEVELOPMENT ONLY.
+// reference payments package imported and active, and optionally an
+// enrollment file for a development gateway (it then authenticates with a
+// certificate from the internal CA, like any gateway) and a ready-to-use
+// workload: an admitted instance, a fact provider for refundable charges, a
+// grant and a run bound to both. `dev gateway` writes an enrollment file for
+// an existing org. DEVELOPMENT ONLY.
 func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {
+	if len(args) > 0 && args[0] == "gateway" {
+		return cmdDevGateway(ctx, args[1:], stdout, stderr, env)
+	}
+	if len(args) > 0 && args[0] == "connection" {
+		return cmdDevConnection(ctx, args[1:], stdout, stderr, env)
+	}
 	if len(args) == 0 || args[0] != "seed" {
 		_, _ = fmt.Fprint(stderr, usage)
 		return errUsage
@@ -67,7 +49,8 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	name := fs.String("org-name", "dev-org", "name of the new org")
 	limit := fs.String("budget-limit", "1000.00", "the seeded grant's task budget, in the grant currency")
 	maxCount := fs.Int("max-count", 0, "optional limit on the number of refunds the seeded grant allows (0 = none)")
-	tokenOut := fs.String("token-out", "", "write a new dev gateway token here (0600, never overwritten)")
+	gatewayOut := fs.String("gateway-out", "", "also seed a gateway; write its enrollment file here (0600, never overwritten)")
+	targetURL := fs.String("target-url", "", "with --gateway-out: also seed the connection \"payments\" to this payments API, in enforce mode")
 	workloadOut := fs.String("workload-out", "", "also seed an admitted PAP/1 workload with a grant and a run; write its key file here (0600, never overwritten)")
 	factsOut := fs.String("facts-key-out", "", "with --workload-out: write the API key of the development fact provider here (0600, never overwritten)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -89,7 +72,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if err != nil {
 		return fmt.Errorf("dev seed: authority.grant_max_per_action: %w", err)
 	}
-	for _, out := range []string{*workloadOut, *factsOut} {
+	for _, out := range []string{*workloadOut, *factsOut, *gatewayOut} {
 		if out == "" {
 			continue
 		}
@@ -97,10 +80,11 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 			return fmt.Errorf("dev seed: %s already exists", out)
 		}
 	}
-	if *tokenOut != "" {
-		if err := writeDevToken(*tokenOut); err != nil {
-			return err
-		}
+	if *targetURL != "" && *gatewayOut == "" {
+		return errTargetNeedsGateway
+	}
+	if *gatewayOut != "" && cfg.GatewayAPI.Addr == "" {
+		return errors.New("dev seed: --gateway-out needs gateway_api in the server config (gateways reach the Authority only over mTLS)")
 	}
 	appCfg, err := cfg.dbConfig(cfg.DB.AppUser, cfg.DB.AppPasswordFile, 2)
 	if err != nil {
@@ -140,9 +124,21 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "seeded org %s (%q) with package %s@%s active\n", org, *name, mockpayments.Name, mockpayments.Version)
-	_, _ = fmt.Fprintf(stdout, "enable the development gateway in the server config:\n"+
-		"  \"dev_gateway\": {\"enabled\": true, \"org\": %q, \"gateway_id\": %q, \"token_file\": %q}\n",
-		org.String(), cfg.DevGateway.ID, *tokenOut)
+	if *gatewayOut != "" {
+		gw, err := seedGateway(ctx, cfg, pool, org, "dev-gateway", *gatewayOut)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "seeded gateway %s; within 15 minutes, start it with: pantherclaw-gateway serve --enroll-file %s\n",
+			gw, *gatewayOut)
+		if *targetURL != "" {
+			c, err := seedConnection(ctx, cfg, pool, org, gw, devConnectionName, *targetURL, "enforce")
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s) to %s; agents call the gateway at /%s/v1/refunds\n", c.ID, c.Name, *targetURL, c.Name)
+		}
+	}
 	if *workloadOut == "" {
 		return nil
 	}
@@ -171,18 +167,6 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 		_, _ = fmt.Fprintf(stdout, "refunds need a fresh %s fact about the charge: report it with the API key in %s\n", devFact, *factsOut)
 	} else {
 		_, _ = fmt.Fprintf(stdout, "refunds need a fresh %s fact about the charge; seed again with --facts-key-out to report it\n", devFact)
-	}
-	return nil
-}
-
-// writeDevToken writes 32 random bytes, base64url-encoded, to a new 0600 file.
-func writeDevToken(path string) error {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return err
-	}
-	if err := writeSecretFile(path, base64.RawURLEncoding.EncodeToString(b[:])); err != nil {
-		return fmt.Errorf("dev seed: token file: %w", err)
 	}
 	return nil
 }

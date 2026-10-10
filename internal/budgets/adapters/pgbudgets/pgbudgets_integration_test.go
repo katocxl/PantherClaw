@@ -119,6 +119,71 @@ func TestHR048_NoOverspendAcrossAncestorsUnder1000Goroutines(t *testing.T) {
 	}
 }
 
+// TestHR048_ReservationLocksNoRowBeforeItsUpdate: recording a reservation
+// takes no lock on its account or counter row; the foreign keys are checked
+// at COMMIT, after the transaction has updated those rows itself. Checked at
+// INSERT, every finalization in flight held FOR KEY SHARE on the hot rows,
+// and PostgreSQL 17 could fail the next update with "new multixact has more
+// than one updating member" when one of them rolled back (migration 00027).
+func TestHR048_ReservationLocksNoRowBeforeItsUpdate(t *testing.T) {
+	p := dbtest.New(t).AppPool(t)
+	org := newOrg(t, p)
+	ctx := context.Background()
+	acct := debit("grant", 1, "task", "500")
+	owner := acct.Ref.Owner
+	ctr := bdomain.CounterDebit{Ref: bdomain.Ref{Owner: owner, Rule: "per_charge", Key: bdomain.KeyHash(owner, "per_charge", "ch_1"), Start: day}, Max: 3}
+	rows, err := pgbudgets.Ensure(ctx, p, org, []bdomain.Debit{acct}, []bdomain.CounterDebit{ctr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := pgbudgets.Lines([]bdomain.Debit{acct}, []bdomain.CounterDebit{ctr}, rows)
+	record := func(ctx context.Context, q *dbq.Queries, lines []pgbudgets.Line) error {
+		txn, permit := ids.NewV7(), ids.NewV7()
+		if err := q.InsertDecision(ctx, dbq.InsertDecisionParams{
+			OrgID: org, ID: txn, RunID: ids.NewV7(), ActionID: ids.NewV7(), ActionHash: make([]byte, 32), Operation: "payments.refund.create",
+			Decision: "ALLOW", ReasonCode: "GRANT_COVERS", GatewayID: "gw-test", State: "FINAL", Mode: "enforce",
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertPermitForTransaction(ctx, dbq.InsertPermitForTransactionParams{
+			OrgID: org, ID: permit, TransactionID: txn, GatewayID: "gw-test", Epoch: 1, ExpiresAt: time.Now().Add(time.Minute), Mode: "enforce",
+		}); err != nil {
+			return err
+		}
+		return pgbudgets.Record(ctx, q, org, txn, permit, lines)
+	}
+	err = p.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		if err := record(ctx, q, lines); err != nil {
+			return err
+		}
+		// FOR UPDATE conflicts with FOR KEY SHARE: it waits for no one only
+		// if the reservations locked neither row.
+		for table, id := range map[string]ids.UUID{"budget_accounts": rows.Accounts[acct.Ref], "counters": rows.Counters[ctr.Ref]} {
+			if err := p.InTenantTx(ctx, org, func(ctx context.Context, probe db.TenantTx) error {
+				_, err := probe.Exec(ctx, "SELECT 1 FROM pc."+table+" WHERE id = $1 FOR UPDATE NOWAIT", id)
+				return err
+			}); err != nil {
+				t.Errorf("a recorded reservation locks its %s row before the update: %v", table, err)
+			}
+		}
+		return pgbudgets.ReserveLines(ctx, q, org, lines)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The keys still hold: a reservation of a row that does not exist fails
+	// at COMMIT.
+	missing := []pgbudgets.Line{{Line: bdomain.Line{Kind: bdomain.KindBudget, ID: ids.NewV7(), Amount: money.MustParse("1")}}}
+	err = p.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		return record(ctx, dbq.New(tx), missing)
+	})
+	if !db.IsForeignKeyViolation(err) {
+		t.Fatalf("a reservation of a missing account: %v, want a foreign-key violation", err)
+	}
+}
+
 // TestHR049_CountersHoldUnderConcurrency: a count limit of 3 with at most 2
 // outstanding admits exactly 2 of 50 parallel reservations.
 func TestHR049_CountersHoldUnderConcurrency(t *testing.T) {

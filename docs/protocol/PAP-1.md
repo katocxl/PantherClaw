@@ -3,7 +3,7 @@
 
 # PantherClaw Authority Protocol — PAP/1
 
-**Status:** Draft 1 (2026-10-08; §3.3 and §5 revised 2026-10-09 for ADR-0018; §3.2–§5 clarified 2026-10-09 by the M3 G0 brief; §5 `PAP-Run-Id` added in M3 slice 13) · **License:** Apache-2.0 (this directory) · **Normative language:** MUST, MUST NOT, SHOULD, MAY per RFC 2119/8174.
+**Status:** Draft 1 (2026-10-08; §3.3 and §5 revised 2026-10-09 for ADR-0018; §3.2–§5 clarified 2026-10-09 by the M3 G0 brief; §5 `PAP-Run-Id` added in M3 slice 13; §6–§8 and §10 clarified 2026-10-09 by the M6 G0 brief) · **License:** Apache-2.0 (this directory) · **Normative language:** MUST, MUST NOT, SHOULD, MAY per RFC 2119/8174.
 
 PAP/1 defines how an AI agent workload proves *who it is*, how a run is bound to *whose authority* it uses, how a requested action is expressed *exactly*, and how authorization, dispatch and evidence are represented so that any party can verify them. It is open so that SDKs, gateways and target-side verifiers interoperate.
 
@@ -121,6 +121,7 @@ ActionIR is produced by the gateway (or SDK, for cooperative mode) from a raw to
   "definition": {"package": "pc.mock-payments", "version": "1.0.0", "digest": "sha256:…"},
   "channel": "mcp | http | sdk | hook",
   "route": "<route_id>",
+  "connection": "<connection_id, optional>",
   "target": {"type": "payments.charge", "id": "ch_3Px…", "account": "acct_…"},
   "params": {"amount": {"value": "85.00", "currency": "USD"}, "reason": "duplicate"},
   "destinations": [{"kind": "external", "id": "…"}],
@@ -135,6 +136,7 @@ Rules (MUST):
 - **No defaults:** an ambiguous target, missing material field or unsupported unit ⇒ `CANNOT_AUTHORIZE` (never a silent default).
 - **Canonical hash:** `action_hash = SHA-256(JCS(ActionIR))`.
 - **Dedupe key:** irreversible operations declare a semantic dedupe key in the tool package; an open `UNKNOWN` or recent success on the same key parks a new request in `RECONCILIATION`.
+- **Connection:** a gateway sets `connection` to the registered connection the request came through (channels `http`, `mcp` and `hook`). The Authority MUST check that the calling gateway serves that connection and that `route` is one of its routes. Because `connection` is part of the action hash, a decision or approval never carries over to another target or credential. Actions from cooperative SDKs (`sdk`) MAY omit it.
 
 ## 7. Authorization exchange
 
@@ -156,6 +158,8 @@ Rules (MUST):
 
 Idempotency: `(org, run_id, action_id)` is unique. Same triple + same hash ⇒ the stored decision is returned. Same triple + different hash ⇒ `DENY` with code `ACTION_TAMPERED` and a security alert. `DENY` and expired decisions are terminal for that triple; `CANNOT_AUTHORIZE` MAY be retried.
 
+**Monitor mode.** When the action's route runs in `monitor` mode, the response carries `"mode": "monitor"` and `decision` is hypothetical: the Authority records it, reserves nothing, and returns a permit whatever the decision, unless the identity or containment checks failed. In monitor mode the presence of a permit, not the decision, tells the gateway to dispatch; the permit still goes through `BeginDispatch`. Nothing about a monitor-mode action may be reported as prevented.
+
 ### 7.2 Dispatch permit
 JWS, `typ: "pap-permit+jwt"`, TTL ≈ 5 s:
 
@@ -166,15 +170,15 @@ JWS, `typ: "pap-permit+jwt"`, TTL ≈ 5 s:
 ```
 
 ### 7.3 BeginDispatch (commit point)
-Before sending any byte to the target the gateway MUST call `BeginDispatch{permit_id, epoch}`. The Authority atomically transitions the permit `ISSUED → DISPATCHING` only if not expired (database clock) and `epoch` equals the org's current containment epoch. Any failure ⇒ the gateway MUST NOT dispatch. A permit that was `DISPATCHING` without a recorded outcome becomes `UNKNOWN` (never released automatically).
+Before sending any byte to the target the gateway MUST call `BeginDispatch{permit_id, epoch, outbound_method, outbound_url, outbound_body_hash}`, after building the outbound request and before sending it. The Authority atomically transitions the permit `ISSUED → DISPATCHING` only if not expired (database clock) and `epoch` equals the org's current containment epoch. Any failure ⇒ the gateway MUST NOT dispatch. A permit that was `DISPATCHING` without a recorded outcome becomes `UNKNOWN` (never released automatically). For a target-enforced connection the response carries the action token (§10), minted over `outbound_body_hash`.
 
 ### 7.4 RecordExecution
-`RecordExecution{permit_id, outcome: accepted|failed|unknown, target_response_digest, timings}` → execution receipt. The target-facing idempotency key (where the target supports one) MUST be derived from `transaction_id`, never from agent-supplied ids.
+`RecordExecution{permit_id, outcome: accepted|failed|unknown|delegated, target_response_digest, timings}` → execution receipt. The target-facing idempotency key (where the target supports one) MUST be derived from `transaction_id`, never from agent-supplied ids. `delegated` is used only by cooperative channels (hooks, SDK authorize), where the agent performs the allowed action itself: its reservations are committed as if the action happened, and the receipt says the gateway did not perform it.
 
 ## 8. Holds, waiting and approvals
 
-- `REQUIRE_APPROVAL` / `REQUIRE_STEP_UP` return `wait.handle`. SDKs MAY long-poll `Wait{handle}` or subscribe via SSE; MCP clients receive a structured pending result (or the tasks extension when negotiated).
-- When the requirement is satisfied the workload **resubmits the same `run_id` + `action_id` with an identical action hash**. The Authority re-runs the full pipeline and finalizes only if the same requirement class is now satisfied.
+- `REQUIRE_APPROVAL` / `REQUIRE_STEP_UP` return `wait.handle`. SDKs MAY long-poll `Wait{handle}` or subscribe via SSE; MCP clients receive a structured pending result, or a task when they support one (the tasks extension of MCP 2026-07-28, or a task-augmented call in 2025-11-25).
+- When the requirement is satisfied the workload **resubmits the same `run_id` + `action_id` with an identical action hash**. The Authority re-runs the full pipeline and finalizes only if the same requirement class is now satisfied. Polling an MCP task is such a resubmission: the gateway resubmits the held action with the polling request's own, freshly verified credentials, and only for the run, instance and connection that created the task.
 - **Approval binding:**
   `binding = SHA-256(JCS({action_hash, decision_basis_digest, material_facts_digest, grant_revision, definition_digest, run_id, agent_instance, jkt, approver_requirements, expires_at, display_hash}))`
   where `display_hash` is the SHA-256 of the approval text rendered from the tool package's approval template (agent-supplied text is excluded and shown separately as untrusted).
@@ -196,10 +200,10 @@ Receipts are Ed25519-signed; the format reserves `sigs[]` for an additional ML-D
 
 ## 10. Target-enforced mode (action tokens)
 
-For targets that run PantherClaw verifier middleware, the gateway attaches `PAP-Action: <JWS>`:
+For targets that run PantherClaw verifier middleware, the gateway attaches `PAP-Action: <JWS>`. The Authority mints it at `BeginDispatch` (§7.3) with its `action_tokens` key, published in the JWKS, over the outbound body hash the gateway reported; the audience is the connection the target is registered as:
 
 ```json
-{"iss": "…", "aud": "<target id>", "jti": "<single use>", "iat": …, "exp": "≤ 60 s",
+{"iss": "…", "aud": "<connection id>", "jti": "<single use>", "iat": …, "exp": "≤ 60 s",
  "pap": {"v": 1, "txn": "…", "act": "<action_hash>", "bh": "<SHA-256 of the exact outbound body>",
          "op": "payments.refund.create", "target": {"type": "…", "id": "…"}}}
 ```

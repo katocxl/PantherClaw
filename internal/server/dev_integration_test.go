@@ -29,6 +29,7 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/definitions/manifest"
 	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
+	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
@@ -37,6 +38,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
 )
 
@@ -69,18 +71,32 @@ func serve(t *testing.T, cfgPath string) string {
 	return ""
 }
 
-var seededOrg = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+var (
+	seededOrg        = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+	seededConnection = regexp.MustCompile(`seeded connection ([0-9a-f-]{36}) `)
+)
 
-// seed runs `dev seed` and returns the org, the gateway token file, the
-// workload key file and the fact provider's API key file.
-func seed(t *testing.T, cfgPath, limit string) (ids.OrgID, string, string, string) {
+// devConn is the payments connection of the last seed with a gateway.
+var devConn ids.UUID
+
+// seed runs `dev seed` and returns the org, the gateway enrollment file
+// ("" without withGateway), the workload key file and the fact provider's
+// API key file. With a gateway it also seeds the payments connection and
+// sets devConn. The same configuration (and so the same key-encryption key)
+// must serve afterwards: seeding a gateway creates the CA key.
+func seed(t *testing.T, cfgPath, limit string, withGateway bool) (ids.OrgID, string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	tokenFile, keyFile, factsFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
+	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	var out, errb bytes.Buffer
 	args := []string{
-		"dev", "seed", "--config", cfgPath, "--org-name", "acme", "--budget-limit", limit, "--token-out", tokenFile,
+		"dev", "seed", "--config", cfgPath, "--org-name", "acme", "--budget-limit", limit,
 		"--workload-out", keyFile, "--facts-key-out", factsFile,
+	}
+	if withGateway {
+		args = append(args, "--gateway-out", enrollFile, "--target-url", "http://127.0.0.1:9")
+	} else {
+		enrollFile = ""
 	}
 	if code := Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("dev seed: %d %s", code, errb.String())
@@ -89,10 +105,50 @@ func seed(t *testing.T, cfgPath, limit string) (ids.OrgID, string, string, strin
 	if m == nil {
 		t.Fatalf("dev seed output %q", out.String())
 	}
-	if code := Run(context.Background(), args, &out, &errb, noEnv); code == 0 {
-		t.Fatal("dev seed overwrote an existing token file")
+	if withGateway {
+		c := seededConnection.FindStringSubmatch(out.String())
+		if c == nil {
+			t.Fatalf("dev seed output %q has no connection", out.String())
+		}
+		var err error
+		if devConn, err = ids.ParseUUID(c[1]); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return ids.MustParse[ids.Org](m[1]), tokenFile, keyFile, factsFile
+	if code := Run(context.Background(), args, &out, &errb, noEnv); code == 0 {
+		t.Fatal("dev seed overwrote an existing key file")
+	}
+	return ids.MustParse[ids.Org](m[1]), enrollFile, keyFile, factsFile
+}
+
+// gatewayAt opens the mTLS gateway listener on addr.
+func gatewayAt(addr string) func(map[string]any) {
+	return func(c map[string]any) {
+		c["gateway_api"] = map[string]any{"addr": addr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + addr}
+	}
+}
+
+// enrollGateway enrolls from a dev enrollment file and returns the
+// gateway's mTLS control client.
+func enrollGateway(t *testing.T, enrollFile string) *control.Client {
+	t.Helper()
+	b, err := os.ReadFile(enrollFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		APIURL   string `json:"api_url"`
+		Token    string `json:"token"`
+		CASHA256 string `json:"ca_sha256"`
+	}
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	id, err := control.Enroll(context.Background(), &http.Client{Timeout: 10 * time.Second}, f.APIURL, pclog.NewSecret(f.Token), f.CASHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return control.NewClient(id, "", "", 10*time.Second, pclog.Discard())
 }
 
 // workload is the seeded PAP/1 workload, acting through a gateway.
@@ -148,6 +204,7 @@ func refund(t *testing.T, org ids.OrgID, wl workload, amount string) []byte {
 	}
 	p, err := m.MCP(context.Background(), mapping.Context{
 		Org: org.String(), Env: wl.env, RunID: wl.kf.RunID, ActionID: ids.NewV7().String(), AgentInstance: wl.inst.Instance.String(),
+		Connection: devConn.String(),
 	}, "create_refund", []byte(`{"charge":"ch_1","amount":"`+amount+`","currency":"USD","reason":"duplicate"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -197,16 +254,8 @@ func (wl workload) creds(t *testing.T, nonce string) *pantherclawv1.WorkloadCred
 	return &pantherclawv1.WorkloadCredentials{WorkloadToken: wl.token, Proof: proof, BodySha256: sum[:], Htm: "POST", Htu: url}
 }
 
-func gatewayCtx(token string) context.Context {
-	ctx, info := connect.NewClientContext(context.Background())
-	if token != "" {
-		info.RequestHeader().Set("Authorization", "Bearer "+token)
-	}
-	return ctx
-}
-
-func authorize(client pantherclawv1connect.AuthorityServiceClient, token string, action []byte, creds *pantherclawv1.WorkloadCredentials) (*pantherclawv1.AuthorizeResponse, error) {
-	return client.Authorize(gatewayCtx(token), &pantherclawv1.AuthorizeRequest{ActionIr: action, Workload: creds})
+func authorize(client pantherclawv1connect.AuthorityServiceClient, action []byte, creds *pantherclawv1.WorkloadCredentials) (*pantherclawv1.AuthorizeResponse, error) {
+	return client.Authorize(context.Background(), &pantherclawv1.AuthorizeRequest{ActionIr: action, Workload: creds})
 }
 
 // publicAt serves on addr and makes it the public URL, so workload proofs
@@ -229,45 +278,46 @@ func freeAddr(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func TestIntDevGatewayAuthorizeAndSweep(t *testing.T) {
+// TestHR181_AGatewayEnrolledByDevSeedAuthorizesOverMTLS: a gateway enrolled
+// from `dev seed --gateway-out` calls the Authority over mTLS as its org;
+// without a certificate, or on the public API, it is refused; and the
+// worker's sweeper releases an undispatched permit.
+func TestHR181_AGatewayEnrolledByDevSeedAuthorizesOverMTLS(t *testing.T) {
 	d := dbtest.New(t)
-	at := publicAt(freeAddr(t))
-	org, tokenFile, keyFile, factsFile := seed(t, testConfig(t, d, RoleAll, at), "100.00")
-	token, err := os.ReadFile(tokenFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfgPath := testConfig(t, d, RoleAll, at, func(c map[string]any) {
-		c["dev_gateway"] = map[string]any{"enabled": true, "org": org.String(), "gateway_id": "gw-dev-1", "token_file": tokenFile}
+	cfgPath := testConfig(t, d, RoleAll, publicAt(freeAddr(t)), gatewayAt(freeAddr(t)), func(c map[string]any) {
 		c["authority"] = map[string]any{"permit_ttl": "1s"}
 	})
+	org, enrollFile, keyFile, factsFile := seed(t, cfgPath, "100.00", true)
 	base := serve(t, cfgPath)
-	client := pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Timeout: 10 * time.Second}, base)))
+	ctl := enrollGateway(t, enrollFile)
+	if ctl.Identity().Org != org {
+		t.Fatalf("the enrolled gateway serves %s, want %s", ctl.Identity().Org, org)
+	}
+	client := ctl.Authority
 	wl := seededWorkload(t, base, keyFile)
 	refundable(t, base, factsFile)
-	tok := strings.TrimSpace(string(token))
-	nonce, err := client.GetNonce(gatewayCtx(tok), &pantherclawv1.GetNonceRequest{})
+	nonce, err := client.GetNonce(context.Background(), &pantherclawv1.GetNonceRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// No or a wrong credential: refused before any decision.
-	for _, gt := range []string{"", "not-the-token-not-the-token-not-the"} {
-		if _, err := authorize(client, gt, refund(t, org, wl, "30.00"), wl.creds(t, nonce.GetNonce())); connect.CodeOf(err) != connect.CodeUnauthenticated {
-			t.Fatalf("token %q: %v, want Unauthenticated", gt, err)
-		}
+	// The public API never acts as a gateway, whatever credential is sent.
+	public := pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(
+		&http.Client{Timeout: 10 * time.Second, Transport: bearer{"pcg_not_a_gateway_credential"}}, base)))
+	if _, err := authorize(public, refund(t, org, wl, "30.00"), wl.creds(t, nonce.GetNonce())); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("Authorize on the public API: %v, want Unauthenticated", err)
 	}
 	// Without the workload's credentials nothing is authorized (HR-021).
-	if res, err := authorize(client, tok, refund(t, org, wl, "30.00"), nil); err != nil ||
+	if res, err := authorize(client, refund(t, org, wl, "30.00"), nil); err != nil ||
 		res.GetDecision() != pantherclawv1.Decision_DECISION_CANNOT_AUTHORIZE {
 		t.Fatalf("Authorize without workload credentials = %v, %v", res, err)
 	}
-	res, err := authorize(client, tok, refund(t, org, wl, "30.00"), wl.creds(t, nonce.GetNonce()))
+	res, err := authorize(client, refund(t, org, wl, "30.00"), wl.creds(t, nonce.GetNonce()))
 	if err != nil || res.GetDecision() != pantherclawv1.Decision_DECISION_ALLOW || res.GetPermit() == "" {
 		t.Fatalf("Authorize = %v, %v", res, err)
 	}
-	// Another org's action is denied: the org comes from the credential.
-	other, err := authorize(client, tok, refund(t, ids.New[ids.Org](), wl, "30.00"), wl.creds(t, nonce.GetNonce()))
+	// Another org's action is denied: the org comes from the certificate.
+	other, err := authorize(client, refund(t, ids.New[ids.Org](), wl, "30.00"), wl.creds(t, nonce.GetNonce()))
 	if err != nil || other.GetDecision() != pantherclawv1.Decision_DECISION_DENY {
 		t.Fatalf("cross-org Authorize = %v, %v", other, err)
 	}
@@ -300,20 +350,21 @@ func TestIntDevGatewayAuthorizeAndSweep(t *testing.T) {
 	}
 }
 
-func TestIntAuthorityRefusedWithoutDevGateway(t *testing.T) {
+func TestIntAuthorityRefusedOnThePublicAPI(t *testing.T) {
 	d := dbtest.New(t)
 	base := serve(t, testConfig(t, d, RoleAPI))
-	client := pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Timeout: 10 * time.Second}, base)))
-	_, err := client.Authorize(gatewayCtx("any-token-any-token-any-token-any"), &pantherclawv1.AuthorizeRequest{ActionIr: []byte(`{}`)})
+	client := pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(
+		&http.Client{Timeout: 10 * time.Second, Transport: bearer{"any-token-any-token-any-token-any"}}, base)))
+	_, err := client.Authorize(context.Background(), &pantherclawv1.AuthorizeRequest{ActionIr: []byte(`{}`)})
 	var ce *connect.Error
 	if !errors.As(err, &ce) || ce.Code() != connect.CodeUnauthenticated {
-		t.Fatalf("Authorize without a dev gateway = %v, want Unauthenticated", err)
+		t.Fatalf("Authorize on the public API = %v, want Unauthenticated", err)
 	}
 }
 
 func TestIntDevSeedAudits(t *testing.T) {
 	d := dbtest.New(t)
-	org, _, _, _ := seed(t, testConfig(t, d, RoleAPI), "50.00")
+	org, _, _, _ := seed(t, testConfig(t, d, RoleAPI, gatewayAt("127.0.0.1:8443")), "50.00", true)
 	var kinds []string
 	err := d.AppPool(t).InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
 		rows, err := tx.Query(ctx, "SELECT kind, body FROM pc.ledger_entries ORDER BY id")
@@ -337,7 +388,7 @@ func TestIntDevSeedAudits(t *testing.T) {
 	})
 	want := []string{
 		"audit.dev.org_seeded", "audit.dev.workload_seeded", "audit.package.imported", "audit.package.transitioned",
-		"audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
+		"audit.dev.gateway_seeded", "audit.connection.created", "audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
 	}
 	if err != nil || !slices.Equal(kinds, want) {
 		t.Fatalf("org ledger = %v, %v; want %v", kinds, err, want)

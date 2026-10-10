@@ -50,6 +50,9 @@ const (
 	ReasonGrantRequiresHold    = "GRANT_REQUIRES_APPROVAL"
 	ReasonGrantRequiresStepUp  = "GRANT_REQUIRES_STEP_UP"
 	ReasonActionInstanceDiffer = "ACTION_INSTANCE_MISMATCH"
+	ReasonConnectionUnknown    = "CONNECTION_UNKNOWN"
+	ReasonConnectionRequired   = "CONNECTION_REQUIRED"
+	ReasonConnectionContained  = "CONNECTION_QUARANTINED"
 )
 
 // Pipeline evaluates steps 1–8.
@@ -94,10 +97,38 @@ type Evaluation struct {
 	RepeatWindow time.Duration
 	Epoch        int64
 	Now          time.Time
+	// Mode is the route's mode on the action's connection: ModeMonitor only
+	// when step 1 resolved a connection whose route runs in monitor mode;
+	// ModeEnforce otherwise (G0 M6 decision 7, HR-184).
+	Mode string
+	// Connection is the connection the action came through, when it names
+	// one and step 1 accepted it.
+	Connection *Connection
+	// Channel and Target are the action's, for the transaction record.
+	Channel string
+	Target  actionir.Target
 }
 
 // Permits reports whether the evaluation allows dispatch.
 func (e *Evaluation) Permits() bool { return e.Decision.Permits() }
+
+// MonitorPermit reports whether a monitor-mode permit is issued (HR-184):
+// the route runs in monitor mode and neither identity (step 2) nor
+// containment (step 3) failed. The decision is then hypothetical: policy,
+// budgets and requirements never block, nothing is reserved, and nothing
+// is reported as prevented.
+func (e *Evaluation) MonitorPermit() bool {
+	if e.Mode != ModeMonitor {
+		return false
+	}
+	for _, it := range e.Checklist {
+		if (it.Step == StepScope || it.Step == StepIdentity || it.Step == StepContainment) &&
+			(it.Status == StatusFailed || it.Status == StatusMissing) {
+			return false
+		}
+	}
+	return true
+}
 
 // Decisive returns the decisive checklist item.
 func (e *Evaluation) Decisive() Item {
@@ -115,6 +146,7 @@ type state struct {
 	ev      *Evaluation
 	cont    Containment
 	pinned  *Pinned
+	conn    *Connection
 	def     *defs.Definition
 	run     *Run
 	agent   *Agent
@@ -137,6 +169,7 @@ func (p *Pipeline) Evaluate(ctx context.Context, req Request) (*Evaluation, erro
 	}
 	s := &state{req: req, a: req.Action.Action, cont: cont, ev: &Evaluation{
 		Org: req.Org, ActionHash: req.Action.HashHex(), Operation: req.Action.Action.Operation, Epoch: cont.Epoch, Now: cont.Now,
+		Mode: ModeEnforce, Channel: req.Action.Action.Channel, Target: req.Action.Action.Target,
 	}}
 	s.ev.EffectiveHash = s.ev.ActionHash
 	s.ev.RunID, _ = ids.ParseUUID(s.a.RunID)
@@ -185,8 +218,76 @@ func (p *Pipeline) scope(ctx context.Context, s *state) {
 		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonRouteUnknown, "route "+s.a.Route+" is not a reviewed route of "+d.Operation, "")
 		return
 	}
+	switch {
+	case s.a.Connection != "":
+		if !p.connection(ctx, s, d) {
+			return
+		}
+	case slices.Contains(gatewayChannels, s.a.Channel):
+		// A gateway names the connection a call came through (PAP-1 §6), so
+		// its mode, quarantine and credential always apply.
+		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonConnectionRequired, "an action from the "+s.a.Channel+" channel names its connection", "")
+		return
+	}
 	s.def = d
 	s.cl.pass(StepScope, ReasonRouteReviewed)
+}
+
+// connection checks the connection an action names (PAP-1 §6): the gateway
+// asking serves it, it uses the action's package, and a hook call comes
+// through a local connection and nothing else does. A connection of another
+// gateway or org looks unknown. The route's mode on it decides whether the
+// action runs in monitor mode.
+func (p *Pipeline) connection(ctx context.Context, s *state, d *defs.Definition) bool {
+	unknown := func() bool {
+		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonConnectionUnknown, "the connection is not one this gateway serves", "")
+		return false
+	}
+	id, err := ids.ParseUUID(s.a.Connection)
+	if err != nil {
+		return unknown()
+	}
+	c, err := p.Reader.Connection(ctx, s.req.Org, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return unknown()
+	case err != nil:
+		s.missing(StepScope, err, "the connection")
+		return false
+	case c.Gateway.String() != s.req.Gateway:
+		return unknown()
+	}
+	if c.Package != s.a.Definition.Package || (c.Kind == "local") != (s.a.Channel == string(defs.ChannelHook)) || !dispatches(c.Kind, d) {
+		s.cl.add(StepScope, adomain.CannotAuthorize, ReasonRouteUnknown,
+			"route "+s.a.Route+" of "+d.Operation+" is not served by this connection", "")
+		return false
+	}
+	s.conn = &c
+	s.ev.Connection = &c
+	if c.Mode(s.a.Route) == ModeMonitor {
+		s.ev.Mode = ModeMonitor
+	}
+	return true
+}
+
+// gatewayChannels are the channels a gateway serves, whose actions always
+// name their connection (PAP-1 §6); cooperative SDKs (sdk) may omit it.
+var gatewayChannels = []string{string(defs.ChannelHTTP), string(defs.ChannelMCP), string(defs.ChannelHook)}
+
+// dispatches reports whether a connection of this kind serves the
+// definition: an HTTP or MCP connection only definitions with a dispatch
+// template of its kind, a local one (the hook) any, because the agent's
+// machine executes it.
+func dispatches(kind string, d *defs.Definition) bool {
+	switch kind {
+	case "http":
+		return d.Dispatch != nil && d.Dispatch.HTTP != nil
+	case "mcp":
+		return d.Dispatch != nil && d.Dispatch.MCP != nil
+	case "local":
+		return true
+	}
+	return false
 }
 
 // Step 2: the verified instance is the run's, and its attestation level
@@ -274,6 +375,10 @@ func (p *Pipeline) containment(s *state) {
 	}
 	if s.pinned != nil && (s.pinned.State == defs.StateQuarantined || s.pinned.State == defs.StateRetired) {
 		s.cl.add(StepContainment, adomain.Deny, ReasonPackageQuarantined, "the definition is "+string(s.pinned.State), "")
+		blocked = true
+	}
+	if s.conn != nil && s.conn.State != "ACTIVE" {
+		s.cl.add(StepContainment, adomain.Deny, ReasonConnectionContained, "the connection is "+s.conn.State, "")
 		blocked = true
 	}
 	if !blocked {

@@ -118,7 +118,7 @@ func TestINV07_DecisionIsNotExecutionIsNotEffect(t *testing.T) {
 	if a := s.W.AccountState(ref); !a.Spent.IsZero() || a.Reserved.IsZero() {
 		t.Fatalf("an ALLOW reserves; it spends nothing: %+v", a)
 	}
-	if err := s.Authority.BeginDispatch(ctx, s.Gateway, res.PermitID, res.Epoch); err != nil {
+	if _, err := s.Authority.BeginDispatch(ctx, s.Gateway, res.PermitID, res.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
 	if s.W.PermitState(res.PermitID) != "DISPATCHING" {

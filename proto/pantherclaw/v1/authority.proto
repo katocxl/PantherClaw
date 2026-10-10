@@ -111,6 +111,26 @@ message AuthorizeResponse {
   // Whether this answer is a stored decision returned for a repeat
   // (HR-005), not a new evaluation.
   bool repeat = 15;
+  // Field 16 is reserved for M5 part 2's wait handle (WaitInfo).
+  // How the action's route treats this decision (G0 M6, PN-013). In
+  // monitor mode the decision is hypothetical: nothing is reserved, and a
+  // permit is returned whatever the decision unless identity or containment
+  // failed (HR-184). The permit, not the decision, then says whether to
+  // dispatch.
+  DispatchMode mode = 17;
+  // Access mode of the action's connection (F416), for the gateway's
+  // execution record.
+  string access_mode = 18;
+}
+
+// DispatchMode is how a route treats decisions (PN-013).
+enum DispatchMode {
+  DISPATCH_MODE_UNSPECIFIED = 0;
+  // Every decision is enforced.
+  DISPATCH_MODE_ENFORCE = 1;
+  // Decisions are recorded as hypothetical and never block; containment
+  // still does (HR-184).
+  DISPATCH_MODE_MONITOR = 2;
 }
 
 // ChecklistStatus is the outcome of one checklist item.
@@ -175,10 +195,24 @@ message BeginDispatchRequest {
   string permit_id = 1 [(buf.validate.field).string.uuid = true];
   // Epoch carried by the permit.
   int64 epoch = 2 [(buf.validate.field).int64.gt = 0];
+  // The outbound request the gateway built and is about to send (PAP-1
+  // §7.3): method, URL and the SHA-256 of the exact body. Empty for
+  // cooperative channels, where the gateway sends nothing.
+  string outbound_method = 3 [(buf.validate.field).string.pattern = "^([A-Z]{3,7})?$"];
+  // Outbound URL.
+  string outbound_url = 4 [(buf.validate.field).string.max_len = 4096];
+  // SHA-256 of the outbound body.
+  bytes outbound_body_sha256 = 5 [(buf.validate.field).bytes = {
+    max_len: 32
+  }];
 }
 
 // BeginDispatchResponse confirms the commit point.
-message BeginDispatchResponse {}
+message BeginDispatchResponse {
+  // For a target-enforced connection: the single-use PAP-Action token
+  // (PAP-1 §10, HR-188), bound to outbound_body_sha256. Empty otherwise.
+  string action_token = 1;
+}
 
 // Outcome of a dispatch (PAP-1 §7.4).
 enum Outcome {
@@ -186,6 +220,10 @@ enum Outcome {
   OUTCOME_ACCEPTED = 1;
   OUTCOME_FAILED = 2;
   OUTCOME_UNKNOWN = 3;
+  // A cooperative channel (hook, SDK authorize): the agent performs the
+  // allowed action itself and the gateway sends nothing; reservations are
+  // committed as if it happened (PAP-1 §7.4, HR-186).
+  OUTCOME_DELEGATED = 4;
 }
 
 // RecordExecutionRequest reports what happened at the target.

@@ -94,6 +94,110 @@ func (PackageState) EnumDescriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{0}
 }
 
+// SigningKeyState is an org package-signing key's state.
+type SigningKeyState int32
+
+const (
+	SigningKeyState_SIGNING_KEY_STATE_UNSPECIFIED SigningKeyState = 0
+	// Packages signed with it can be imported.
+	SigningKeyState_SIGNING_KEY_STATE_ACTIVE SigningKeyState = 1
+	// It verifies nothing any more and can never be registered again.
+	SigningKeyState_SIGNING_KEY_STATE_REVOKED SigningKeyState = 2
+)
+
+// Enum value maps for SigningKeyState.
+var (
+	SigningKeyState_name = map[int32]string{
+		0: "SIGNING_KEY_STATE_UNSPECIFIED",
+		1: "SIGNING_KEY_STATE_ACTIVE",
+		2: "SIGNING_KEY_STATE_REVOKED",
+	}
+	SigningKeyState_value = map[string]int32{
+		"SIGNING_KEY_STATE_UNSPECIFIED": 0,
+		"SIGNING_KEY_STATE_ACTIVE":      1,
+		"SIGNING_KEY_STATE_REVOKED":     2,
+	}
+)
+
+func (x SigningKeyState) Enum() *SigningKeyState {
+	p := new(SigningKeyState)
+	*p = x
+	return p
+}
+
+func (x SigningKeyState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SigningKeyState) Descriptor() protoreflect.EnumDescriptor {
+	return file_pantherclaw_v1_packages_proto_enumTypes[1].Descriptor()
+}
+
+func (SigningKeyState) Type() protoreflect.EnumType {
+	return &file_pantherclaw_v1_packages_proto_enumTypes[1]
+}
+
+func (x SigningKeyState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SigningKeyState.Descriptor instead.
+func (SigningKeyState) EnumDescriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{1}
+}
+
+// SigningKeyRevokeReason says why a key was revoked.
+type SigningKeyRevokeReason int32
+
+const (
+	SigningKeyRevokeReason_SIGNING_KEY_REVOKE_REASON_UNSPECIFIED SigningKeyRevokeReason = 0
+	// Replaced by another key; what it signed keeps working.
+	SigningKeyRevokeReason_SIGNING_KEY_REVOKE_REASON_ROTATED SigningKeyRevokeReason = 1
+	// Someone else may hold it: what it signed is withdrawn for good.
+	SigningKeyRevokeReason_SIGNING_KEY_REVOKE_REASON_COMPROMISED SigningKeyRevokeReason = 2
+)
+
+// Enum value maps for SigningKeyRevokeReason.
+var (
+	SigningKeyRevokeReason_name = map[int32]string{
+		0: "SIGNING_KEY_REVOKE_REASON_UNSPECIFIED",
+		1: "SIGNING_KEY_REVOKE_REASON_ROTATED",
+		2: "SIGNING_KEY_REVOKE_REASON_COMPROMISED",
+	}
+	SigningKeyRevokeReason_value = map[string]int32{
+		"SIGNING_KEY_REVOKE_REASON_UNSPECIFIED": 0,
+		"SIGNING_KEY_REVOKE_REASON_ROTATED":     1,
+		"SIGNING_KEY_REVOKE_REASON_COMPROMISED": 2,
+	}
+)
+
+func (x SigningKeyRevokeReason) Enum() *SigningKeyRevokeReason {
+	p := new(SigningKeyRevokeReason)
+	*p = x
+	return p
+}
+
+func (x SigningKeyRevokeReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SigningKeyRevokeReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_pantherclaw_v1_packages_proto_enumTypes[2].Descriptor()
+}
+
+func (SigningKeyRevokeReason) Type() protoreflect.EnumType {
+	return &file_pantherclaw_v1_packages_proto_enumTypes[2]
+}
+
+func (x SigningKeyRevokeReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SigningKeyRevokeReason.Descriptor instead.
+func (SigningKeyRevokeReason) EnumDescriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{2}
+}
+
 // DefinitionRef names one action definition of a package.
 type DefinitionRef struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -165,7 +269,10 @@ type PackageVersion struct {
 	// Whether the org's pin points at this version.
 	Pinned bool `protobuf:"varint,6,opt,name=pinned,proto3" json:"pinned,omitempty"`
 	// When it was imported.
-	ImportTime    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=import_time,json=importTime,proto3" json:"import_time,omitempty"`
+	ImportTime *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=import_time,json=importTime,proto3" json:"import_time,omitempty"`
+	// Kid of the org package-signing key that signed it; empty when
+	// PantherClaw's package root did.
+	SigningKey    string `protobuf:"bytes,8,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -247,6 +354,13 @@ func (x *PackageVersion) GetImportTime() *timestamppb.Timestamp {
 		return x.ImportTime
 	}
 	return nil
+}
+
+func (x *PackageVersion) GetSigningKey() string {
+	if x != nil {
+		return x.SigningKey
+	}
+	return ""
 }
 
 // ImportPackageRequest carries a package and the signed metadata that
@@ -717,6 +831,429 @@ func (x *GetDefinitionResponse) GetState() PackageState {
 	return PackageState_PACKAGE_STATE_UNSPECIFIED
 }
 
+// SigningKey is an org package-signing key (its public half only).
+type SigningKey struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key id: "org-packages-" and the start of the key's JWK thumbprint.
+	Kid string `protobuf:"bytes,1,opt,name=kid,proto3" json:"kid,omitempty"`
+	// Name.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// The public key as a JWK (JSON).
+	PublicJwk string `protobuf:"bytes,3,opt,name=public_jwk,json=publicJwk,proto3" json:"public_jwk,omitempty"`
+	// State.
+	State SigningKeyState `protobuf:"varint,4,opt,name=state,proto3,enum=pantherclaw.v1.SigningKeyState" json:"state,omitempty"`
+	// Why it was revoked (when revoked).
+	RevokeReason SigningKeyRevokeReason `protobuf:"varint,5,opt,name=revoke_reason,json=revokeReason,proto3,enum=pantherclaw.v1.SigningKeyRevokeReason" json:"revoke_reason,omitempty"`
+	// Who registered it ("user:<id>").
+	CreatedBy string `protobuf:"bytes,6,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	// When it was registered.
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// Who revoked it.
+	RevokedBy string `protobuf:"bytes,8,opt,name=revoked_by,json=revokedBy,proto3" json:"revoked_by,omitempty"`
+	// When it was revoked.
+	RevokeTime *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=revoke_time,json=revokeTime,proto3" json:"revoke_time,omitempty"`
+	// The highest targets version accepted under it (0 before its first
+	// import). Sign the next targets with a higher version.
+	MetadataVersion int64 `protobuf:"varint,10,opt,name=metadata_version,json=metadataVersion,proto3" json:"metadata_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SigningKey) Reset() {
+	*x = SigningKey{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SigningKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SigningKey) ProtoMessage() {}
+
+func (x *SigningKey) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SigningKey.ProtoReflect.Descriptor instead.
+func (*SigningKey) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SigningKey) GetKid() string {
+	if x != nil {
+		return x.Kid
+	}
+	return ""
+}
+
+func (x *SigningKey) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SigningKey) GetPublicJwk() string {
+	if x != nil {
+		return x.PublicJwk
+	}
+	return ""
+}
+
+func (x *SigningKey) GetState() SigningKeyState {
+	if x != nil {
+		return x.State
+	}
+	return SigningKeyState_SIGNING_KEY_STATE_UNSPECIFIED
+}
+
+func (x *SigningKey) GetRevokeReason() SigningKeyRevokeReason {
+	if x != nil {
+		return x.RevokeReason
+	}
+	return SigningKeyRevokeReason_SIGNING_KEY_REVOKE_REASON_UNSPECIFIED
+}
+
+func (x *SigningKey) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *SigningKey) GetCreateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreateTime
+	}
+	return nil
+}
+
+func (x *SigningKey) GetRevokedBy() string {
+	if x != nil {
+		return x.RevokedBy
+	}
+	return ""
+}
+
+func (x *SigningKey) GetRevokeTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RevokeTime
+	}
+	return nil
+}
+
+func (x *SigningKey) GetMetadataVersion() int64 {
+	if x != nil {
+		return x.MetadataVersion
+	}
+	return 0
+}
+
+// RegisterSigningKeyRequest carries the public half of a key the org keeps
+// offline (pclaw package key create).
+type RegisterSigningKeyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A name for people.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The Ed25519 public key as a JWK (JSON). Private members are refused.
+	PublicJwk     string `protobuf:"bytes,2,opt,name=public_jwk,json=publicJwk,proto3" json:"public_jwk,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterSigningKeyRequest) Reset() {
+	*x = RegisterSigningKeyRequest{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterSigningKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterSigningKeyRequest) ProtoMessage() {}
+
+func (x *RegisterSigningKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterSigningKeyRequest.ProtoReflect.Descriptor instead.
+func (*RegisterSigningKeyRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RegisterSigningKeyRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *RegisterSigningKeyRequest) GetPublicJwk() string {
+	if x != nil {
+		return x.PublicJwk
+	}
+	return ""
+}
+
+// RegisterSigningKeyResponse returns the key.
+type RegisterSigningKeyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The key.
+	Key           *SigningKey `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterSigningKeyResponse) Reset() {
+	*x = RegisterSigningKeyResponse{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterSigningKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterSigningKeyResponse) ProtoMessage() {}
+
+func (x *RegisterSigningKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterSigningKeyResponse.ProtoReflect.Descriptor instead.
+func (*RegisterSigningKeyResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RegisterSigningKeyResponse) GetKey() *SigningKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+// RevokeSigningKeyRequest names a key and why it is revoked.
+type RevokeSigningKeyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Key id.
+	Kid string `protobuf:"bytes,1,opt,name=kid,proto3" json:"kid,omitempty"`
+	// Reason.
+	Reason        SigningKeyRevokeReason `protobuf:"varint,2,opt,name=reason,proto3,enum=pantherclaw.v1.SigningKeyRevokeReason" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSigningKeyRequest) Reset() {
+	*x = RevokeSigningKeyRequest{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSigningKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSigningKeyRequest) ProtoMessage() {}
+
+func (x *RevokeSigningKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSigningKeyRequest.ProtoReflect.Descriptor instead.
+func (*RevokeSigningKeyRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *RevokeSigningKeyRequest) GetKid() string {
+	if x != nil {
+		return x.Kid
+	}
+	return ""
+}
+
+func (x *RevokeSigningKeyRequest) GetReason() SigningKeyRevokeReason {
+	if x != nil {
+		return x.Reason
+	}
+	return SigningKeyRevokeReason_SIGNING_KEY_REVOKE_REASON_UNSPECIFIED
+}
+
+// RevokeSigningKeyResponse returns the key and what was withdrawn.
+type RevokeSigningKeyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The key.
+	Key *SigningKey `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// For COMPROMISED: each version withdrawn, with its new state.
+	Withdrawn     []*PackageVersion `protobuf:"bytes,2,rep,name=withdrawn,proto3" json:"withdrawn,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSigningKeyResponse) Reset() {
+	*x = RevokeSigningKeyResponse{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSigningKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSigningKeyResponse) ProtoMessage() {}
+
+func (x *RevokeSigningKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSigningKeyResponse.ProtoReflect.Descriptor instead.
+func (*RevokeSigningKeyResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *RevokeSigningKeyResponse) GetKey() *SigningKey {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *RevokeSigningKeyResponse) GetWithdrawn() []*PackageVersion {
+	if x != nil {
+		return x.Withdrawn
+	}
+	return nil
+}
+
+// ListSigningKeysRequest lists the org's keys.
+type ListSigningKeysRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSigningKeysRequest) Reset() {
+	*x = ListSigningKeysRequest{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSigningKeysRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSigningKeysRequest) ProtoMessage() {}
+
+func (x *ListSigningKeysRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSigningKeysRequest.ProtoReflect.Descriptor instead.
+func (*ListSigningKeysRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{15}
+}
+
+// ListSigningKeysResponse returns them, newest first.
+type ListSigningKeysResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Keys.
+	Keys          []*SigningKey `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSigningKeysResponse) Reset() {
+	*x = ListSigningKeysResponse{}
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSigningKeysResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSigningKeysResponse) ProtoMessage() {}
+
+func (x *ListSigningKeysResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_packages_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSigningKeysResponse.ProtoReflect.Descriptor instead.
+func (*ListSigningKeysResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_packages_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ListSigningKeysResponse) GetKeys() []*SigningKey {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
 var File_pantherclaw_v1_packages_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_packages_proto_rawDesc = "" +
@@ -724,7 +1261,7 @@ const file_pantherclaw_v1_packages_proto_rawDesc = "" +
 	"\x1dpantherclaw/v1/packages.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"E\n" +
 	"\rDefinitionRef\x12\x1c\n" +
 	"\toperation\x18\x01 \x01(\tR\toperation\x12\x16\n" +
-	"\x06digest\x18\x02 \x01(\tR\x06digest\"\xa9\x02\n" +
+	"\x06digest\x18\x02 \x01(\tR\x06digest\"\xca\x02\n" +
 	"\x0ePackageVersion\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x122\n" +
@@ -734,7 +1271,9 @@ const file_pantherclaw_v1_packages_proto_rawDesc = "" +
 	"\vdefinitions\x18\x05 \x03(\v2\x1d.pantherclaw.v1.DefinitionRefR\vdefinitions\x12\x16\n" +
 	"\x06pinned\x18\x06 \x01(\bR\x06pinned\x12;\n" +
 	"\vimport_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"importTime\"\x91\x02\n" +
+	"importTime\x12\x1f\n" +
+	"\vsigning_key\x18\b \x01(\tR\n" +
+	"signingKey\"\x91\x02\n" +
 	"\x14ImportPackageRequest\x12G\n" +
 	"\x04name\x18\x01 \x01(\tB3\xbaH0r.\x18\x80\x012)^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*){0,3}$R\x04name\x12b\n" +
 	"\aversion\x18\x02 \x01(\tBH\xbaHErC\x18@2?^(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})$R\aversion\x12%\n" +
@@ -765,7 +1304,42 @@ const file_pantherclaw_v1_packages_proto_rawDesc = "" +
 	"definition\x12\x18\n" +
 	"\apackage\x18\x04 \x01(\tR\apackage\x12\x18\n" +
 	"\aversion\x18\x05 \x01(\tR\aversion\x122\n" +
-	"\x05state\x18\x06 \x01(\x0e2\x1c.pantherclaw.v1.PackageStateR\x05state*\xef\x01\n" +
+	"\x05state\x18\x06 \x01(\x0e2\x1c.pantherclaw.v1.PackageStateR\x05state\"\xb8\x03\n" +
+	"\n" +
+	"SigningKey\x12\x10\n" +
+	"\x03kid\x18\x01 \x01(\tR\x03kid\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"public_jwk\x18\x03 \x01(\tR\tpublicJwk\x125\n" +
+	"\x05state\x18\x04 \x01(\x0e2\x1f.pantherclaw.v1.SigningKeyStateR\x05state\x12K\n" +
+	"\rrevoke_reason\x18\x05 \x01(\x0e2&.pantherclaw.v1.SigningKeyRevokeReasonR\frevokeReason\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x06 \x01(\tR\tcreatedBy\x12;\n" +
+	"\vcreate_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"createTime\x12\x1d\n" +
+	"\n" +
+	"revoked_by\x18\b \x01(\tR\trevokedBy\x12;\n" +
+	"\vrevoke_time\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"revokeTime\x12)\n" +
+	"\x10metadata_version\x18\n" +
+	" \x01(\x03R\x0fmetadataVersion\"\x85\x01\n" +
+	"\x19RegisterSigningKeyRequest\x12=\n" +
+	"\x04name\x18\x01 \x01(\tB)\xbaH&r$2\"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$R\x04name\x12)\n" +
+	"\n" +
+	"public_jwk\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x10\x18\x80\bR\tpublicJwk\"J\n" +
+	"\x1aRegisterSigningKeyResponse\x12,\n" +
+	"\x03key\x18\x01 \x01(\v2\x1a.pantherclaw.v1.SigningKeyR\x03key\"\xa0\x01\n" +
+	"\x17RevokeSigningKeyRequest\x129\n" +
+	"\x03kid\x18\x01 \x01(\tB'\xbaH$r\"2 ^org-packages-[A-Za-z0-9_-]{22}$R\x03kid\x12J\n" +
+	"\x06reason\x18\x02 \x01(\x0e2&.pantherclaw.v1.SigningKeyRevokeReasonB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06reason\"\x86\x01\n" +
+	"\x18RevokeSigningKeyResponse\x12,\n" +
+	"\x03key\x18\x01 \x01(\v2\x1a.pantherclaw.v1.SigningKeyR\x03key\x12<\n" +
+	"\twithdrawn\x18\x02 \x03(\v2\x1e.pantherclaw.v1.PackageVersionR\twithdrawn\"\x18\n" +
+	"\x16ListSigningKeysRequest\"I\n" +
+	"\x17ListSigningKeysResponse\x12.\n" +
+	"\x04keys\x18\x01 \x03(\v2\x1a.pantherclaw.v1.SigningKeyR\x04keys*\xef\x01\n" +
 	"\fPackageState\x12\x1d\n" +
 	"\x19PACKAGE_STATE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aPACKAGE_STATE_UNCLASSIFIED\x10\x01\x12\x17\n" +
@@ -774,12 +1348,23 @@ const file_pantherclaw_v1_packages_proto_rawDesc = "" +
 	"\x14PACKAGE_STATE_ACTIVE\x10\x04\x12\x17\n" +
 	"\x13PACKAGE_STATE_STALE\x10\x05\x12\x1d\n" +
 	"\x19PACKAGE_STATE_QUARANTINED\x10\x06\x12\x19\n" +
-	"\x15PACKAGE_STATE_RETIRED\x10\a2\x9b\x03\n" +
+	"\x15PACKAGE_STATE_RETIRED\x10\a*q\n" +
+	"\x0fSigningKeyState\x12!\n" +
+	"\x1dSIGNING_KEY_STATE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18SIGNING_KEY_STATE_ACTIVE\x10\x01\x12\x1d\n" +
+	"\x19SIGNING_KEY_STATE_REVOKED\x10\x02*\x95\x01\n" +
+	"\x16SigningKeyRevokeReason\x12)\n" +
+	"%SIGNING_KEY_REVOKE_REASON_UNSPECIFIED\x10\x00\x12%\n" +
+	"!SIGNING_KEY_REVOKE_REASON_ROTATED\x10\x01\x12)\n" +
+	"%SIGNING_KEY_REVOKE_REASON_COMPROMISED\x10\x022\xd8\x05\n" +
 	"\x0ePackageService\x12\\\n" +
 	"\rImportPackage\x12$.pantherclaw.v1.ImportPackageRequest\x1a%.pantherclaw.v1.ImportPackageResponse\x12h\n" +
 	"\x11TransitionPackage\x12(.pantherclaw.v1.TransitionPackageRequest\x1a).pantherclaw.v1.TransitionPackageResponse\x12^\n" +
 	"\fListPackages\x12#.pantherclaw.v1.ListPackagesRequest\x1a$.pantherclaw.v1.ListPackagesResponse\"\x03\x90\x02\x01\x12a\n" +
-	"\rGetDefinition\x12$.pantherclaw.v1.GetDefinitionRequest\x1a%.pantherclaw.v1.GetDefinitionResponse\"\x03\x90\x02\x01B\xc6\x01\n" +
+	"\rGetDefinition\x12$.pantherclaw.v1.GetDefinitionRequest\x1a%.pantherclaw.v1.GetDefinitionResponse\"\x03\x90\x02\x01\x12k\n" +
+	"\x12RegisterSigningKey\x12).pantherclaw.v1.RegisterSigningKeyRequest\x1a*.pantherclaw.v1.RegisterSigningKeyResponse\x12e\n" +
+	"\x10RevokeSigningKey\x12'.pantherclaw.v1.RevokeSigningKeyRequest\x1a(.pantherclaw.v1.RevokeSigningKeyResponse\x12g\n" +
+	"\x0fListSigningKeys\x12&.pantherclaw.v1.ListSigningKeysRequest\x1a'.pantherclaw.v1.ListSigningKeysResponse\"\x03\x90\x02\x01B\xc6\x01\n" +
 	"\x12com.pantherclaw.v1B\rPackagesProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -794,44 +1379,68 @@ func file_pantherclaw_v1_packages_proto_rawDescGZIP() []byte {
 	return file_pantherclaw_v1_packages_proto_rawDescData
 }
 
-var file_pantherclaw_v1_packages_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pantherclaw_v1_packages_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_pantherclaw_v1_packages_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_pantherclaw_v1_packages_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_pantherclaw_v1_packages_proto_goTypes = []any{
-	(PackageState)(0),                 // 0: pantherclaw.v1.PackageState
-	(*DefinitionRef)(nil),             // 1: pantherclaw.v1.DefinitionRef
-	(*PackageVersion)(nil),            // 2: pantherclaw.v1.PackageVersion
-	(*ImportPackageRequest)(nil),      // 3: pantherclaw.v1.ImportPackageRequest
-	(*ImportPackageResponse)(nil),     // 4: pantherclaw.v1.ImportPackageResponse
-	(*TransitionPackageRequest)(nil),  // 5: pantherclaw.v1.TransitionPackageRequest
-	(*TransitionPackageResponse)(nil), // 6: pantherclaw.v1.TransitionPackageResponse
-	(*ListPackagesRequest)(nil),       // 7: pantherclaw.v1.ListPackagesRequest
-	(*ListPackagesResponse)(nil),      // 8: pantherclaw.v1.ListPackagesResponse
-	(*GetDefinitionRequest)(nil),      // 9: pantherclaw.v1.GetDefinitionRequest
-	(*GetDefinitionResponse)(nil),     // 10: pantherclaw.v1.GetDefinitionResponse
-	(*timestamppb.Timestamp)(nil),     // 11: google.protobuf.Timestamp
+	(PackageState)(0),                  // 0: pantherclaw.v1.PackageState
+	(SigningKeyState)(0),               // 1: pantherclaw.v1.SigningKeyState
+	(SigningKeyRevokeReason)(0),        // 2: pantherclaw.v1.SigningKeyRevokeReason
+	(*DefinitionRef)(nil),              // 3: pantherclaw.v1.DefinitionRef
+	(*PackageVersion)(nil),             // 4: pantherclaw.v1.PackageVersion
+	(*ImportPackageRequest)(nil),       // 5: pantherclaw.v1.ImportPackageRequest
+	(*ImportPackageResponse)(nil),      // 6: pantherclaw.v1.ImportPackageResponse
+	(*TransitionPackageRequest)(nil),   // 7: pantherclaw.v1.TransitionPackageRequest
+	(*TransitionPackageResponse)(nil),  // 8: pantherclaw.v1.TransitionPackageResponse
+	(*ListPackagesRequest)(nil),        // 9: pantherclaw.v1.ListPackagesRequest
+	(*ListPackagesResponse)(nil),       // 10: pantherclaw.v1.ListPackagesResponse
+	(*GetDefinitionRequest)(nil),       // 11: pantherclaw.v1.GetDefinitionRequest
+	(*GetDefinitionResponse)(nil),      // 12: pantherclaw.v1.GetDefinitionResponse
+	(*SigningKey)(nil),                 // 13: pantherclaw.v1.SigningKey
+	(*RegisterSigningKeyRequest)(nil),  // 14: pantherclaw.v1.RegisterSigningKeyRequest
+	(*RegisterSigningKeyResponse)(nil), // 15: pantherclaw.v1.RegisterSigningKeyResponse
+	(*RevokeSigningKeyRequest)(nil),    // 16: pantherclaw.v1.RevokeSigningKeyRequest
+	(*RevokeSigningKeyResponse)(nil),   // 17: pantherclaw.v1.RevokeSigningKeyResponse
+	(*ListSigningKeysRequest)(nil),     // 18: pantherclaw.v1.ListSigningKeysRequest
+	(*ListSigningKeysResponse)(nil),    // 19: pantherclaw.v1.ListSigningKeysResponse
+	(*timestamppb.Timestamp)(nil),      // 20: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_packages_proto_depIdxs = []int32{
 	0,  // 0: pantherclaw.v1.PackageVersion.state:type_name -> pantherclaw.v1.PackageState
-	1,  // 1: pantherclaw.v1.PackageVersion.definitions:type_name -> pantherclaw.v1.DefinitionRef
-	11, // 2: pantherclaw.v1.PackageVersion.import_time:type_name -> google.protobuf.Timestamp
-	2,  // 3: pantherclaw.v1.ImportPackageResponse.package:type_name -> pantherclaw.v1.PackageVersion
+	3,  // 1: pantherclaw.v1.PackageVersion.definitions:type_name -> pantherclaw.v1.DefinitionRef
+	20, // 2: pantherclaw.v1.PackageVersion.import_time:type_name -> google.protobuf.Timestamp
+	4,  // 3: pantherclaw.v1.ImportPackageResponse.package:type_name -> pantherclaw.v1.PackageVersion
 	0,  // 4: pantherclaw.v1.TransitionPackageRequest.state:type_name -> pantherclaw.v1.PackageState
-	2,  // 5: pantherclaw.v1.TransitionPackageResponse.package:type_name -> pantherclaw.v1.PackageVersion
-	2,  // 6: pantherclaw.v1.ListPackagesResponse.packages:type_name -> pantherclaw.v1.PackageVersion
+	4,  // 5: pantherclaw.v1.TransitionPackageResponse.package:type_name -> pantherclaw.v1.PackageVersion
+	4,  // 6: pantherclaw.v1.ListPackagesResponse.packages:type_name -> pantherclaw.v1.PackageVersion
 	0,  // 7: pantherclaw.v1.GetDefinitionResponse.state:type_name -> pantherclaw.v1.PackageState
-	3,  // 8: pantherclaw.v1.PackageService.ImportPackage:input_type -> pantherclaw.v1.ImportPackageRequest
-	5,  // 9: pantherclaw.v1.PackageService.TransitionPackage:input_type -> pantherclaw.v1.TransitionPackageRequest
-	7,  // 10: pantherclaw.v1.PackageService.ListPackages:input_type -> pantherclaw.v1.ListPackagesRequest
-	9,  // 11: pantherclaw.v1.PackageService.GetDefinition:input_type -> pantherclaw.v1.GetDefinitionRequest
-	4,  // 12: pantherclaw.v1.PackageService.ImportPackage:output_type -> pantherclaw.v1.ImportPackageResponse
-	6,  // 13: pantherclaw.v1.PackageService.TransitionPackage:output_type -> pantherclaw.v1.TransitionPackageResponse
-	8,  // 14: pantherclaw.v1.PackageService.ListPackages:output_type -> pantherclaw.v1.ListPackagesResponse
-	10, // 15: pantherclaw.v1.PackageService.GetDefinition:output_type -> pantherclaw.v1.GetDefinitionResponse
-	12, // [12:16] is the sub-list for method output_type
-	8,  // [8:12] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	1,  // 8: pantherclaw.v1.SigningKey.state:type_name -> pantherclaw.v1.SigningKeyState
+	2,  // 9: pantherclaw.v1.SigningKey.revoke_reason:type_name -> pantherclaw.v1.SigningKeyRevokeReason
+	20, // 10: pantherclaw.v1.SigningKey.create_time:type_name -> google.protobuf.Timestamp
+	20, // 11: pantherclaw.v1.SigningKey.revoke_time:type_name -> google.protobuf.Timestamp
+	13, // 12: pantherclaw.v1.RegisterSigningKeyResponse.key:type_name -> pantherclaw.v1.SigningKey
+	2,  // 13: pantherclaw.v1.RevokeSigningKeyRequest.reason:type_name -> pantherclaw.v1.SigningKeyRevokeReason
+	13, // 14: pantherclaw.v1.RevokeSigningKeyResponse.key:type_name -> pantherclaw.v1.SigningKey
+	4,  // 15: pantherclaw.v1.RevokeSigningKeyResponse.withdrawn:type_name -> pantherclaw.v1.PackageVersion
+	13, // 16: pantherclaw.v1.ListSigningKeysResponse.keys:type_name -> pantherclaw.v1.SigningKey
+	5,  // 17: pantherclaw.v1.PackageService.ImportPackage:input_type -> pantherclaw.v1.ImportPackageRequest
+	7,  // 18: pantherclaw.v1.PackageService.TransitionPackage:input_type -> pantherclaw.v1.TransitionPackageRequest
+	9,  // 19: pantherclaw.v1.PackageService.ListPackages:input_type -> pantherclaw.v1.ListPackagesRequest
+	11, // 20: pantherclaw.v1.PackageService.GetDefinition:input_type -> pantherclaw.v1.GetDefinitionRequest
+	14, // 21: pantherclaw.v1.PackageService.RegisterSigningKey:input_type -> pantherclaw.v1.RegisterSigningKeyRequest
+	16, // 22: pantherclaw.v1.PackageService.RevokeSigningKey:input_type -> pantherclaw.v1.RevokeSigningKeyRequest
+	18, // 23: pantherclaw.v1.PackageService.ListSigningKeys:input_type -> pantherclaw.v1.ListSigningKeysRequest
+	6,  // 24: pantherclaw.v1.PackageService.ImportPackage:output_type -> pantherclaw.v1.ImportPackageResponse
+	8,  // 25: pantherclaw.v1.PackageService.TransitionPackage:output_type -> pantherclaw.v1.TransitionPackageResponse
+	10, // 26: pantherclaw.v1.PackageService.ListPackages:output_type -> pantherclaw.v1.ListPackagesResponse
+	12, // 27: pantherclaw.v1.PackageService.GetDefinition:output_type -> pantherclaw.v1.GetDefinitionResponse
+	15, // 28: pantherclaw.v1.PackageService.RegisterSigningKey:output_type -> pantherclaw.v1.RegisterSigningKeyResponse
+	17, // 29: pantherclaw.v1.PackageService.RevokeSigningKey:output_type -> pantherclaw.v1.RevokeSigningKeyResponse
+	19, // 30: pantherclaw.v1.PackageService.ListSigningKeys:output_type -> pantherclaw.v1.ListSigningKeysResponse
+	24, // [24:31] is the sub-list for method output_type
+	17, // [17:24] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_packages_proto_init() }
@@ -844,8 +1453,8 @@ func file_pantherclaw_v1_packages_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_packages_proto_rawDesc), len(file_pantherclaw_v1_packages_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   10,
+			NumEnums:      3,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -46,6 +46,9 @@ type fx struct {
 	grant    gdomain.Grant
 	run      ids.UUID
 	provider ids.UUID
+	// gateway serves conn, an enforce-mode HTTP connection to the package
+	// that every call goes through (PAP-1 §6).
+	gateway, conn ids.UUID
 }
 
 const grantBounds = `{
@@ -69,15 +72,13 @@ func newFxWith(t *testing.T, edit func([]byte) []byte, mcpParams string) *fx {
 		raw = edit(raw)
 	}
 	if mcpParams != "" {
-		mcp := []byte(`      - channel: mcp
-        tool: create_refund
-        route: payments-refund
-        extract:
-          target_id: input.charge
-          params:
-            amount: money(input.amount, input.currency)
-            reason: input.reason`)
-		raw = bytes.Replace(raw, mcp, append(bytes.TrimSuffix(mcp, []byte("            reason: input.reason")), []byte(mcpParams)...), 1)
+		// The MCP refund mapping is the refund definition's last mapping,
+		// right before its dispatch template.
+		mcp := []byte("            reason: input.reason\n    dispatch:")
+		if !bytes.Contains(raw, mcp) {
+			t.Fatal("the MCP refund mapping moved; update the fixture")
+		}
+		raw = bytes.Replace(raw, mcp, []byte(mcpParams+"\n    dispatch:"), 1)
 	}
 	pkg, err := manifest.Decode(raw)
 	if err != nil {
@@ -91,7 +92,12 @@ func newFxWith(t *testing.T, edit func([]byte) []byte, mcpParams string) *fx {
 		t: t, w: pipelinetest.New(org, pkg, now), mapper: m, pkg: pkg,
 		agent: ids.NewV7(), instance: ids.NewV7(), env: ids.NewV7(), team: ids.NewV7(),
 		alice: gdomain.Principal{Kind: gdomain.PrincipalUser, ID: ids.NewV7()}, provider: ids.NewV7(),
+		gateway: ids.NewV7(), conn: ids.NewV7(),
 	}
+	f.w.PutConnection(pipeline.Connection{
+		ID: f.conn, Gateway: f.gateway, Kind: "http", Package: pkg.Name, State: "ACTIVE", AccessMode: "none",
+		DefaultMode: pipeline.ModeEnforce, Modes: map[string]string{},
+	})
 	f.p = &pipeline.Pipeline{Reader: f.w}
 	f.w.AddAgent(f.agent, pipeline.Agent{State: "VERIFIED", TeamID: f.team, BusinessUnitID: ids.NewV7()})
 	f.grant = f.newGrant(grantBounds)
@@ -138,11 +144,14 @@ func (f *fx) parse(run, action ids.UUID, tool, input string) pipeline.Request {
 	f.t.Helper()
 	p, err := f.mapper.MCP(context.Background(), mapping.Context{
 		Org: org.String(), Env: f.env.String(), RunID: run.String(), ActionID: action.String(), AgentInstance: f.instance.String(),
+		Connection: f.conn.String(),
 	}, tool, jsontext.Value(input))
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return pipeline.Request{Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1}}
+	return pipeline.Request{
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1}, Gateway: f.gateway.String(),
+	}
 }
 
 func (f *fx) eval(req pipeline.Request) *pipeline.Evaluation {

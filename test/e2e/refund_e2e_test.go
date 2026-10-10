@@ -36,7 +36,6 @@ import (
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
-	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -57,6 +56,10 @@ type stack struct {
 	simCalls *atomic.Int64
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
+
+	// The gateway's configuration and its enrollment file (mTLS, M6).
+	gatewayCfg    gateway.Config
+	gatewayEnroll string
 
 	// The seeded PAP/1 workload: its key, its workload token and its run.
 	key   ed25519.PrivateKey
@@ -101,7 +104,7 @@ func start(t *testing.T, o options) *stack {
 	if err := keys.GenerateKEKFile(kek); err != nil {
 		t.Fatal(err)
 	}
-	apiAddr := freeAddr(t)
+	apiAddr, gwAPIAddr := freeAddr(t), freeAddr(t)
 	cfg := map[string]any{
 		"role": "all", "log": map[string]any{"level": "warn"}, "http": map[string]any{"addr": apiAddr},
 		"database": map[string]any{
@@ -114,6 +117,8 @@ func start(t *testing.T, o options) *stack {
 	}
 	// Workload proofs name the address they are sent to.
 	cfg["auth"] = map[string]any{"public_url": "http://" + apiAddr}
+	// The gateway reaches the Authority only over mTLS (HR-181).
+	cfg["gateway_api"] = map[string]any{"addr": gwAPIAddr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + gwAPIAddr}
 	write := func(name string) string {
 		b, err := json.Marshal(cfg)
 		if err != nil {
@@ -122,10 +127,20 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
-	token, keyFile, factsFile := filepath.Join(dir, "gateway-token"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
+	// The payments simulator runs first: dev seed points the "payments"
+	// connection at it.
+	s.sim = payments.New(o.faults, pclog.Discard())
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.simCalls.Add(1)
+		s.sim.Handler().ServeHTTP(w, r)
+	})
+	simSrv := httptest.NewServer(counted)
+	t.Cleanup(simSrv.Close)
+
+	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{
-		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--token-out", token,
-		"--workload-out", keyFile, "--facts-key-out", factsFile,
+		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--gateway-out", enrollFile,
+		"--target-url", simSrv.URL, "--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if o.maxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
@@ -139,8 +154,18 @@ func start(t *testing.T, o options) *stack {
 		t.Fatalf("dev seed output %q", out.String())
 	}
 	s.org = ids.MustParse[ids.Org](m[1])
+	if o.timeout > 0 {
+		// The connection's dispatch timeout; the gateway reads it with its
+		// first configuration.
+		err := s.db.AppPool(t).InTenantTx(context.Background(), s.org, func(ctx context.Context, tx db.TenantTx) error {
+			_, err := tx.Exec(ctx, "UPDATE pc.connections SET timeout_ms = $1", o.timeout.Milliseconds())
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org.String(), "gateway_id": "gw-dev-1", "token_file": token}
 	serverCfg := write("server.json")
 	ctx, cancel := context.WithCancel(context.Background())
 	s.stop = cancel
@@ -163,31 +188,43 @@ func start(t *testing.T, o options) *stack {
 	s.workload(t, keyFile)
 	refundable(t, "http://"+apiAddr, factsFile, "ch_1")
 
-	s.sim = payments.New(o.faults, pclog.Discard())
-	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.simCalls.Add(1)
-		s.sim.Handler().ServeHTTP(w, r)
-	})
-	simSrv := httptest.NewServer(counted)
-	t.Cleanup(simSrv.Close)
-
 	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
-	gc.Org, gc.PublicURL = s.org.String(), "http://"+gs.Listener.Addr().String()
-	gc.Authority.URL, gc.Authority.TokenFile = "http://"+apiAddr, token
-	gc.Target.URL, gc.Target.AllowedPrefixes = simSrv.URL, []string{"127.0.0.1/32"}
-	if o.timeout > 0 {
-		gc.Target.Timeout = config.Duration(o.timeout)
-	}
-	g, err := gateway.New(&gc, pclog.Discard())
-	if err != nil {
-		t.Fatal(err)
-	}
+	gc.PublicURL = "http://" + gs.Listener.Addr().String()
+	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
+	// The operator lets the gateway reach the local simulator (HR-077).
+	gc.Egress.AllowedPrefixes = []string{"127.0.0.1/32"}
+	s.gatewayCfg = gc
+	s.gatewayEnroll = enrollFile
+	g := s.startGateway(t)
 	gs.Config.Handler = g.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
 	s.gateway = gs.URL
 	return s
+}
+
+// startGateway enrolls the gateway from the dev enrollment file on first
+// use (it then reloads the saved identity) and runs its background work
+// (certificate renewal) until the test ends.
+func (s *stack) startGateway(t *testing.T) *gateway.Gateway {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	id, err := gateway.LoadOrEnroll(ctx, &s.gatewayCfg, s.gatewayEnroll, pclog.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gateway.New(ctx, &s.gatewayCfg, id, pclog.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = g.Run(ctx) }()
+	// Like `serve`, take no request before the first containment snapshot.
+	if err := g.WaitReady(ctx, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	return g
 }
 
 func runServer(ctx context.Context, cfgPath string, logs io.Writer) error {
@@ -230,7 +267,10 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
+// reply is the gateway's answer: on success the target's body with
+// PantherClaw's facts in PC-* headers, otherwise a typed refusal (F642).
 type reply struct {
+	ErrorClass    string   `json:"error_class"`
 	Error         string   `json:"error"`
 	Decision      string   `json:"decision"`
 	Reasons       []string `json:"reasons"`
@@ -252,7 +292,7 @@ func (s *stack) refund(t *testing.T, act ids.UUID, amount string) (int, reply) {
 // PAP/1. It is safe to call from any goroutine.
 func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	body := `{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, s.run)
 	req.Header.Set(gateway.HeaderActionID, act.String())
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{
@@ -265,9 +305,13 @@ func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
 	defer func() { _ = resp.Body.Close() }()
 	var r reply
 	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &r); err != nil {
-		return 0, reply{}, fmt.Errorf("gateway reply %q: %w", b, err)
+	if resp.StatusCode >= 300 {
+		if err := json.Unmarshal(b, &r); err != nil {
+			return 0, reply{}, fmt.Errorf("gateway refusal %q: %w", b, err)
+		}
+		return resp.StatusCode, r, nil
 	}
+	r.TransactionID, r.Outcome, r.Receipt = resp.Header.Get("PC-Transaction-Id"), resp.Header.Get("PC-Outcome"), resp.Header.Get("PC-Receipt")
 	return resp.StatusCode, r, nil
 }
 

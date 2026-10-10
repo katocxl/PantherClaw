@@ -44,6 +44,36 @@ type m3Stack struct {
 	org       string
 	bootstrap string
 	gateway   string
+	// sim is the simulated payments API's URL.
+	sim string
+}
+
+// connect creates the development "payments" connection to the simulator
+// (once the org has the package) and waits until the gateway serves it.
+func (s *m3Stack) connect(t *testing.T) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := server.Run(context.Background(), []string{"dev", "connection", "--config", s.cfg, "--org", s.org, "--target-url", s.sim},
+		&out, &errb, noEnv); code != 0 {
+		t.Fatalf("dev connection: %d %s", code, errb.String())
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		// Without credentials the gateway answers 401 for a connection it
+		// serves and 404 for one it does not know yet.
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the gateway did not load the new connection")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func startM3(t *testing.T) *m3Stack {
@@ -88,9 +118,15 @@ func startM3(t *testing.T) *m3Stack {
 		t.Fatalf("org create: %d %s", code, errb.String())
 	}
 	s := &m3Stack{db: d, idp: p, org: orgCreated.FindStringSubmatch(out.String())[1], bootstrap: pciToken.FindString(out.String())}
-	gwToken := writeFile(t, dir, "gateway-token", []byte(strings.Repeat("g", 43)+"\n"))
-	cfg["dev_gateway"] = map[string]any{"enabled": true, "org": s.org, "gateway_id": "gw-dev-1", "token_file": gwToken}
+	// The gateway reaches the Authority over mTLS with a certificate from
+	// the internal CA (M6): a development enrollment file for this org.
+	gwAPIAddr := freeAddr(t)
+	cfg["gateway_api"] = map[string]any{"addr": gwAPIAddr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + gwAPIAddr}
 	serverCfg := write("server.json")
+	enrollFile := filepath.Join(dir, "gateway.json")
+	if code := server.Run(context.Background(), []string{"dev", "gateway", "--config", serverCfg, "--org", s.org, "--out", enrollFile}, &out, &errb, noEnv); code != 0 {
+		t.Fatalf("dev gateway: %d %s", code, errb.String())
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	var logs syncBuffer
@@ -122,17 +158,15 @@ func startM3(t *testing.T) *m3Stack {
 	t.Cleanup(sim.Close)
 	gs := httptest.NewUnstartedServer(nil)
 	gc := gateway.DefaultConfig()
-	gc.Org, gc.PublicURL = s.org, "http://"+gs.Listener.Addr().String()
-	gc.Authority.URL, gc.Authority.TokenFile = public, gwToken
-	gc.Target.URL, gc.Target.AllowedPrefixes = sim.URL, []string{"127.0.0.1/32"}
-	g, err := gateway.New(&gc, pclog.Discard())
-	if err != nil {
-		t.Fatal(err)
-	}
+	gc.PublicURL = "http://" + gs.Listener.Addr().String()
+	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
+	gc.Egress.AllowedPrefixes = []string{"127.0.0.1/32"}
+	gst := &stack{gatewayCfg: gc, gatewayEnroll: enrollFile}
+	g := gst.startGateway(t)
 	gs.Config.Handler = g.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
-	s.gateway = gs.URL
+	s.gateway, s.sim = gs.URL, sim.URL
 	return s
 }
 
@@ -154,7 +188,7 @@ func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 func (s *m3Stack) refund(t *testing.T, key ed25519.PrivateKey, token, run string, base http.RoundTripper) (int, http.Header, string) {
 	t.Helper()
 	body := `{"charge":"ch_1","amount":"30.00","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, run)
 	req.Header.Set(gateway.HeaderActionID, ids.NewV7().String())
 	if base == nil {
@@ -172,7 +206,7 @@ func (s *m3Stack) refund(t *testing.T, key ed25519.PrivateKey, token, run string
 
 func (s *m3Stack) raw(t *testing.T, header http.Header, body []byte) (int, string) {
 	t.Helper()
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/v1/refunds", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", bytes.NewReader(body))
 	req.Header = header.Clone()
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
@@ -248,6 +282,7 @@ func TestE2E_M3_EnrollAdmitRunRefund(t *testing.T) {
 	agentID, _ := ids.ParseUUID(agent)
 	aliceUUID, _ := ids.ParseUUID(aliceID)
 	grant := seedAuthority(t, s.db.AppPool(t), ids.MustParse[ids.Org](s.org), agentID, aliceUUID, "ch_1")
+	s.connect(t)
 	run := field(t, must("run", "start", agent, "--instance", inst[1], "--grant", grant, "--task", "refund ch_1"), "id")
 	token := strings.TrimSpace(must("workload", "token", "--key-file", keyFile))
 	kf, err := workloadclient.ReadKeyFile(keyFile)
@@ -258,7 +293,7 @@ func TestE2E_M3_EnrollAdmitRunRefund(t *testing.T) {
 
 	rec := &recorder{}
 	code, hdr, body := s.refund(t, key, token, run, rec)
-	if code != http.StatusOK || !strings.Contains(body, `"outcome":"ACCEPTED"`) || hdr.Get(gateway.HeaderNonce) == "" {
+	if code != http.StatusOK || hdr.Get("PC-Outcome") != "ACCEPTED" || hdr.Get(gateway.HeaderNonce) == "" {
 		t.Fatalf("refund: %d %s", code, body)
 	}
 

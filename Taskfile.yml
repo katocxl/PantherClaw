@@ -76,13 +76,13 @@ tasks:
         cmd: go -C "{{.ITEM}}" test -race -shuffle=on -count=1 ./...
 
   test:integration:
-    desc: Database integration tests (start the throwaway cluster first with `task up PROFILE=test`)
+    desc: Database integration tests (start the throwaway cluster first with `task up PROFILE=test`; PKGS=./x/... narrows them)
     dotenv: ["deploy/compose/.env"]
     cmds:
       - >-
         PC_TEST_REQUIRE_DB=1
         PC_TEST_PG_ADMIN_URL="postgres://postgres:${PC_PG_TEST_PASSWORD}@127.0.0.1:5433/postgres?sslmode=disable"
-        go test -tags integration -shuffle=on -count=1 ./...
+        go test -tags integration -shuffle=on -count=1 {{.PKGS | default "./..."}}
 
   test:linux:
     desc: Run race-enabled tests inside a pinned Linux container (use on Windows)
@@ -111,9 +111,14 @@ tasks:
       - git diff --exit-code -- internal/gen
 
   trace:
-    desc: Fail if a hardening rule or threat due by MILESTONE has no test (default M3)
+    desc: Fail if a hardening rule or threat due by MILESTONE has no test (default M4)
     cmds:
-      - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M3"}}
+      - go -C tools run ./traceability -root .. -through {{.MILESTONE | default "M4"}}
+
+  land:
+    desc: Land this branch's pull request on main once every check passes on the result of merging main (docs/PARALLEL_WORK.md)
+    cmds:
+      - bash tools/scripts/land.sh {{.CLI_ARGS}}
 
   license:check:
     desc: Verify SPDX + copyright headers on every source file

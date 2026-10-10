@@ -96,6 +96,13 @@ const (
 	PermPolicyRead         Permission = "policy.read"
 )
 
+// PermPackageKeyManage registers and revokes the org's package-signing keys
+// (HR-162, Team edition). It sits on the Org Admin role, which service
+// accounts may hold, so it is not in the human-only catalog: the use case
+// lets only a person register a key, while revoking one (which only removes
+// trust) is open to any holder.
+const PermPackageKeyManage Permission = "package.key.manage"
+
 // Workload identity permissions (M3). agent.admit (confirming an instance's
 // fingerprint, HR-094) and identity.issuer.activate (switching on a
 // trusted-issuer revision, HR-141) are human only.
@@ -107,12 +114,30 @@ const (
 	PermIssuerActivate Permission = "identity.issuer.activate"
 )
 
-// Gateway permissions are held only by authenticated gateways (M1.5 dev
-// gateway, M6 mTLS), never by users, service accounts or roles.
+// Gateway permissions are held only by authenticated gateways (M6 mTLS,
+// HR-181), never by users, service accounts or roles. gateway.enroll is
+// authenticated by the enrollment token in the request itself (HR-180).
 const (
 	PermGatewayAuthorize Permission = "gateway.authorize"
 	PermGatewayDispatch  Permission = "gateway.dispatch"
 	PermGatewayObserve   Permission = "gateway.observe"
+	PermGatewayEnroll    Permission = "gateway.enroll"
+	PermGatewaySync      Permission = "gateway.sync"
+)
+
+// Gateway, connection, credential and containment administration (G0 M6).
+// gateway.manage, connection.manage and credential.seal are human only
+// (HR-183): they decide where target credentials go and whether actions are
+// enforced. containment.killswitch is human only and also needs a step-up
+// on the emergency-stop page (HR-113).
+const (
+	PermGatewayRead           Permission = "gateway.read"
+	PermGatewayManage         Permission = "gateway.manage"
+	PermConnectionRead        Permission = "connection.read"
+	PermConnectionManage      Permission = "connection.manage"
+	PermCredentialSeal        Permission = "credential.seal" //nolint:gosec // G101: a permission name, not a credential
+	PermContainmentRead       Permission = "containment.read"
+	PermContainmentKillSwitch Permission = "containment.killswitch"
 )
 
 // Workload permissions are held only by PAP/1-authenticated workloads
@@ -147,8 +172,10 @@ var catalog = []Permission{
 	PermGrantRead, PermGrantIssue, PermGrantRevoke,
 	PermGuardrailsRead, PermGuardrailsManage, PermBudgetRead,
 	PermFactRead, PermFactProviderManage, PermFactWrite,
-	PermPackageRead, PermPackageImport, PermPackageActivate,
+	PermPackageRead, PermPackageImport, PermPackageActivate, PermPackageKeyManage,
 	PermApprovalRespond, PermIncidentRespond, PermEvidenceReadRestricted,
+	PermGatewayRead, PermGatewayManage, PermConnectionRead, PermConnectionManage, PermCredentialSeal,
+	PermContainmentRead, PermContainmentKillSwitch,
 }
 
 // humanOnly permissions can never be exercised by a service account or an
@@ -157,6 +184,7 @@ var catalog = []Permission{
 var humanOnly = []Permission{
 	PermApprovalRespond, PermPolicyPublish, PermEvidenceReadRestricted, PermAgentAdmit, PermIssuerActivate,
 	PermGrantIssue, PermGuardrailsManage, PermFactProviderManage, PermPackageActivate,
+	PermGatewayManage, PermConnectionManage, PermCredentialSeal, PermContainmentKillSwitch,
 }
 
 // Catalog returns every grantable permission in a stable order.
@@ -168,16 +196,22 @@ func (p Permission) Known() bool { return slices.Contains(catalog, p) }
 // HumanOnly reports whether only a human may hold p.
 func (p Permission) HumanOnly() bool { return slices.Contains(humanOnly, p) }
 
+// gatewayOnly permissions belong to authenticated gateways. gateway.read
+// and gateway.manage are ordinary permissions for people.
+var gatewayOnly = []Permission{
+	PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve, PermGatewayEnroll, PermGatewaySync,
+}
+
 // Gateway reports whether p belongs to gateways.
-func (p Permission) Gateway() bool { return strings.HasPrefix(string(p), "gateway.") }
+func (p Permission) Gateway() bool { return slices.Contains(gatewayOnly, p) }
 
 // Workload reports whether p belongs to PAP/1-authenticated workloads.
 func (p Permission) Workload() bool { return strings.HasPrefix(string(p), "workload.") }
 
 // declarableOnly are requirements an RPC may declare that no role grants.
 var declarableOnly = []Permission{
-	PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve,
-	PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun, PermWorkloadDelegate,
+	PermPublic, PermAuthenticated, PermGatewayAuthorize, PermGatewayDispatch, PermGatewayObserve, PermGatewayEnroll,
+	PermGatewaySync, PermWorkloadEnroll, PermWorkloadToken, PermWorkloadRun, PermWorkloadDelegate,
 }
 
 // Declarable reports whether an RPC may declare p as its requirement.

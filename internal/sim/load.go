@@ -28,6 +28,9 @@ import (
 // are measured instead of hidden by coordinated omission).
 type loadConfig struct {
 	Gateway string
+	// Connection is the payments connection's name, the first path segment
+	// at the gateway (G0 M6).
+	Connection string
 	// Key signs every request (PAP-1 §4); Token returns the workload token
 	// and Run is the run the requests belong to.
 	Key         ed25519.PrivateKey
@@ -38,6 +41,15 @@ type loadConfig struct {
 	Warmup      time.Duration
 	Amount      string
 	MaxInFlight int
+	// Unique refunds a distinct (charge, amount) pair per request; Tag
+	// names this run's charges.
+	Unique bool
+	Tag    string
+}
+
+// requests is how many requests the run sends, warm-up included.
+func (c loadConfig) requests() int {
+	return int((c.Warmup + c.Duration) / (time.Second / time.Duration(c.Rate)))
 }
 
 // sample is one request's measurements, in milliseconds.
@@ -70,6 +82,7 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(stderr)
 	var c loadConfig
 	fs.StringVar(&c.Gateway, "gateway", "http://127.0.0.1:8090", "gateway base URL")
+	fs.StringVar(&c.Connection, "connection", "payments", "the payments connection's name (dev seed --target-url creates \"payments\")")
 	workloadFile := fs.String("workload-file", "", "workload key file (from `pantherclaw-server dev seed --workload-out`)")
 	tokenFile := fs.String("token-file", "", "use this workload token instead of asking the key file's server")
 	fs.StringVar(&c.Run, "run", "", "run id (default: the key file's run)")
@@ -78,6 +91,8 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.DurationVar(&c.Warmup, "warmup", 5*time.Second, "warm-up excluded from the results")
 	fs.StringVar(&c.Amount, "amount", "1.00", "refund amount per request (USD)")
 	fs.IntVar(&c.MaxInFlight, "max-in-flight", 2048, "requests in flight before new ones are dropped (and counted)")
+	fs.BoolVar(&c.Unique, "unique", false, "refund a distinct charge and amount per request (identical refunds are parked since M4); ignores --amount")
+	factsKey := fs.String("facts-key-file", "", "report the charges as refundable first, with this fact provider API key (from `dev seed --facts-key-out`)")
 	out := fs.String("out", "", "also write the JSON summary to this file")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -98,6 +113,17 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if c.Token, err = workloadTokens(ctx, kf, *tokenFile); err != nil {
 		return err
+	}
+	c.Tag = runTag(time.Now())
+	if *factsKey != "" {
+		facts, err := newFactReporter(kf.Server, *factsKey, chargesFor(c.Tag, c.requests(), c.Unique))
+		if err != nil {
+			return err
+		}
+		if err := facts.report(ctx); err != nil {
+			return err
+		}
+		go facts.refresh(ctx, func(err error) { _, _ = fmt.Fprintln(stderr, "sim load:", err) })
 	}
 	s, err := drive(ctx, c)
 	if err != nil {
@@ -122,9 +148,8 @@ func drive(ctx context.Context, c loadConfig) (Summary, error) {
 		}},
 	}
 	run := c.Run
-	body := `{"charge":"ch_load1","amount":"` + c.Amount + `","currency":"USD","reason":"duplicate"}`
 	interval := time.Second / time.Duration(c.Rate)
-	total := int((c.Warmup + c.Duration) / interval)
+	total := c.requests()
 	start := time.Now()
 	warmEnd := start.Add(c.Warmup)
 
@@ -150,6 +175,11 @@ func drive(ctx context.Context, c loadConfig) (Summary, error) {
 			continue
 		}
 		inFlight.Add(1)
+		charge, amount := "ch_load1", c.Amount
+		if c.Unique {
+			charge, amount = uniqueRefund(c.Tag, i)
+		}
+		body := `{"charge":"` + charge + `","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
 		wg.Go(func() {
 			defer inFlight.Add(-1)
 			s := one(ctx, client, c, run, body)
@@ -165,7 +195,7 @@ func drive(ctx context.Context, c loadConfig) (Summary, error) {
 }
 
 func one(ctx context.Context, client *http.Client, c loadConfig, run, body string) sample {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.Gateway, "/")+"/v1/refunds", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.Gateway, "/")+"/"+c.Connection+"/v1/refunds", strings.NewReader(body))
 	if err != nil {
 		return sample{}
 	}

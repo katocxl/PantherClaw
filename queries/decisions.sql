@@ -14,16 +14,18 @@ WHERE t.org_id = sqlc.arg(org_id) AND t.run_id = sqlc.arg(run_id) AND t.action_i
 
 -- name: InsertDecision :exec
 INSERT INTO pc.transactions (org_id, id, run_id, action_id, action_hash, operation, decision, reason_code, gateway_id,
-                             state, evaluations, grant_id, grant_revision, basis_digest, effective_hash, dedupe_key)
+                             state, evaluations, grant_id, grant_revision, basis_digest, effective_hash, dedupe_key, mode,
+                             connection_id, channel, target_type, target_id)
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(run_id), sqlc.arg(action_id), sqlc.arg(action_hash), sqlc.arg(operation),
         sqlc.arg(decision), sqlc.arg(reason_code), sqlc.arg(gateway_id), sqlc.arg(state), 1, sqlc.narg(grant_id),
-        sqlc.narg(grant_revision), sqlc.narg(basis_digest), sqlc.narg(effective_hash), sqlc.narg(dedupe_key));
+        sqlc.narg(grant_revision), sqlc.narg(basis_digest), sqlc.narg(effective_hash), sqlc.narg(dedupe_key), sqlc.arg(mode),
+        sqlc.narg(connection_id), sqlc.narg(channel), sqlc.narg(target_type), sqlc.narg(target_id));
 
 -- name: UpdateDecision :execresult
 UPDATE pc.transactions
 SET decision = sqlc.arg(decision), reason_code = sqlc.arg(reason_code), state = sqlc.arg(state),
     evaluations = sqlc.arg(evaluations), grant_id = sqlc.narg(grant_id), grant_revision = sqlc.narg(grant_revision),
-    basis_digest = sqlc.narg(basis_digest), effective_hash = sqlc.narg(effective_hash)
+    basis_digest = sqlc.narg(basis_digest), effective_hash = sqlc.narg(effective_hash), mode = sqlc.arg(mode)
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'OPEN' AND evaluations = sqlc.arg(prev_evaluations);
 
 -- name: InsertEvaluationReceipt :exec
@@ -59,8 +61,9 @@ WHERE c.org_id = sqlc.arg(org_id) AND t.org_id = c.org_id AND t.id = sqlc.arg(tr
   AND c.dedupe_key = t.dedupe_key AND c.transaction_id = t.id;
 
 -- name: InsertPermitForTransaction :exec
-INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at)
-VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(transaction_id), sqlc.arg(gateway_id), sqlc.arg(epoch), sqlc.arg(expires_at));
+INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at, mode, connection_id)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(transaction_id), sqlc.arg(gateway_id), sqlc.arg(epoch), sqlc.arg(expires_at),
+        sqlc.arg(mode), sqlc.narg(connection_id));
 
 -- name: FinishPermitForTransaction :one
 UPDATE pc.permits

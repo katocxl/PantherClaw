@@ -17,7 +17,12 @@ import (
 type ParamType string
 
 // Parameter types. Text is untrusted agent prose: never material, never
-// shown in approval fields, never visible to policy (HR-023).
+// shown in approval fields, never visible to policy (HR-023). Command is
+// the exact text of a command a cooperative client is about to run (G0 M6,
+// pc.shell): it may be material, policies see it as sent, and control
+// characters other than tab and newline, and format and bidi characters,
+// are refused (HR-102). Path is an absolute file-system path in its one
+// normalized spelling (actionir.NormalizePath, HR-187).
 const (
 	TypeMoney          ParamType = "money"
 	TypeDecimal        ParamType = "decimal"
@@ -27,6 +32,8 @@ const (
 	TypeIdentifierList ParamType = "identifier_list"
 	TypeBoolean        ParamType = "boolean"
 	TypeText           ParamType = "text"
+	TypeCommand        ParamType = "command"
+	TypePath           ParamType = "path"
 )
 
 // Unit is the unit of a decimal or integer parameter. The list is closed:
@@ -95,7 +102,11 @@ func (p ParamSpec) validate(name string) error {
 		if p.Pattern != "" {
 			return anchored(name+": pattern", p.Pattern)
 		}
-	case TypeDecimal, TypeInteger, TypeBoolean, TypeText:
+	case TypePath:
+		if p.MaxLength > actionir.MaxPath {
+			return invalid("%s: max_length of a path is at most %d", name, actionir.MaxPath)
+		}
+	case TypeDecimal, TypeInteger, TypeBoolean, TypeText, TypeCommand:
 	default:
 		return invalid("%s: unknown type %q", name, p.Type)
 	}

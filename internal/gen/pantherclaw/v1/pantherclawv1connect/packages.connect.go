@@ -39,6 +39,15 @@ const (
 	// PackageServiceGetDefinitionProcedure is the procedure name of the PackageService's GetDefinition
 	// RPC.
 	PackageServiceGetDefinitionProcedure = "/pantherclaw.v1.PackageService/GetDefinition"
+	// PackageServiceRegisterSigningKeyProcedure is the procedure name of the PackageService's
+	// RegisterSigningKey RPC.
+	PackageServiceRegisterSigningKeyProcedure = "/pantherclaw.v1.PackageService/RegisterSigningKey"
+	// PackageServiceRevokeSigningKeyProcedure is the procedure name of the PackageService's
+	// RevokeSigningKey RPC.
+	PackageServiceRevokeSigningKeyProcedure = "/pantherclaw.v1.PackageService/RevokeSigningKey"
+	// PackageServiceListSigningKeysProcedure is the procedure name of the PackageService's
+	// ListSigningKeys RPC.
+	PackageServiceListSigningKeysProcedure = "/pantherclaw.v1.PackageService/ListSigningKeys"
 )
 
 var (
@@ -72,6 +81,28 @@ var (
 			IdempotencyLevel: connect.IdempotencyNoSideEffects,
 		}
 	})
+	packageServiceRegisterSigningKeySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_packages_proto.Services().ByName("PackageService").Methods().ByName("RegisterSigningKey"),
+			Procedure:  PackageServiceRegisterSigningKeyProcedure,
+		}
+	})
+	packageServiceRevokeSigningKeySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_packages_proto.Services().ByName("PackageService").Methods().ByName("RevokeSigningKey"),
+			Procedure:  PackageServiceRevokeSigningKeyProcedure,
+		}
+	})
+	packageServiceListSigningKeysSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_packages_proto.Services().ByName("PackageService").Methods().ByName("ListSigningKeys"),
+			Procedure:        PackageServiceListSigningKeysProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
 )
 
 // PackageServiceClient is a client for the pantherclaw.v1.PackageService service.
@@ -90,6 +121,19 @@ type PackageServiceClient interface {
 	// GetDefinition returns one action definition by digest.
 	// permission: package.read
 	GetDefinition(context.Context, *v1.GetDefinitionRequest) (*v1.GetDefinitionResponse, error)
+	// RegisterSigningKey registers an org package-signing public key (HR-162,
+	// Team edition and above). Only a person can register one; packages listed
+	// in targets signed with it can then be imported into this org.
+	// permission: package.key.manage
+	RegisterSigningKey(context.Context, *v1.RegisterSigningKeyRequest) (*v1.RegisterSigningKeyResponse, error)
+	// RevokeSigningKey revokes an org package-signing key. COMPROMISED also
+	// withdraws every version it signed and invalidates permits already
+	// issued; ROTATED keeps them.
+	// permission: package.key.manage
+	RevokeSigningKey(context.Context, *v1.RevokeSigningKeyRequest) (*v1.RevokeSigningKeyResponse, error)
+	// ListSigningKeys lists the org's package-signing keys.
+	// permission: package.read
+	ListSigningKeys(context.Context, *v1.ListSigningKeysRequest) (*v1.ListSigningKeysResponse, error)
 }
 
 // NewPackageServiceClient constructs a client for the pantherclaw.v1.PackageService service.
@@ -114,6 +158,19 @@ type PackageServiceHandler interface {
 	// GetDefinition returns one action definition by digest.
 	// permission: package.read
 	GetDefinition(context.Context, *v1.GetDefinitionRequest) (*v1.GetDefinitionResponse, error)
+	// RegisterSigningKey registers an org package-signing public key (HR-162,
+	// Team edition and above). Only a person can register one; packages listed
+	// in targets signed with it can then be imported into this org.
+	// permission: package.key.manage
+	RegisterSigningKey(context.Context, *v1.RegisterSigningKeyRequest) (*v1.RegisterSigningKeyResponse, error)
+	// RevokeSigningKey revokes an org package-signing key. COMPROMISED also
+	// withdraws every version it signed and invalidates permits already
+	// issued; ROTATED keeps them.
+	// permission: package.key.manage
+	RevokeSigningKey(context.Context, *v1.RevokeSigningKeyRequest) (*v1.RevokeSigningKeyResponse, error)
+	// ListSigningKeys lists the org's package-signing keys.
+	// permission: package.read
+	ListSigningKeys(context.Context, *v1.ListSigningKeysRequest) (*v1.ListSigningKeysResponse, error)
 }
 
 // RegisterPackageServiceHandler registers svc as the pantherclaw.v1.PackageService implementation
@@ -125,6 +182,9 @@ func RegisterPackageServiceHandler(server *connect.Server, svc PackageServiceHan
 		connect.Method{Spec: packageServiceTransitionPackageSpec(), Handler: adapter.transitionPackage},
 		connect.Method{Spec: packageServiceListPackagesSpec(), Handler: adapter.listPackages},
 		connect.Method{Spec: packageServiceGetDefinitionSpec(), Handler: adapter.getDefinition},
+		connect.Method{Spec: packageServiceRegisterSigningKeySpec(), Handler: adapter.registerSigningKey},
+		connect.Method{Spec: packageServiceRevokeSigningKeySpec(), Handler: adapter.revokeSigningKey},
+		connect.Method{Spec: packageServiceListSigningKeysSpec(), Handler: adapter.listSigningKeys},
 	)
 }
 
@@ -145,6 +205,18 @@ func (UnimplementedPackageServiceHandler) ListPackages(context.Context, *v1.List
 
 func (UnimplementedPackageServiceHandler) GetDefinition(context.Context, *v1.GetDefinitionRequest) (*v1.GetDefinitionResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.PackageService.GetDefinition is not implemented")
+}
+
+func (UnimplementedPackageServiceHandler) RegisterSigningKey(context.Context, *v1.RegisterSigningKeyRequest) (*v1.RegisterSigningKeyResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.PackageService.RegisterSigningKey is not implemented")
+}
+
+func (UnimplementedPackageServiceHandler) RevokeSigningKey(context.Context, *v1.RevokeSigningKeyRequest) (*v1.RevokeSigningKeyResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.PackageService.RevokeSigningKey is not implemented")
+}
+
+func (UnimplementedPackageServiceHandler) ListSigningKeys(context.Context, *v1.ListSigningKeysRequest) (*v1.ListSigningKeysResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.PackageService.ListSigningKeys is not implemented")
 }
 
 type packageServiceClient struct {
@@ -178,6 +250,30 @@ func (c *packageServiceClient) ListPackages(ctx context.Context, req *v1.ListPac
 func (c *packageServiceClient) GetDefinition(ctx context.Context, req *v1.GetDefinitionRequest) (*v1.GetDefinitionResponse, error) {
 	var res v1.GetDefinitionResponse
 	if err := c.client.CallUnary(ctx, packageServiceGetDefinitionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *packageServiceClient) RegisterSigningKey(ctx context.Context, req *v1.RegisterSigningKeyRequest) (*v1.RegisterSigningKeyResponse, error) {
+	var res v1.RegisterSigningKeyResponse
+	if err := c.client.CallUnary(ctx, packageServiceRegisterSigningKeySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *packageServiceClient) RevokeSigningKey(ctx context.Context, req *v1.RevokeSigningKeyRequest) (*v1.RevokeSigningKeyResponse, error) {
+	var res v1.RevokeSigningKeyResponse
+	if err := c.client.CallUnary(ctx, packageServiceRevokeSigningKeySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *packageServiceClient) ListSigningKeys(ctx context.Context, req *v1.ListSigningKeysRequest) (*v1.ListSigningKeysResponse, error) {
+	var res v1.ListSigningKeysResponse
+	if err := c.client.CallUnary(ctx, packageServiceListSigningKeysSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -227,6 +323,42 @@ func (h packageServiceHandler) getDefinition(ctx context.Context, _ connect.Spec
 		return err
 	}
 	res, err := h.svc.GetDefinition(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h packageServiceHandler) registerSigningKey(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RegisterSigningKeyRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RegisterSigningKey(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h packageServiceHandler) revokeSigningKey(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RevokeSigningKeyRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RevokeSigningKey(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h packageServiceHandler) listSigningKeys(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListSigningKeysRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListSigningKeys(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -1,17 +1,13 @@
 {
   "log": { "level": "info" },
   "listen": "127.0.0.1:8090",
-  "gateway_id": "gw-dev-1",
-  "org": "",
-  "authority": {
-    "url": "http://127.0.0.1:8080",
-    "token_file": "deploy/dev/secrets/gateway.token",
+  "public_url": "http://127.0.0.1:8090",
+  "control": {
+    "api_url": "http://127.0.0.1:8080",
+    "identity_dir": "deploy/dev/secrets/gateway",
     "timeout": "2s"
   },
-  "target": {
-    "url": "http://127.0.0.1:9090",
-    "timeout": "10s",
+  "egress": {
     "allowed_prefixes": ["127.0.0.1/32"]
-  },
-  "public_url": "http://127.0.0.1:8090"
+  }
 }

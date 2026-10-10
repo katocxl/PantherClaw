@@ -183,28 +183,26 @@ go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json
 
 Then `curl http://127.0.0.1:8080/readyz`, `curl http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json`, or call `pantherclaw.v1.SystemService/GetBuildInfo` with `buf curl`. The server refuses to run the application pool as a superuser or BYPASSRLS role, and plaintext HTTP only on loopback.
 
-**Development gateway (M1.5, development only):** `AuthorityService` refuses every call unless a development gateway is configured. Until gateway mTLS (M6, HR-020), one gateway authenticates with a static token; the server holds only its SHA-256 and refuses the setting unless the API listens on loopback.
+**Gateway (M6):** gateways reach `AuthorityService` only on the server's mTLS gateway listener (`gateway_api`), with a 24-hour certificate from PantherClaw's internal CA. A gateway gets its first certificate with a single-use enrollment token and pins the CA by its SHA-256. The public API refuses every gateway call. For development, `dev seed --gateway-out` (or `dev gateway --org ID --out FILE` for an existing org) writes an enrollment file holding the API URL, the token (valid 15 minutes) and the CA pin. The gateway enrolls from it on first start, keeps its identity in `control.identity_dir`, and renews the certificate itself.
 
 ```bash
 go run ./cmd/pantherclaw-server dev seed --config deploy/dev/server.example.json \
-  --org-name acme --budget-limit 1000.00 --token-out deploy/dev/secrets/gateway.token \
-  --workload-out deploy/dev/secrets/workload.json \
-  --facts-key-out deploy/dev/secrets/facts.key   # a workload with a grant and a run, and a fact provider's API key
-# copy the config, set dev_gateway.enabled=true and dev_gateway.org to the printed org id, then serve with it
+  --org-name acme --budget-limit 1000.00 --gateway-out deploy/dev/secrets/gateway-enroll.json \
+  --target-url http://127.0.0.1:9090 --workload-out deploy/dev/secrets/workload.json \
+  --facts-key-out deploy/dev/secrets/facts.key   # a gateway to enroll, its payments connection, a workload with a grant and a run, a fact provider's API key
+go run ./cmd/pantherclaw-server serve --config deploy/dev/server.example.json   # API on :8080, gateway listener on :8443
 go run ./cmd/pantherclaw-sim payments --addr 127.0.0.1:9090   # simulated payments API (SIMULATED)
-# copy deploy/dev/gateway.example.json, set "org" to the same org id, then:
-go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.local.json
-# since M4 a refund needs a fresh payments.charge.refundable fact about its charge (at most 5 minutes old);
-# "value" is base64 of {"bool":true}
-curl -s -H "Authorization: Bearer $(cat deploy/dev/secrets/facts.key)" -H 'Content-Type: application/json' \
-  -d '{"observations":[{"name":"payments.charge.refundable","subjectType":"payments.charge","subjectId":"ch_load1","value":"eyJib29sIjp0cnVlfQ==","observeTime":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}]}' \
-  http://127.0.0.1:8080/pantherclaw.v1.FactService/PutFacts
-go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --rate 1 --duration 2s --warmup 0s
+# within 15 minutes of dev seed (or run dev gateway again):
+go run ./cmd/pantherclaw-gateway serve --config deploy/dev/gateway.example.json --enroll-file deploy/dev/secrets/gateway-enroll.json
+# since M4 every refund needs a fresh payments.charge.refundable fact about its charge, and identical
+# refunds are parked: --unique varies charge and amount, --facts-key-file reports the facts first
+go run ./cmd/pantherclaw-sim load --workload-file deploy/dev/secrets/workload.json --facts-key-file deploy/dev/secrets/facts.key \
+  --unique --rate 1 --duration 2s --warmup 0s
 ```
 
-Since M4 (slice 214) `dev seed` imports and activates the reference package (signed with a throwaway key that nothing keeps, decision 3), registers a development fact provider, issues the workload a grant (refunds up to `authority.grant_max_per_action` each, a task budget of `--budget-limit`, at most `--max-count` refunds) and binds its run to it. Identical irreversible refunds are parked for the repeat window (HR-007), so `sim load`, which repeats one refund of `ch_load1`, gets one acceptance and then `RECONCILIATION_REQUIRED` until it varies its charges (M4 exit, slice 216).
+Since M4 (slice 214) `dev seed` imports and activates the reference package (signed with a throwaway key that nothing keeps, decision 3), registers a development fact provider, issues the workload a grant (refunds up to `authority.grant_max_per_action` each, a task budget of `--budget-limit`, at most `--max-count` refunds) and binds its run to it. Identical irreversible refunds are parked for the repeat window (HR-007), so without `--unique` the load driver gets one acceptance and then `RECONCILIATION_REQUIRED`. To report a fact by hand, use `pclaw fact put` with the provider's API key in `PANTHERCLAW_API_KEY`. The M4 measurements are in [docs/perf/M4.md](perf/M4.md).
 
-The gateway turns the request into ActionIR, asks the Authority, verifies the permit, commits with `BeginDispatch`, sends a **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
+Since M6 the gateway serves the routes of its connections at `/{connection}/…`: `--target-url` creates the connection `payments` to the simulator, in enforce mode, so a refund is `POST /payments/v1/refunds` (`dev connection --org ID --target-url URL` adds one to an existing org). The gateway maps the request through the connection's reviewed package to ActionIR, asks the Authority, verifies the permit, builds the request from the package's dispatch template, commits it with `BeginDispatch`, sends that **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. The agent gets the target's answer with `PC-Transaction-Id`, `PC-Outcome` and `PC-Receipt` headers, or a JSON refusal with an `error_class`. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
 **Sign in and administer (M2):** people sign in through an OpenID provider; locally that is the Keycloak development realm in `deploy/keycloak` (users `alice` / `alice-dev-only` and `bob` / `bob-dev-only`, development only). The server is the relying party; `pclaw` never talks to the provider.
 
@@ -238,9 +236,24 @@ go run ./cmd/pclaw run start <agent id> --instance <instance id> --task "nightly
 go run ./cmd/pclaw workload token --key-file workload.json             # a workload token, valid 10 minutes
 ```
 
-CI jobs and pods can attest instead of using an enrollment token: an admin proposes a trusted-issuer entry (`pclaw issuer propose-github …` or `pclaw issuer propose-kubernetes …`), a person with the Identity Publisher role activates it (`pclaw issuer activate ENTRY REVISION`), and the workload enrolls with `--github` (an Actions job with `id-token: write`) or `--kubernetes-token FILE` (a projected service-account token with audience `pantherclaw:<org id>`). Unknown keys that reach the gateway show up as discovered agents: `pclaw agent list --state discovered`, then `pclaw agent claim` or `pclaw agent retire`. `pclaw scan` looks for shadow agents on a machine: the MCP servers configured for Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin Desktop), Zed and JetBrains Junie, agent-framework projects under `--path`, and credentials in the environment and in those servers' environment values and HTTP headers (shown redacted). Results stay local; `--submit` adds the MCP servers and agent projects to the discovered agents (credentials are never sent).
+CI jobs and pods can attest instead of using an enrollment token: an admin proposes a trusted-issuer entry (`pclaw issuer propose-github …` or `pclaw issuer propose-kubernetes …`), a person with the Identity Publisher role activates it (`pclaw issuer activate ENTRY REVISION`), and the workload enrolls with `--github` (an Actions job with `id-token: write`) or `--kubernetes-token FILE` (a projected service-account token with audience `pantherclaw:<org id>`). Unknown keys that reach the gateway show up as discovered agents: `pclaw agent list --state discovered`, then `pclaw agent claim` or `pclaw agent retire`. `pclaw scan` looks for shadow agents on a machine: the MCP servers configured for Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin Desktop), Zed, JetBrains Junie, OpenAI Codex CLI (`~/.codex/config.toml` or `$CODEX_HOME`, and `.codex/config.toml` in a project) and Google Gemini CLI (`~/.gemini/settings.json` or `$GEMINI_CLI_HOME`, and `.gemini/settings.json` in a project), agent-framework projects under `--path`, and credentials in the environment and in those servers' environment values, HTTP headers and OAuth client secrets (shown redacted). Results stay local; `--submit` adds the MCP servers and agent projects to the discovered agents (credentials are never sent).
 
 The bootstrap admin token is single use and valid 24 hours; `pantherclaw-server org admin-invite --org <id>` issues a new one. Automation can skip `pclaw login`: set `PANTHERCLAW_SERVER` and `PANTHERCLAW_API_KEY` (a `pck_` key from `pclaw apikey create`). Integration tests use an in-process OpenID provider; the CI also runs the end-to-end scenario against `navikt/mock-oauth2-server` (`docker compose --profile test` starts it on 127.0.0.1:8181; set `PC_TEST_MOCK_OIDC_URL=http://127.0.0.1:8181`), and `PC_TEST_KEYCLOAK_URL=http://127.0.0.1:8180` runs the Keycloak realm test.
+
+**Authority: packages, facts, guardrails, grants and policies (M4):** a run's actions use only the grant its run is bound to, so an org needs an active tool package, the facts its definitions require, a grant, and optionally guardrails and a published policy. Each document is a JSON (or YAML package) file; the server decodes it strictly. Importing a package needs a targets document signed by a trusted package root (`pclaw-admin packages sign`); activating packages, changing guardrails, issuing grants, registering fact providers and publishing policies are human only.
+
+```bash
+go run ./cmd/pclaw package import --name pc.mock-payments --version 1.0.0 --targets-file targets.jws --file packages/mock-payments/package.yaml
+go run ./cmd/pclaw package transition pc.mock-payments 1.0.0 --to active
+go run ./cmd/pclaw fact-provider register --name billing --sa <sa id> --fact payments.charge.refundable:boolean:payments.charge:5m
+go run ./cmd/pclaw fact put --name payments.charge.refundable --subject-type payments.charge --subject-id ch_1 --value-file true.json   # as the provider's service account
+go run ./cmd/pclaw guardrail create --scope team:<team id> --name payments --bounds-file team-bounds.json --max-root-lifetime 72h
+go run ./cmd/pclaw grant issue <agent id> --principal user:<user id> --expires 48h --bounds-file bounds.json --limits-file limits.json
+go run ./cmd/pclaw run start <agent id> --instance <instance id> --grant <grant id> --task "refund ch_1"
+go run ./cmd/pclaw grant get <grant id>      # lineage, guardrails and effective bounds
+go run ./cmd/pclaw grant budget <grant id>   # reserved, spent and available per budget account
+go run ./cmd/pclaw policy create --file bundle.json && go run ./cmd/pclaw policy publish <version id>
+```
 
 To let a service start runs on behalf of a signed-in user (M3), add `"subject_token_audience": "<audience>"` to that provider: its tokens whose `aud` contains that value are accepted as subject tokens at `StartRun`. The service needs the Run Launcher role (`run.represent`) and passes the user's fresh token (at most 5 minutes old, single use; an access token must be typed `at+jwt`). The user must already exist and be active in the org, and the token grants the run nothing.
 
@@ -339,9 +352,9 @@ docs/                    this guide and companions
 | M1.5 | `transactions`, `decision_receipts`, `permits`, `execution_attempts`, `budgets`, `budget_ledger`, `org_containment` |
 | M2 | `business_units`, `teams`, `environments`, `users`, `memberships`, `role_bindings`, `service_accounts`, `service_account_keys`, `api_keys`, `invitations`, `device_codes`, `cli_sessions` (CLI refresh tokens), `auth_replay` (client-assertion `jti`s) |
 | M3 | `agents` (owner and backup owner columns), `agent_changes`, `agent_instances`, `enrollment_tokens`, `trusted_issuers`, `attestations`, `dpop_nonces`, `dpop_jti` (partitioned), `runs`, `discoveries`, `waitlist_entries`; subject-token `jti`s in `auth_replay` (M2) |
-| M4 | `package_trust`, `tool_packages`, `package_versions`, `package_pins`, `action_definitions`, `consequence_rules`, `policies`, `policy_versions`, `envelopes`, `envelope_revisions`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `reservations`, `fact_providers`, `facts`, `dedupe_claims`; `budgets` (M1.5) gains rule, grouping and period columns; idempotency lives in columns on `transactions` (M1.5) |
+| M4 | `package_trust`, `tool_packages`, `package_versions`, `package_pins`, `package_signing_keys` (follow-up, 00026), `action_definitions`, `consequence_rules`, `policies`, `policy_versions`, `envelopes`, `envelope_revisions`, `grants`, `grant_revisions`, `grant_lineage`, `counters`, `reservations`, `fact_providers`, `facts`, `dedupe_claims`; `budgets` (M1.5) gains rule, grouping and period columns; idempotency lives in columns on `transactions` (M1.5) |
 | M5 | `sessions` (browser), `login_requests` (browser sign-ins in progress), `webauthn_credentials`, `webauthn_ceremonies` (pending registrations and assertions; `BINDING` in part 2), `notifications`, `notification_channels`, `deliveries`; part 2: `approval_requests`, `approval_responses`, `approval_evidence`, `hold_slots`, `escalation_chains`, `waitlist_routes`, `waitlist_settings`, `approval_batches`; `waitlist_entries` (M3) gains the other five kinds |
-| M6 | `gateways`, `gateway_certs`, `connections`, `routes`, `credentials` (sealed), `broker_keys`, `circuit_states` |
+| M6 | `gateways`, `gateway_enrollment_tokens`, `gateway_certs`, `broker_keys`, `connections`, `connection_routes`, `credentials` (sealed), `circuit_states`, `kill_switch_requests`; `org_containment` gains who engaged the kill switch; `transactions` and `permits` gain mode and connection |
 | M7 | `execution_receipts`, `effect_receipts`, `verifications`, `reconciliation_tasks`, `checkpoints`, `anchors`, `evidence_packs`, `retention_policies`, `payload_captures` |
 | M9 | `coverage_snapshots`, `coverage_routes`, `probes`, `probe_results`, `sandbox_sessions` |
 | M10 | `detection_rules`, `detection_state`, `alerts`, `incidents`, `cases`, `case_notes`, `findings`, `suppressions`, `containment_actions`, `export_destinations`, `saved_queries` |
@@ -430,11 +443,11 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - **Tests:** replay/theft by sibling run, self-approval, API-key approval refused, sock-puppet (same WebAuthn cred), TOCTOU after approval, variant-shopping cap, delivery failure ≠ approval.
 
 ### M6 — Gateway & non-bypassable boundary
-**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..086, HR-113 · **PN:** PN-003, PN-005, PN-013, PN-014, PN-015.
+**Threat slice:** T-009, T-010, T-013, T-015, T-019, T-021, T-022, T-025, T-028, T-030, T-031, T-065..T-069 · **HR:** HR-001..011, HR-020, HR-021, HR-038, HR-060, HR-061, HR-070..083, HR-113, HR-180..188 (HR-084 and HR-085 moved to M9) · **PN:** PN-002.6, PN-003, PN-005, PN-013, PN-014, PN-015 · **G0:** [g0/M6.md](g0/M6.md).
 - Gateway enrollment + mTLS (internal CA), org binding; Authorize/BeginDispatch/RecordExecution clients; revocation/containment stream with heartbeat and cold-start snapshot.
 - MCP proxy (2026-07-28 stateless + 2025-11-25 stateful), tasks extension for HOLD, reviewed descriptions, elicitation/sampling gating; `pclaw mcp proxy` stdio shim.
 - HTTP proxy (route matching from packages), outbound re-serialization, egress transport; credential broker (sealed creds, per-tenant keys, AAD binding), `pclaw seal`.
-- Connector runtime (customer-hosted only) with isolation; circuit breaker; monitor vs enforce mode per route.
+- Circuit breaker; monitor vs enforce mode per route. The connector runtime for third-party MCP servers (customer-hosted only, with isolation) moves to M9 (G0 M6 decision 3).
 - Kill switch (asymmetric) and containment epoch bumps.
 - Claude Code plugin (PreToolUse for Bash + PowerShell, path normalization) — dogfooded on PantherClaw development.
 - **Exit — refund scenario table (`test/e2e`):**
@@ -469,9 +482,10 @@ Releases: `v0.0.x` pre-releases from M1; **v0.1.0 preview after M12** (coding-ag
 - §43 coding-agent scenario on a sandbox GitHub repo: merge requires independent reviewer; deployment consequence requires release approver.
 
 ### M9 — Coverage & containment sandbox
-**HR:** HR-024, HR-086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
+**HR:** HR-024, HR-084..086, HR-121, HR-122 · **F:** F433–F460 · **PN:** PN-008.
 - Routes inventory, coverage snapshots (UNKNOWN/OBSERVE_ONLY/PARTIAL/ENFORCED), invalidation events, freshness contract, closure evidence, access-mode disclosure, credential-overreach findings.
 - `pclaw sandbox run`: egress-locked Docker network (gateway only; IPv6/ICMP/DNS blocked), no creds, read-only FS, non-root, optional gVisor; trusted sidecar probes + external canary; expiring ENFORCED promotion.
+- Connector runtime for third-party MCP servers run as local processes (moved from M6, G0 M6 decision 3): each in its own locked-down container on the same sandbox machinery, customer-hosted gateways only, egress only through the gateway, which injects credentials (HR-084, HR-085).
 
 ### M10 — Detect, investigate, respond
 **F:** F211–F271, F534–F572, F607–F623 · **PN:** PN-006, PN-018, PN-024 · **ADR:** 0019.

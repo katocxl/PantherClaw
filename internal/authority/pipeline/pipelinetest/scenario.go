@@ -44,6 +44,9 @@ type Scenario struct {
 	Env       ids.UUID
 	Team      ids.UUID
 	Alice     gdomain.Principal
+	// Connection is the enforce-mode HTTP connection to the package that
+	// Gateway serves and Request goes through (PAP-1 §6).
+	Connection ids.UUID
 }
 
 // Start is the scenarios' database time: a Monday noon.
@@ -90,7 +93,12 @@ func NewScenario(tb TB, edit func(string) string) *Scenario {
 		Agent: ids.NewV7(), Instance: ids.NewV7(), Env: ids.NewV7(), Team: ids.NewV7(),
 		Alice: gdomain.Principal{Kind: gdomain.PrincipalUser, ID: ids.NewV7()},
 	}
-	s.Gateway = finalize.Gateway{ID: "gw-test", Org: TestOrg}
+	gw := ids.NewV7()
+	s.Gateway, s.Connection = finalize.Gateway{ID: gw.String(), Org: TestOrg}, ids.NewV7()
+	s.W.PutConnection(pipeline.Connection{
+		ID: s.Connection, Gateway: gw, Kind: "http", Package: pkg.Name, State: "ACTIVE", AccessMode: "none",
+		DefaultMode: pipeline.ModeEnforce, Modes: map[string]string{},
+	})
 	s.Authority = &finalize.Authority{Pipeline: &pipeline.Pipeline{Reader: s.W}, Store: s.W, Receipts: FakeSigner{}, Permits: FakeSigner{}}
 	s.W.AddAgent(s.Agent, pipeline.Agent{State: "VERIFIED", TeamID: s.Team, BusinessUnitID: ids.NewV7()})
 	for _, ch := range []string{"ch_1", "ch_2", "ch_3"} {
@@ -135,11 +143,14 @@ func (s *Scenario) Request(run, act ids.UUID, tool, input string) pipeline.Reque
 	s.TB.Helper()
 	p, err := s.Mapper.MCP(context.Background(), mapping.Context{
 		Org: s.Org.String(), Env: s.Env.String(), RunID: run.String(), ActionID: act.String(), AgentInstance: s.Instance.String(),
+		Connection: s.Connection.String(),
 	}, tool, jsontext.Value(input))
 	if err != nil {
 		s.TB.Fatal(err)
 	}
-	return pipeline.Request{Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1}}
+	return pipeline.Request{
+		Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1}, Gateway: s.Gateway.ID,
+	}
 }
 
 // Authorize decides a request through the Authority.

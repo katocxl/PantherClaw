@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
 // Package pgstore stores tool packages per org in PostgreSQL: the
-// definitions/app Repository port (part 1), and the definition lookups the
-// decision pipeline and grant issuance need (G0 M4 part 2). The exact signed
-// bytes are the source of truth; decoded packages are cached by version id
-// (a version never changes).
+// definitions/app Repository port (part 1), the org package-signing keys
+// (Keys, HR-162), and the definition lookups the decision pipeline and grant
+// issuance need (G0 M4 part 2). The exact signed bytes are the source of
+// truth; decoded packages are cached by version id (a version never
+// changes).
 package pgstore
 
 import (
@@ -87,7 +88,17 @@ func (s *Store) Import(ctx context.Context, org ids.OrgID, rec app.Record) error
 	}
 	err = s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		if err := advanceTrust(ctx, q, org, rec); err != nil {
+		if err := q.LockPackageImports(ctx, org.String()); err != nil {
+			return err
+		}
+		if err := checkOperations(ctx, q, org, rec); err != nil {
+			return err
+		}
+		advance := advanceTrust
+		if rec.SigningKey != nil {
+			advance = advanceKeyTrust
+		}
+		if err := advance(ctx, q, org, rec); err != nil {
 			return err
 		}
 		pkgID, err := q.GetToolPackageID(ctx, org, rec.Package.Name)
@@ -101,7 +112,7 @@ func (s *Store) Import(ctx context.Context, org ids.OrgID, rec app.Record) error
 		versionID := ids.NewV7()
 		if err := q.InsertPackageVersion(ctx, dbq.InsertPackageVersionParams{
 			OrgID: org, ID: versionID, PackageID: pkgID, Version: rec.Package.Version, FileDigest: rec.FileDigest,
-			Raw: rec.Raw, State: string(rec.State),
+			Raw: rec.Raw, State: string(rec.State), SigningKeyID: rec.SigningKey,
 		}); err != nil {
 			return err
 		}
@@ -343,10 +354,14 @@ func (s *Store) ListVersions(ctx context.Context, org ids.OrgID, name string) ([
 		for i, r := range rows {
 			versions = append(versions, r.ID)
 			at[r.ID] = i
-			out = append(out, app.VersionInfo{
+			v := app.VersionInfo{
 				Name: r.Name, Version: r.Version, State: domain.State(r.State), FileDigest: r.FileDigest,
 				Pinned: r.Pinned, ImportedAt: r.ImportedAt,
-			})
+			}
+			if r.SigningKid != nil {
+				v.SigningKey = *r.SigningKid
+			}
+			out = append(out, v)
 		}
 		defs, err := q.ListVersionDefinitions(ctx, org, versions)
 		if err != nil {

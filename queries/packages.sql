@@ -41,9 +41,9 @@ SET version_id = sqlc.arg(version_id), version = sqlc.arg(version), digest = sql
 WHERE org_id = sqlc.arg(org_id) AND package_id = sqlc.arg(package_id) AND version_id = sqlc.arg(prev_version_id);
 
 -- name: InsertPackageVersion :exec
-INSERT INTO pc.package_versions (org_id, id, package_id, version, file_digest, raw, state)
+INSERT INTO pc.package_versions (org_id, id, package_id, version, file_digest, raw, state, signing_key_id)
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(package_id), sqlc.arg(version), sqlc.arg(file_digest),
-        sqlc.arg(raw), sqlc.arg(state));
+        sqlc.arg(raw), sqlc.arg(state), sqlc.narg(signing_key_id));
 
 -- name: InsertActionDefinition :exec
 INSERT INTO pc.action_definitions (org_id, id, version_id, operation, digest, canonical)
@@ -99,13 +99,15 @@ SET epoch = epoch + 1, updated_at = now()
 WHERE org_id = sqlc.arg(org_id);
 
 -- ListPackageVersions lists an org's imported package versions (all
--- packages when name is empty), with whether each is the pinned one.
+-- packages when name is empty), with whether each is the pinned one and
+-- the kid of the org key that signed it (NULL: a package root).
 -- name: ListPackageVersions :many
 SELECT v.id, t.name, v.version, v.state, v.file_digest, v.imported_at,
-       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned
+       (p.version_id IS NOT NULL AND p.version_id = v.id)::boolean AS pinned, k.kid AS signing_kid
 FROM pc.package_versions v
 JOIN pc.tool_packages t ON t.org_id = v.org_id AND t.id = v.package_id
 LEFT JOIN pc.package_pins p ON p.org_id = t.org_id AND p.package_id = t.id
+LEFT JOIN pc.package_signing_keys k ON k.org_id = v.org_id AND k.id = v.signing_key_id
 WHERE v.org_id = sqlc.arg(org_id) AND (sqlc.arg(name)::text = '' OR t.name = sqlc.arg(name)::text)
 ORDER BY t.name, v.imported_at DESC
 LIMIT 500;
