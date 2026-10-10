@@ -47,8 +47,10 @@ const (
 func newM7Fixture(t *testing.T, p *db.Pool) m7Fixture {
 	t.Helper()
 	m6 := newM6Fixture(t, p)
-	f := m7Fixture{m5p2Fixture: newM5p2Fixture(t, m6.m5Fixture), gateway: m6.gateway, connection: m6.connection,
-		permit: m5ID(), attempt: m5ID()}
+	f := m7Fixture{
+		m5p2Fixture: newM5p2Fixture(t, m6.m5Fixture), gateway: m6.gateway, connection: m6.connection,
+		permit: m5ID(), attempt: m5ID(),
+	}
 	f.mustExec(t, `INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, state, expires_at, dispatching_at,
 		finished_at) VALUES ($1, $2, $3, $4, 1, 'DISPATCHED', now() + interval '5 seconds', now(), now())`,
 		f.org, f.permit, f.txn, f.gateway)
