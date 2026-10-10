@@ -99,10 +99,10 @@ type Item struct {
 
 // Outcome is the policy verdict with its explanation.
 type Outcome struct {
-	Verdict     Verdict
-	Checklist   []Item
-	Approvals   []ApprovalRequirement
-	StepUps     []StepUpRequirement
+	Verdict   Verdict
+	Checklist []Item
+	Approvals []ApprovalRequirement
+	StepUps   []StepUpRequirement
 	// Required lists the same requirements with the rule that asks for each
 	// (G0 M5 part 2: a hold keeps every requirement's source).
 	Required    []Required

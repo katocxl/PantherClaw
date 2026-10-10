@@ -135,7 +135,7 @@ func (w *world) request(run ids.UUID, tool, input string) pipeline.Request {
 		w.tb.Fatal(err)
 	}
 	return pipeline.Request{
-		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1}, Gateway: w.gateway.String(),
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}, Gateway: w.gateway.String(),
 	}
 }
 

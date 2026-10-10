@@ -99,6 +99,7 @@ func (h *Handler) Authorize(ctx context.Context, req *pantherclawv1.AuthorizeReq
 	}
 	out.DecisionBasisDigest, out.Evaluation, out.Repeat = res.BasisDigest, int32(res.Evaluation), res.Repeat //nolint:gosec // at most 32
 	out.Mode, out.AccessMode = modeToProto[res.Mode], res.AccessMode
+	out.Wait = WaitInfo(res.Wait)
 	if res.EffectiveHash != "" && res.EffectiveHash != res.ActionHash {
 		out.EffectiveActionHash = res.EffectiveHash
 	}

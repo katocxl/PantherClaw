@@ -47,6 +47,7 @@ type World struct {
 	conns    map[ids.UUID]pipeline.Connection
 	// Fail makes the named Reader method return ErrInjected.
 	Fail  map[string]bool
+	hold  *holdState
 	final *finalState
 }
 

@@ -150,7 +150,7 @@ func (f *fx) parse(run, action ids.UUID, tool, input string) pipeline.Request {
 		f.t.Fatal(err)
 	}
 	return pipeline.Request{
-		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1}, Gateway: f.gateway.String(),
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}, Gateway: f.gateway.String(),
 	}
 }
 

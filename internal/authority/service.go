@@ -93,6 +93,8 @@ type Result struct {
 	Repeat        bool
 	// Mode is the route's mode and AccessMode the connection's (G0 M6).
 	Mode, AccessMode string
+	// Wait is the wait handle of a held action (G0 M5 part 2).
+	Wait *finalize.Wait
 }
 
 // Authorize decides on raw canonical ActionIR bytes sent with the
@@ -127,7 +129,7 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *
 	}
 	res, err := s.decider.Authorize(ctx, gw.final(), pipeline.Request{
 		Org: gw.Org, Action: p,
-		Identity: pipeline.Identity{InstanceID: id.Instance.Instance, AgentID: id.Instance.Agent, AttestationLevel: id.Level},
+		Identity: pipeline.Identity{InstanceID: id.Instance.Instance, AgentID: id.Instance.Agent, AttestationLevel: id.Level, JKT: id.JKT},
 	})
 	if err != nil {
 		return Result{}, err
@@ -136,7 +138,7 @@ func (s *Service) Authorize(ctx context.Context, gw Gateway, raw []byte, creds *
 		Decision: res.Decision, Reasons: res.Reasons, TransactionID: res.TransactionID, ActionHash: res.ActionHash,
 		Permit: res.Permit, PermitID: res.PermitID, Epoch: res.Epoch, Receipt: res.Receipt, Nonce: s.nonce(ctx, gw),
 		Checklist: res.Checklist, Obligations: res.Obligations, EffectiveHash: res.EffectiveHash, BasisDigest: res.BasisDigest,
-		Evaluation: res.Evaluation, Repeat: res.Repeat, Mode: res.Mode, AccessMode: res.AccessMode,
+		Evaluation: res.Evaluation, Repeat: res.Repeat, Mode: res.Mode, AccessMode: res.AccessMode, Wait: res.Wait,
 	}, nil
 }
 

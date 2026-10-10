@@ -27,7 +27,7 @@ func (f *fx) on(gateway, conn ids.UUID, tool, input string) *pipeline.Evaluation
 		f.t.Fatal(err)
 	}
 	return f.eval(pipeline.Request{
-		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1},
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"},
 		Gateway: gateway.String(),
 	})
 }
@@ -72,7 +72,7 @@ func TestT067_GatewayActionsNameAConnectionThatServesThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := f.eval(pipeline.Request{
-		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1}, Gateway: f.gateway.String(),
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}, Gateway: f.gateway.String(),
 	})
 	expect(t, ev, adomain.CannotAuthorize, pipeline.ReasonConnectionRequired)
 	if ev.Decision.Permits() || ev.MonitorPermit() {
