@@ -6,6 +6,7 @@
 package app_test
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	approvals "github.com/katocxl/pantherclaw/internal/approvals/app"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	tenancy "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
@@ -72,6 +74,32 @@ func TestT037_TheApprovalPageShowsARequestOnlyToThoseWhoMaySeeIt(t *testing.T) {
 	}
 	if in, err := f.svc.Inbox(f.as(f.alice)); err != nil || len(in.Waiting) != 0 || len(in.Scopes) != 0 {
 		t.Fatalf("the launcher's list: %+v, %v", in, err)
+	}
+}
+
+// TestHR172_APageResponseRecordsTheBrowserSession: the approval page's
+// person responds through their browser session, which the response
+// records; a caller with neither kind of human session is refused.
+func TestHR172_APageResponseRecordsTheBrowserSession(t *testing.T) {
+	f := newFx(t, 1)
+	req := f.request(1)
+	browser := tenancy.WithCaller(context.Background(), tenancy.Caller{
+		Subject:    td.Subject{Org: f.org, Principal: td.PrincipalRef{Kind: td.KindUser, ID: f.bob.id}},
+		Credential: tenancy.CredBrowserSession, Session: f.bob.browser,
+	})
+	noSession := tenancy.WithCaller(context.Background(), tenancy.Caller{
+		Subject:    td.Subject{Org: f.org, Principal: td.PrincipalRef{Kind: td.KindUser, ID: f.bob.id}},
+		Credential: tenancy.CredBrowserSession,
+	})
+	if _, err := f.svc.Decline(noSession, req, "TOO_RISKY", "", ""); !errors.Is(err, approvals.ErrHumanSession) {
+		t.Fatalf("no session: %v", err)
+	}
+	if _, err := f.svc.Decline(browser, req, "TOO_RISKY", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := f.str(`SELECT session_id::text || ' ' || coalesce(cli_session_id::text, 'none') FROM pc.approval_responses WHERE request_id = $1`, req)
+	if got != f.bob.browser.String()+" none" {
+		t.Fatalf("recorded sessions %q", got)
 	}
 }
 

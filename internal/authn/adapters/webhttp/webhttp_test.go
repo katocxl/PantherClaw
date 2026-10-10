@@ -43,9 +43,13 @@ func (f *fakeBrowser) Callback(_ context.Context, _ string, params url.Values, b
 
 func (f *fakeBrowser) Authenticate(_ context.Context, cookie string) (authnapp.BrowserSession, error) {
 	s := authnapp.BrowserSession{
-		Caller: tapp.Caller{Subject: td.Subject{Org: testOrg, Principal: td.PrincipalRef{Kind: td.KindUser, ID: ids.NewV7()}}},
-		ID:     ids.NewV7(),
+		Caller: tapp.Caller{
+			Subject:    td.Subject{Org: testOrg, Principal: td.PrincipalRef{Kind: td.KindUser, ID: ids.NewV7()}},
+			Credential: authnapp.CredBrowserSession,
+		},
+		ID: ids.NewV7(),
 	}
+	s.Session = s.ID
 	switch cookie {
 	case "good":
 		return s, nil
@@ -84,7 +88,7 @@ func newHandler(t *testing.T, publicURL string) (*webhttp.Handler, *fakeBrowser,
 	fb := &fakeBrowser{}
 	h, err := webhttp.New(fb, publicURL, nil, nil)
 	if err == nil {
-		h.WithKeys(&fakeKeys{}).WithContainment(&fakeContainment{}).WithApprovals(&fakeApprovals{})
+		h.WithKeys(&fakeKeys{}).WithContainment(&fakeContainment{}).WithApprovals(&fakeApprovals{}, &fakeBindings{})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +206,11 @@ func TestHR151_RouteTable(t *testing.T) {
 		// The approval page (G0 M5 part 2).
 		{Method: http.MethodGet, Path: "/approvals", Session: true},
 		{Method: http.MethodGet, Path: "/approvals/{id}", Session: true},
+		{Method: http.MethodPost, Path: "/approvals/{id}/approve-options", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/approvals/{id}/approve", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/approvals/{id}/decline", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/approvals/{id}/evidence-request", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/approvals/{id}/narrower", Session: true, CSRF: true},
 	} {
 		if !slices.Contains(h.Routes(), want) {
 			t.Errorf("route %+v is not mounted", want)

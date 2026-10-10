@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,13 +22,115 @@ import (
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
-// knownRequest is the one request fakeApprovals shows.
-var knownRequest = ids.NewV7()
+// knownRequest is the one request fakeApprovals shows; knownBinding is its
+// binding.
+var (
+	knownRequest = ids.NewV7()
+	knownBinding = [32]byte{1, 2, 3}
+)
 
 // fakeApprovals shows knownRequest, with agent text and evidence that try
-// to inject markup, and an inbox holding it (or nothing, when empty).
+// to inject markup, and an inbox holding it (or nothing, when empty). Its
+// actions record what the page passed and fail with err when it is set.
 type fakeApprovals struct {
-	empty bool
+	empty, readOnly bool
+	err             error
+
+	mu         sync.Mutex
+	responders []apapp.Responder
+	calls      []string
+	deadline   time.Time
+	params     string
+	validate   bool
+	assertion  apapp.Assertion
+}
+
+// record notes an action of the calling person and returns err.
+func (f *fakeApprovals) record(ctx context.Context, call string) error {
+	c, err := tapp.CallerFrom(ctx)
+	if err != nil {
+		return err
+	}
+	r, err := apapp.ResponderFrom(c)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responders, f.calls = append(f.responders, r), append(f.calls, call)
+	return f.err
+}
+
+func (f *fakeApprovals) BeginApproval(_ context.Context, _ ids.OrgID, r apapp.Responder, id ids.UUID) ([32]byte, error) {
+	if id != knownRequest {
+		return [32]byte{}, apapp.ErrNotEligible
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responders = append(f.responders, r)
+	return knownBinding, f.err
+}
+
+func (f *fakeApprovals) Approve(_ context.Context, _ ids.OrgID, r apapp.Responder, _ ids.UUID, a apapp.Assertion) (apapp.Request, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responders, f.assertion = append(f.responders, r), a
+	return apapp.Request{State: "APPROVED"}, f.err
+}
+
+func (f *fakeApprovals) Decline(ctx context.Context, _ ids.UUID, reason, alternative, note string) (apapp.Request, error) {
+	return apapp.Request{State: "DECLINED"}, f.record(ctx, "decline:"+reason+":"+alternative+":"+note)
+}
+
+func (f *fakeApprovals) RequestEvidence(ctx context.Context, _ ids.UUID, question, note string, deadline time.Time) (apapp.Request, error) {
+	f.mu.Lock()
+	f.deadline = deadline
+	f.mu.Unlock()
+	return apapp.Request{State: "EVIDENCE_REQUESTED"}, f.record(ctx, "evidence:"+question+":"+note)
+}
+
+func (f *fakeApprovals) ProposeNarrower(ctx context.Context, _ ids.UUID, params []byte, _ string, validateOnly bool) (apapp.Proposal, error) {
+	f.mu.Lock()
+	f.params, f.validate = string(params), validateOnly
+	f.mu.Unlock()
+	return apapp.Proposal{
+		Request:    apapp.Request{State: "PENDING"},
+		Simulation: apapp.Simulation{Params: params, Decision: "ALLOW", Reasons: []apapp.Reason{{Code: "WITHIN_LIMITS"}}},
+	}, f.record(ctx, "narrower")
+}
+
+// fakeBindings is the BINDING ceremony: it records the challenge and the
+// subject, and verifies any response as an assertion over names.
+type fakeBindings struct {
+	mu        sync.Mutex
+	challenge [32]byte
+	subject   authnapp.BindingSubject
+	names     ids.UUID
+	verifyErr error
+	spent     []ids.UUID
+}
+
+func (b *fakeBindings) BeginBinding(_ context.Context, _ authnapp.BrowserSession, subject authnapp.BindingSubject, challenge [32]byte) (authnapp.Ceremony, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.challenge, b.subject = challenge, subject
+	return authnapp.Ceremony{ID: ids.NewV7(), Options: []byte(`{"publicKey":{"challenge":"AQID"}}`)}, nil
+}
+
+func (b *fakeBindings) VerifyBinding(_ context.Context, _ authnapp.BrowserSession, ceremony ids.UUID, _ []byte) (authnapp.BindingAssertion, error) {
+	if b.verifyErr != nil {
+		return authnapp.BindingAssertion{}, b.verifyErr
+	}
+	return authnapp.BindingAssertion{
+		Ceremony: ceremony, Subject: authnapp.BindingSubject{Request: b.names}, Challenge: knownBinding, Credential: responderKey,
+		AuthenticatorData: make([]byte, 37), ClientDataJSON: []byte(`{}`), Signature: []byte{1},
+	}, nil
+}
+
+func (b *fakeBindings) SpendBinding(_ context.Context, _ authnapp.BrowserSession, ceremony ids.UUID) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.spent = append(b.spent, ceremony)
 }
 
 func (f *fakeApprovals) Inbox(ctx context.Context) (apapp.Inbox, error) {
@@ -51,7 +154,9 @@ func (f *fakeApprovals) View(ctx context.Context, id ids.UUID) (apapp.View, erro
 		return apapp.View{}, apapp.ErrNotFound
 	}
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	may := !f.readOnly
 	return apapp.View{
+		MayRespond: may, MayApprove: may, Params: apdomain.Untrusted{Text: `{"amount":{"value":"40.00","currency":"USD"}}`},
 		Request: apapp.Request{ID: id, DeadlineAt: now.Add(time.Hour)},
 		Display: apdomain.Display{
 			V: 1, Kind: "ACTION", Title: "Refund 40.00 USD",
@@ -69,21 +174,28 @@ func (f *fakeApprovals) View(ctx context.Context, id ids.UUID) (apapp.View, erro
 				{Source: "param:memo", Text: "p" + string(rune(0x0430)) + "ypal", MixedScript: true},
 			}},
 		},
-		State: "PENDING", Now: now, MayRespond: true, MayApprove: true,
+		State: "PENDING", Now: now,
 		Evidence: []apapp.EvidenceLine{{Author: "instance:x", Note: apdomain.Untrusted{Source: "evidence", Text: `"><img src=x onerror=alert(1)>`}, At: now}},
 	}, nil
 }
 
 func newApprovalsHandler(t *testing.T, fa *fakeApprovals) http.Handler {
 	t.Helper()
+	mux, _ := newApprovalsHandlerWith(t, fa)
+	return mux
+}
+
+func newApprovalsHandlerWith(t *testing.T, fa *fakeApprovals) (http.Handler, *fakeBindings) {
+	t.Helper()
 	h, err := webhttp.New(&fakeBrowser{}, origin, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.WithApprovals(fa)
+	fb := &fakeBindings{names: knownRequest}
+	h.WithApprovals(fa, fb)
 	mux := http.NewServeMux()
 	h.Mount(mux)
-	return mux
+	return mux, fb
 }
 
 func getAs(t *testing.T, mux http.Handler, path, cookie string) result {
@@ -161,5 +273,133 @@ func TestHR152_SignInReturnsToTheApprovalPage(t *testing.T) {
 	}
 	if !authnapp.ValidReturnPath(path) {
 		t.Fatal("the approval page must be a valid return path")
+	}
+}
+
+// TestHR033_ApprovingSignsTheBindingOnThePage: approve-options starts a
+// ceremony over exactly the request's binding for the browser session's
+// person; approve hands the verified assertion to the use case; a refused
+// approval or an assertion over another request spends the ceremony.
+func TestHR033_ApprovingSignsTheBindingOnThePage(t *testing.T) {
+	fa := &fakeApprovals{}
+	mux, fb := newApprovalsHandlerWith(t, fa)
+	base := authnapp.ApprovalsPath + "/" + knownRequest.String()
+	resp := do(t, mux, postAs(base+"/approve-options", "responder", "{}"))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"ceremony":`) || fb.challenge != knownBinding ||
+		fb.subject != (authnapp.BindingSubject{Request: knownRequest}) {
+		t.Fatalf("approve-options: %d %s", resp.StatusCode, resp.Body)
+	}
+	if r := fa.responders[0]; r.User != responderID || r.Browser.IsZero() || !r.CLI.IsZero() {
+		t.Fatalf("responder %+v", r)
+	}
+	ceremony := ids.NewV7()
+	body := `{"ceremony":"` + ceremony.String() + `","response":{"id":"x"}}`
+	resp = do(t, mux, postAs(base+"/approve", "responder", body))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"state":"APPROVED"`) || fa.assertion.Ceremony != ceremony ||
+		fa.assertion.Credential != responderKey || len(fa.assertion.AuthenticatorData) != 37 || len(fb.spent) != 0 {
+		t.Fatalf("approve: %d %s %+v", resp.StatusCode, resp.Body, fa.assertion)
+	}
+	fa.err = apapp.ErrNotEligible
+	if resp = do(t, mux, postAs(base+"/approve", "responder", body)); resp.StatusCode != http.StatusForbidden ||
+		!strings.Contains(resp.Body, "not_eligible") || len(fb.spent) != 1 {
+		t.Fatalf("a refused approval: %d %s %d", resp.StatusCode, resp.Body, len(fb.spent))
+	}
+	fa.err, fb.names = nil, ids.NewV7()
+	if resp = do(t, mux, postAs(base+"/approve", "responder", body)); resp.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(resp.Body, "ceremony_invalid") || len(fb.spent) != 2 {
+		t.Fatalf("an assertion over another request: %d %s", resp.StatusCode, resp.Body)
+	}
+	fb.verifyErr = authnapp.ErrWebAuthnFailed
+	calls := len(fa.responders)
+	if resp = do(t, mux, postAs(base+"/approve", "responder", body)); resp.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(resp.Body, "verification_failed") || len(fa.responders) != calls {
+		t.Fatalf("an assertion that does not verify: %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp = do(t, mux, postAs(base+"/approve", "responder", `{"ceremony":"x"}`)); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("no response: %d", resp.StatusCode)
+	}
+}
+
+// TestT037_AStrangerCannotStartTheCeremony: approve-options for a request
+// the person may not see answers "not found"; one they may see but not
+// decide answers "not eligible".
+func TestT037_AStrangerCannotStartTheCeremony(t *testing.T) {
+	mux, fb := newApprovalsHandlerWith(t, &fakeApprovals{})
+	resp := do(t, mux, postAs(authnapp.ApprovalsPath+"/"+ids.NewV7().String()+"/approve-options", "good", "{}"))
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(resp.Body, "not_found") || !fb.subject.Request.IsZero() {
+		t.Fatalf("a hidden request: %d %s", resp.StatusCode, resp.Body)
+	}
+	mux, _ = newApprovalsHandlerWith(t, &fakeApprovals{err: apapp.ErrNotEligible})
+	resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/"+knownRequest.String()+"/approve-options", "good", "{}"))
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(resp.Body, "not_eligible") {
+		t.Fatalf("a visible request: %d %s", resp.StatusCode, resp.Body)
+	}
+}
+
+// TestHR172_ResponsesThatGrantNothingNeedOnlyTheSignedInPerson: declining,
+// asking for evidence and proposing a narrower action reach the use cases
+// as the browser session's person, with exactly the fields the page sent.
+func TestHR172_ResponsesThatGrantNothingNeedOnlyTheSignedInPerson(t *testing.T) {
+	fa := &fakeApprovals{}
+	mux := newApprovalsHandler(t, fa)
+	base := authnapp.ApprovalsPath + "/" + knownRequest.String()
+	resp := do(t, mux, postAs(base+"/decline", "responder", `{"reason":"TOO_RISKY","alternative":"PERSON_PERFORMS","note":"no"}`))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, "DECLINED") || fa.calls[0] != "decline:TOO_RISKY:PERSON_PERFORMS:no" {
+		t.Fatalf("decline: %d %s %v", resp.StatusCode, resp.Body, fa.calls)
+	}
+	if r := fa.responders[0]; r.User != responderID || r.Browser.IsZero() || !r.CLI.IsZero() {
+		t.Fatalf("responder %+v", r)
+	}
+	before := time.Now()
+	resp = do(t, mux, postAs(base+"/evidence-request", "responder", `{"question":"WHY_NEEDED","note":"which ticket?","minutes":30}`))
+	if resp.StatusCode != http.StatusOK || fa.calls[1] != "evidence:WHY_NEEDED:which ticket?" ||
+		fa.deadline.Before(before.Add(30*time.Minute)) || fa.deadline.After(time.Now().Add(30*time.Minute)) {
+		t.Fatalf("evidence: %d %s %v", resp.StatusCode, resp.Body, fa.deadline)
+	}
+	for _, bad := range []string{`{"question":"WHY_NEEDED","minutes":0}`, `{"question":"WHY_NEEDED","minutes":20000}`} {
+		if resp = do(t, mux, postAs(base+"/evidence-request", "responder", bad)); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, resp.StatusCode)
+		}
+	}
+	resp = do(t, mux, postAs(base+"/narrower", "responder", `{"params":{"amount":{"value":"30.00","currency":"USD"}},"validate_only":true}`))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"decision":"ALLOW"`) || !strings.Contains(resp.Body, "WITHIN_LIMITS") ||
+		fa.params != `{"amount":{"value":"30.00","currency":"USD"}}` || !fa.validate {
+		t.Fatalf("narrower: %d %s %s", resp.StatusCode, resp.Body, fa.params)
+	}
+	if resp = do(t, mux, postAs(base+"/decline", "responder", `{"reason":"TOO_RISKY","approve":true}`)); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unknown member: %d", resp.StatusCode)
+	}
+	fa.err = apapp.ErrNotWaiting
+	if resp = do(t, mux, postAs(base+"/decline", "responder", `{"reason":"TOO_RISKY"}`)); resp.StatusCode != http.StatusConflict ||
+		!strings.Contains(resp.Body, "not_waiting") {
+		t.Fatalf("a request no longer waiting: %d %s", resp.StatusCode, resp.Body)
+	}
+}
+
+// TestHR151_TheApprovalPageLoadsOnlyItsScriptAndOffersOnlyAllowedActions:
+// one script, the static approvals.js; the buttons appear only for what
+// the person may do.
+func TestHR151_TheApprovalPageLoadsOnlyItsScriptAndOffersOnlyAllowedActions(t *testing.T) {
+	path := authnapp.ApprovalsPath + "/" + knownRequest.String()
+	body := getAs(t, newApprovalsHandler(t, &fakeApprovals{}), path, "good").Body
+	if strings.Count(body, "<script") != 1 || !strings.Contains(body, `<script src="/static/approvals.js"></script>`) {
+		t.Fatal("the approval page must load exactly one script, the static file")
+	}
+	buttons := []string{`id="approve"`, `id="decline"`, `id="request-evidence"`, `id="narrower-check"`, `id="narrower-propose"`}
+	for _, b := range buttons {
+		if !strings.Contains(body, b) {
+			t.Errorf("a decider's page lacks %s", b)
+		}
+	}
+	body = getAs(t, newApprovalsHandler(t, &fakeApprovals{readOnly: true}), path, "good").Body
+	for _, b := range buttons {
+		if strings.Contains(body, b) {
+			t.Errorf("a reader's page offers %s", b)
+		}
+	}
+	resp := getAs(t, newApprovalsHandler(t, &fakeApprovals{}), "/static/approvals.js", "")
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") ||
+		strings.Contains(resp.Body, "innerHTML") {
+		t.Fatalf("approvals.js: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }

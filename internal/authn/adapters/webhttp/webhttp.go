@@ -85,6 +85,7 @@ type Handler struct {
 	containment Containment
 	// approvals is the approval page (G0 M5 part 2); nil when not mounted.
 	approvals Approvals
+	bindings  Bindings
 }
 
 // New returns the handler. publicURL is the server's public URL: its origin
@@ -429,7 +430,8 @@ func (h *Handler) static(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
 	types := map[string]string{
 		"account.js": "text/javascript; charset=utf-8", "containment.js": "text/javascript; charset=utf-8",
-		"pc.css": "text/css; charset=utf-8",
+		"approvals.js": "text/javascript; charset=utf-8",
+		"pc.css":       "text/css; charset=utf-8",
 	}
 	ct, ok := types[name]
 	if !ok {
