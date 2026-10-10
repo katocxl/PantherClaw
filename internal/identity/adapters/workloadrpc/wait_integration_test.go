@@ -7,17 +7,21 @@ package workloadrpc_test
 
 import (
 	"bufio"
+	"context"
 	"crypto/ed25519"
 	"encoding/json/v2"
 	"net/http"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect/v2"
+
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/adapters/workloadrpc"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/crypto/jws"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -146,5 +150,47 @@ func TestHR174_TheWaitStreamServesOnlyTheRunsInstance(t *testing.T) {
 		if rest, _ := r.ReadString('\n'); rest != "" {
 			t.Fatalf("the stream continued after a final state: %q", rest)
 		}
+	}
+}
+
+// TestHR174_TheWorkloadWaitsGivesEvidenceAndAsksForAccess: through
+// WorkloadService the run's instance long-polls its held transaction,
+// gives evidence and asks for access citing a scope denial; another
+// instance gets "not found".
+func TestHR174_TheWorkloadWaitsGivesEvidenceAndAsksForAccess(t *testing.T) {
+	s := newStack(t)
+	o := newRenewOrg(t, s)
+	w := o.waiter(t, s)
+	txn, request := o.held(t, s, w)
+	var run string
+	if err := s.pool.InTenantTx(t.Context(), o.org, func(ctx context.Context, tx db.TenantTx) error {
+		return tx.QueryRow(ctx, "SELECT run_id::text FROM pc.transactions WHERE id = $1", txn).Scan(&run)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := func(x waiter) pantherclawv1connect.WorkloadServiceClient {
+		return pantherclawv1connect.NewWorkloadServiceClient(s.connectClient(&workloadclient.Transport{Key: x.key, Token: func() string { return x.token }}))
+	}
+	wc := client(w)
+	res, err := wc.Wait(t.Context(), &pantherclawv1.WaitRequest{
+		RunId: run, Handle: txn.String(), KnownState: pantherclawv1.WaitState_WAIT_STATE_PENDING, TimeoutSeconds: 1,
+	})
+	if err != nil || !res.GetTimedOut() || res.GetWait().GetState() != pantherclawv1.WaitState_WAIT_STATE_PENDING ||
+		res.GetWait().GetApprovalRequestId() != request.String() {
+		t.Fatalf("wait: %v, %v", res, err)
+	}
+	if _, err := client(o.waiter(t, s)).Wait(t.Context(), &pantherclawv1.WaitRequest{RunId: run, Handle: txn.String()}); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("another instance: %v", err)
+	}
+	ev, err := wc.SubmitEvidence(t.Context(), &pantherclawv1.SubmitEvidenceRequest{RunId: run, Handle: txn.String(), Note: "ticket 77"})
+	if err != nil || ev.GetEvidenceId() == "" || ev.GetWait().GetState() != pantherclawv1.WaitState_WAIT_STATE_PENDING {
+		t.Fatalf("evidence: %v, %v", ev, err)
+	}
+	denied := ids.NewV7()
+	s.exec(t, o.org, `INSERT INTO pc.transactions (org_id, id, run_id, action_id, action_hash, operation, decision, reason_code, gateway_id, state)
+		VALUES ($1, $2, $3, $4, $5, 'payments.refund.create', 'DENY', 'TARGET_NOT_GRANTED', 'gw', 'OPEN')`, o.org, denied, run, ids.NewV7(), make([]byte, 32))
+	acc, err := wc.RequestAccess(t.Context(), &pantherclawv1.WorkloadServiceRequestAccessRequest{RunId: run, TransactionId: denied.String(), Note: "need ch_2"})
+	if err != nil || acc.GetEntryId() == "" || acc.GetDeadlineTime() == nil {
+		t.Fatalf("access: %v, %v", acc, err)
 	}
 }

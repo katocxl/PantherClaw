@@ -10,11 +10,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	apapp "github.com/katocxl/pantherclaw/internal/approvals/app"
 	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
@@ -39,6 +41,8 @@ type approvalRequest struct {
 	Minutes      int            `json:"minutes,omitzero"`
 	Params       jsontext.Value `json:"params,omitzero"`
 	ValidateOnly bool           `json:"validate_only,omitzero"`
+	IDs          []string       `json:"ids,omitzero"`
+	Batch        string         `json:"batch,omitzero"`
 }
 
 // readApprovalRequest decodes a strict JSON body (unknown members,
@@ -73,6 +77,8 @@ var approvalErrors = []struct {
 	{authnapp.ErrCeremonyInvalid, http.StatusBadRequest, "ceremony_invalid"},
 	{authnapp.ErrWebAuthnFailed, http.StatusBadRequest, "verification_failed"},
 	{authnapp.ErrCredentialSuspended, http.StatusForbidden, "key_suspended"},
+	{apapp.ErrEditionRequired, http.StatusForbidden, "edition_required"},
+	{apapp.ErrBatchInvalid, http.StatusBadRequest, "batch_invalid"},
 }
 
 func (h *Handler) approvalError(w http.ResponseWriter, r *http.Request, err error) {
@@ -239,4 +245,88 @@ func (h *Handler) proposeNarrower(w http.ResponseWriter, r *http.Request, s auth
 		out.Reasons = append(out.Reasons, x.Code)
 	}
 	h.writeJSON(w, http.StatusOK, out)
+}
+
+// batchOptions starts the BINDING ceremony of a batch approval (HR-175,
+// Team edition): its challenge is the hash of exactly the batch's bindings.
+func (h *Handler) batchOptions(w http.ResponseWriter, r *http.Request, s authnapp.BrowserSession) {
+	req, err := readApprovalRequest(r)
+	if err != nil || len(req.IDs) == 0 {
+		h.jsonError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	var list []ids.UUID
+	for _, x := range req.IDs {
+		id, err := ids.ParseUUID(x)
+		if err != nil {
+			h.jsonError(w, http.StatusBadRequest, "bad_request")
+			return
+		}
+		list = append(list, id)
+	}
+	ctx := callerContext(r, s)
+	batch, hash, err := h.approvals.BeginBatch(ctx, s.Org, responder(s), list)
+	if err != nil {
+		h.batchError(w, r, err)
+		return
+	}
+	c, err := h.bindings.BeginBinding(ctx, s, authnapp.BindingSubject{Batch: batch}, hash)
+	if err != nil {
+		h.approvalError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, batchCeremony{Batch: batch.String(), Ceremony: c.ID.String(), Options: jsontext.Value(c.Options)})
+}
+
+// batchCeremony is what the page passes to navigator.credentials for a
+// batch.
+type batchCeremony struct {
+	Batch    string         `json:"batch"`
+	Ceremony string         `json:"ceremony"`
+	Options  jsontext.Value `json:"options"`
+}
+
+// batchError answers a refused batch, with the code of a request that must
+// be reviewed alone.
+func (h *Handler) batchError(w http.ResponseWriter, r *http.Request, err error) {
+	var pe *pcerr.Error
+	if errors.As(err, &pe) && slices.Contains([]string{
+		apdomain.BatchNotAHold, apdomain.BatchNotReversible, apdomain.BatchNotSingleApprover, apdomain.BatchNoValue, apdomain.BatchOverCeiling,
+	}, pe.Reason()) {
+		h.writeJSON(w, http.StatusConflict, map[string]string{"error": "not_batchable", "reason": pe.Reason()})
+		return
+	}
+	h.approvalError(w, r, err)
+}
+
+// approveBatch verifies the batch's assertion and records an approval of
+// each request (HR-175); the ceremony is spent when the use case refuses.
+func (h *Handler) approveBatch(w http.ResponseWriter, r *http.Request, s authnapp.BrowserSession) {
+	req, err := readApprovalRequest(r)
+	batch, berr := ids.ParseUUID(req.Batch)
+	ceremony, cerr := ids.ParseUUID(req.Ceremony)
+	if err != nil || berr != nil || cerr != nil || len(req.Response) == 0 {
+		h.jsonError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	a, err := h.bindings.VerifyBinding(r.Context(), s, ceremony, req.Response)
+	if err != nil {
+		h.approvalError(w, r, err)
+		return
+	}
+	if a.Subject.Batch != batch {
+		h.bindings.SpendBinding(r.Context(), s, ceremony)
+		h.jsonError(w, http.StatusBadRequest, "ceremony_invalid")
+		return
+	}
+	rows, err := h.approvals.ApproveBatch(r.Context(), s.Org, responder(s), batch, apapp.Assertion{
+		Ceremony: a.Ceremony, Credential: a.Credential, AuthenticatorData: a.AuthenticatorData,
+		ClientDataJSON: a.ClientDataJSON, Signature: a.Signature,
+	})
+	if err != nil {
+		h.bindings.SpendBinding(r.Context(), s, ceremony)
+		h.batchError(w, r, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]int{"approved": len(rows)})
 }
