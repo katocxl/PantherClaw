@@ -78,8 +78,7 @@ import (
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
-	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
-	wapp "github.com/katocxl/pantherclaw/internal/waitlist/app"
+	txapp "github.com/katocxl/pantherclaw/internal/transactions/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -232,6 +231,15 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
+	m5p2, err := newM5p2(cfg, pool, bill, m5.notifications, log)
+	if err != nil {
+		return err
+	}
+	verification, err := newVerification(pool, reg, m5.notifications)
+	if err != nil {
+		return err
+	}
+	m6.verifications = verification
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
@@ -280,6 +288,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			return err
 		}
 		m6.mountPages(web)
+		m5p2.mountPages(web, m5)
 		device.WithBrowserCallback(web.Callback)
 		roots, err := packageRoots(ctx, cfg, log)
 		if err != nil {
@@ -298,6 +307,8 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			web:          web,
 			m5:           m5,
 			m6:           m6,
+			m5p2:         m5p2,
+			verification: verification,
 		})
 		if err != nil {
 			return err
@@ -313,6 +324,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			onStart(ln.Addr().String())
 		}
 		log.InfoContext(ctx, "server.listening", slog.String("addr", ln.Addr().String()), slog.String("role", cfg.Role))
+		m5p2.serveWaits(ctx, g)
 		g.Go(func() error {
 			var err error
 			if srv.TLSConfig != nil {
@@ -353,10 +365,16 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := m5.registerWorkers(jreg); err != nil {
 			return err
 		}
+		if err := m5p2.registerWorkers(jreg, log); err != nil {
+			return err
+		}
+		if err := txapp.Register(jreg, pool, verification); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency, napp.Queue: cfg.Notifications.Concurrency},
 			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
-				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs()),
+				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs(), m5p2.periodicJobs(), txapp.PeriodicJobs()),
 			Logger: log,
 		})
 		if err != nil {
@@ -439,6 +457,10 @@ type apiDeps struct {
 	m5  *m5Services
 	// M6: gateway identity.
 	m6 *m6Services
+	// M5 part 2: approvals, the waitlist and wait handles.
+	m5p2 *m5p2Services
+	// M7: verification signs the effect receipts people's actions append.
+	verification *txapp.Service
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -457,8 +479,8 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	pantherclawv1connect.RegisterTenancyServiceHandler(rs, tenancyrpc.NewTenancy(tapp.NewHierarchy(pool, d.billing)))
 	pantherclawv1connect.RegisterAccessServiceHandler(rs, tenancyrpc.NewAccess(tapp.NewAccess(pool, log)))
 	pantherclawv1connect.RegisterServiceAccountServiceHandler(rs, tenancyrpc.NewServiceAccounts(tapp.NewServiceAccounts(pool, d.apiKeyEnv)))
-	pantherclawv1connect.RegisterAgentServiceHandler(rs, agentsrpc.NewAgents(aapp.NewInventory(pool, d.billing)))
-	pantherclawv1connect.RegisterWaitlistServiceHandler(rs, waitlistrpc.NewWaitlist(wapp.NewReader(pool)))
+	pantherclawv1connect.RegisterAgentServiceHandler(rs, d.m5p2.agents(agentsrpc.NewAgents(aapp.NewInventory(pool, d.billing))))
+	pantherclawv1connect.RegisterWaitlistServiceHandler(rs, d.m5p2.waitlist())
 	attestors, err := newAttestors(d.clusters)
 	if err != nil {
 		return nil, err
@@ -476,8 +498,8 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	}
 	pantherclawv1connect.RegisterRunServiceHandler(rs, runsrpc.NewRuns(runs))
 	d.authority.WithWorkloads(identity, runs)
-	pantherclawv1connect.RegisterWorkloadServiceHandler(rs,
-		workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}).WithGrants(grants))
+	workload := d.m5p2.workload(workloadrpc.NewWorkload(identity, runs, d.publicURL, clock.System{}).WithGrants(grants))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(rs, workload)
 	if err := registerAuthorityAdmin(rs, d, grants); err != nil {
 		return nil, err
 	}
@@ -486,9 +508,12 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
 	}
 	d.m6.registerPublic(rs)
+	d.m5p2.registerPublic(rs)
+	registerM7(rs, pool, d.verification)
 	registerEvidence(rs, d)
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
+	d.m5p2.mount(mux, workload)
 	d.oauth.Mount(mux)
 	d.device.Mount(mux, d.oauth)
 	if d.web != nil {

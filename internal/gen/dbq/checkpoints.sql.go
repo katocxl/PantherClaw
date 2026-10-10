@@ -233,7 +233,7 @@ WHERE pc.evidence_integrity.state = 'OK'
 `
 
 // Only the first failure counts; an org stays FAILED until an operator
-// investigates.
+// investigates and resets it (ResetEvidenceIntegrity).
 func (q *Queries) MarkEvidenceIntegrityFailed(ctx context.Context, orgID ids.OrgID, failureCode string, failedSeq pgtype.Int8) (int64, error) {
 	result, err := q.db.Exec(ctx, markEvidenceIntegrityFailed, orgID, failureCode, failedSeq)
 	if err != nil {

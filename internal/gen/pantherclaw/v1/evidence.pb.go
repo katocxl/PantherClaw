@@ -26,64 +26,64 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// IntegrityState is where the org's evidence integrity stands.
-type IntegrityState int32
+// LedgerIntegrityState is where the integrity of the org's evidence ledger stands.
+type LedgerIntegrityState int32
 
 const (
-	IntegrityState_INTEGRITY_STATE_UNSPECIFIED IntegrityState = 0
+	LedgerIntegrityState_LEDGER_INTEGRITY_STATE_UNSPECIFIED LedgerIntegrityState = 0
 	// No check failed.
-	IntegrityState_INTEGRITY_STATE_OK IntegrityState = 1
+	LedgerIntegrityState_LEDGER_INTEGRITY_STATE_OK LedgerIntegrityState = 1
 	// A check failed: checkpointing is stopped until an operator
 	// investigates; receipts are still written and chained.
-	IntegrityState_INTEGRITY_STATE_FAILED IntegrityState = 2
+	LedgerIntegrityState_LEDGER_INTEGRITY_STATE_FAILED LedgerIntegrityState = 2
 )
 
-// Enum value maps for IntegrityState.
+// Enum value maps for LedgerIntegrityState.
 var (
-	IntegrityState_name = map[int32]string{
-		0: "INTEGRITY_STATE_UNSPECIFIED",
-		1: "INTEGRITY_STATE_OK",
-		2: "INTEGRITY_STATE_FAILED",
+	LedgerIntegrityState_name = map[int32]string{
+		0: "LEDGER_INTEGRITY_STATE_UNSPECIFIED",
+		1: "LEDGER_INTEGRITY_STATE_OK",
+		2: "LEDGER_INTEGRITY_STATE_FAILED",
 	}
-	IntegrityState_value = map[string]int32{
-		"INTEGRITY_STATE_UNSPECIFIED": 0,
-		"INTEGRITY_STATE_OK":          1,
-		"INTEGRITY_STATE_FAILED":      2,
+	LedgerIntegrityState_value = map[string]int32{
+		"LEDGER_INTEGRITY_STATE_UNSPECIFIED": 0,
+		"LEDGER_INTEGRITY_STATE_OK":          1,
+		"LEDGER_INTEGRITY_STATE_FAILED":      2,
 	}
 )
 
-func (x IntegrityState) Enum() *IntegrityState {
-	p := new(IntegrityState)
+func (x LedgerIntegrityState) Enum() *LedgerIntegrityState {
+	p := new(LedgerIntegrityState)
 	*p = x
 	return p
 }
 
-func (x IntegrityState) String() string {
+func (x LedgerIntegrityState) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (IntegrityState) Descriptor() protoreflect.EnumDescriptor {
+func (LedgerIntegrityState) Descriptor() protoreflect.EnumDescriptor {
 	return file_pantherclaw_v1_evidence_proto_enumTypes[0].Descriptor()
 }
 
-func (IntegrityState) Type() protoreflect.EnumType {
+func (LedgerIntegrityState) Type() protoreflect.EnumType {
 	return &file_pantherclaw_v1_evidence_proto_enumTypes[0]
 }
 
-func (x IntegrityState) Number() protoreflect.EnumNumber {
+func (x LedgerIntegrityState) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use IntegrityState.Descriptor instead.
-func (IntegrityState) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use LedgerIntegrityState.Descriptor instead.
+func (LedgerIntegrityState) EnumDescriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_evidence_proto_rawDescGZIP(), []int{0}
 }
 
-// Integrity is the org's integrity status (HR-194).
-type Integrity struct {
+// LedgerIntegrity is the integrity status of the org's evidence ledger (HR-194).
+type LedgerIntegrity struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// State.
-	State IntegrityState `protobuf:"varint,1,opt,name=state,proto3,enum=pantherclaw.v1.IntegrityState" json:"state,omitempty"`
+	State LedgerIntegrityState `protobuf:"varint,1,opt,name=state,proto3,enum=pantherclaw.v1.LedgerIntegrityState" json:"state,omitempty"`
 	// For FAILED: the failed check's code, for example CHAIN_LINK.
 	FailureCode string `protobuf:"bytes,2,opt,name=failure_code,json=failureCode,proto3" json:"failure_code,omitempty"`
 	// For FAILED: the first sequence number involved, when known.
@@ -98,20 +98,20 @@ type Integrity struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Integrity) Reset() {
-	*x = Integrity{}
+func (x *LedgerIntegrity) Reset() {
+	*x = LedgerIntegrity{}
 	mi := &file_pantherclaw_v1_evidence_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Integrity) String() string {
+func (x *LedgerIntegrity) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Integrity) ProtoMessage() {}
+func (*LedgerIntegrity) ProtoMessage() {}
 
-func (x *Integrity) ProtoReflect() protoreflect.Message {
+func (x *LedgerIntegrity) ProtoReflect() protoreflect.Message {
 	mi := &file_pantherclaw_v1_evidence_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -123,47 +123,47 @@ func (x *Integrity) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Integrity.ProtoReflect.Descriptor instead.
-func (*Integrity) Descriptor() ([]byte, []int) {
+// Deprecated: Use LedgerIntegrity.ProtoReflect.Descriptor instead.
+func (*LedgerIntegrity) Descriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_evidence_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Integrity) GetState() IntegrityState {
+func (x *LedgerIntegrity) GetState() LedgerIntegrityState {
 	if x != nil {
 		return x.State
 	}
-	return IntegrityState_INTEGRITY_STATE_UNSPECIFIED
+	return LedgerIntegrityState_LEDGER_INTEGRITY_STATE_UNSPECIFIED
 }
 
-func (x *Integrity) GetFailureCode() string {
+func (x *LedgerIntegrity) GetFailureCode() string {
 	if x != nil {
 		return x.FailureCode
 	}
 	return ""
 }
 
-func (x *Integrity) GetFailedSeq() int64 {
+func (x *LedgerIntegrity) GetFailedSeq() int64 {
 	if x != nil {
 		return x.FailedSeq
 	}
 	return 0
 }
 
-func (x *Integrity) GetFailTime() *timestamppb.Timestamp {
+func (x *LedgerIntegrity) GetFailTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.FailTime
 	}
 	return nil
 }
 
-func (x *Integrity) GetVerifiedSize() uint64 {
+func (x *LedgerIntegrity) GetVerifiedSize() uint64 {
 	if x != nil {
 		return x.VerifiedSize
 	}
 	return 0
 }
 
-func (x *Integrity) GetVerifyTime() *timestamppb.Timestamp {
+func (x *LedgerIntegrity) GetVerifyTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.VerifyTime
 	}
@@ -326,7 +326,7 @@ type ListCheckpointsResponse struct {
 	// The checkpoints' origin: "<log origin>/org/<org id>".
 	Origin string `protobuf:"bytes,3,opt,name=origin,proto3" json:"origin,omitempty"`
 	// The org's integrity status.
-	Integrity     *Integrity `protobuf:"bytes,4,opt,name=integrity,proto3" json:"integrity,omitempty"`
+	Integrity     *LedgerIntegrity `protobuf:"bytes,4,opt,name=integrity,proto3" json:"integrity,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -382,7 +382,7 @@ func (x *ListCheckpointsResponse) GetOrigin() string {
 	return ""
 }
 
-func (x *ListCheckpointsResponse) GetIntegrity() *Integrity {
+func (x *ListCheckpointsResponse) GetIntegrity() *LedgerIntegrity {
 	if x != nil {
 		return x.Integrity
 	}
@@ -1013,9 +1013,9 @@ var File_pantherclaw_v1_evidence_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_evidence_proto_rawDesc = "" +
 	"\n" +
-	"\x1dpantherclaw/v1/evidence.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9e\x02\n" +
-	"\tIntegrity\x124\n" +
-	"\x05state\x18\x01 \x01(\x0e2\x1e.pantherclaw.v1.IntegrityStateR\x05state\x12!\n" +
+	"\x1dpantherclaw/v1/evidence.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaa\x02\n" +
+	"\x0fLedgerIntegrity\x12:\n" +
+	"\x05state\x18\x01 \x01(\x0e2$.pantherclaw.v1.LedgerIntegrityStateR\x05state\x12!\n" +
 	"\ffailure_code\x18\x02 \x01(\tR\vfailureCode\x12\x1d\n" +
 	"\n" +
 	"failed_seq\x18\x03 \x01(\x03R\tfailedSeq\x127\n" +
@@ -1036,12 +1036,12 @@ const file_pantherclaw_v1_evidence_proto_rawDesc = "" +
 	"\tpage_size\x18\x01 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\xc8\x01(\x00R\bpageSize\x128\n" +
 	"\n" +
-	"page_token\x18\x02 \x01(\tB\x19\xbaH\x16r\x14\x18@2\x10^[A-Za-z0-9_-]*$R\tpageToken\"\xd0\x01\n" +
+	"page_token\x18\x02 \x01(\tB\x19\xbaH\x16r\x14\x18@2\x10^[A-Za-z0-9_-]*$R\tpageToken\"\xd6\x01\n" +
 	"\x17ListCheckpointsResponse\x12<\n" +
 	"\vcheckpoints\x18\x01 \x03(\v2\x1a.pantherclaw.v1.CheckpointR\vcheckpoints\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x16\n" +
-	"\x06origin\x18\x03 \x01(\tR\x06origin\x127\n" +
-	"\tintegrity\x18\x04 \x01(\v2\x19.pantherclaw.v1.IntegrityR\tintegrity\"3\n" +
+	"\x06origin\x18\x03 \x01(\tR\x06origin\x12=\n" +
+	"\tintegrity\x18\x04 \x01(\v2\x1f.pantherclaw.v1.LedgerIntegrityR\tintegrity\"3\n" +
 	"\x14GetCheckpointRequest\x12\x1b\n" +
 	"\ttree_size\x18\x01 \x01(\x04R\btreeSize\"k\n" +
 	"\x15GetCheckpointResponse\x12:\n" +
@@ -1080,11 +1080,11 @@ const file_pantherclaw_v1_evidence_proto_rawDesc = "" +
 	"\x06bundle\x18\x01 \x01(\fR\x06bundle\x12\x18\n" +
 	"\aentries\x18\x02 \x01(\x05R\aentries\x12\x1a\n" +
 	"\breceipts\x18\x03 \x01(\x05R\breceipts\x12'\n" +
-	"\x0fcheckpoint_size\x18\x04 \x01(\x04R\x0echeckpointSize*e\n" +
-	"\x0eIntegrityState\x12\x1f\n" +
-	"\x1bINTEGRITY_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
-	"\x12INTEGRITY_STATE_OK\x10\x01\x12\x1a\n" +
-	"\x16INTEGRITY_STATE_FAILED\x10\x022\xa1\x04\n" +
+	"\x0fcheckpoint_size\x18\x04 \x01(\x04R\x0echeckpointSize*\x80\x01\n" +
+	"\x14LedgerIntegrityState\x12&\n" +
+	"\"LEDGER_INTEGRITY_STATE_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19LEDGER_INTEGRITY_STATE_OK\x10\x01\x12!\n" +
+	"\x1dLEDGER_INTEGRITY_STATE_FAILED\x10\x022\xa1\x04\n" +
 	"\x0fEvidenceService\x12g\n" +
 	"\x0fListCheckpoints\x12&.pantherclaw.v1.ListCheckpointsRequest\x1a'.pantherclaw.v1.ListCheckpointsResponse\"\x03\x90\x02\x01\x12a\n" +
 	"\rGetCheckpoint\x12$.pantherclaw.v1.GetCheckpointRequest\x1a%.pantherclaw.v1.GetCheckpointResponse\"\x03\x90\x02\x01\x12m\n" +
@@ -1108,8 +1108,8 @@ func file_pantherclaw_v1_evidence_proto_rawDescGZIP() []byte {
 var file_pantherclaw_v1_evidence_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_pantherclaw_v1_evidence_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_pantherclaw_v1_evidence_proto_goTypes = []any{
-	(IntegrityState)(0),                 // 0: pantherclaw.v1.IntegrityState
-	(*Integrity)(nil),                   // 1: pantherclaw.v1.Integrity
+	(LedgerIntegrityState)(0),           // 0: pantherclaw.v1.LedgerIntegrityState
+	(*LedgerIntegrity)(nil),             // 1: pantherclaw.v1.LedgerIntegrity
 	(*Checkpoint)(nil),                  // 2: pantherclaw.v1.Checkpoint
 	(*ListCheckpointsRequest)(nil),      // 3: pantherclaw.v1.ListCheckpointsRequest
 	(*ListCheckpointsResponse)(nil),     // 4: pantherclaw.v1.ListCheckpointsResponse
@@ -1126,12 +1126,12 @@ var file_pantherclaw_v1_evidence_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),       // 15: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_evidence_proto_depIdxs = []int32{
-	0,  // 0: pantherclaw.v1.Integrity.state:type_name -> pantherclaw.v1.IntegrityState
-	15, // 1: pantherclaw.v1.Integrity.fail_time:type_name -> google.protobuf.Timestamp
-	15, // 2: pantherclaw.v1.Integrity.verify_time:type_name -> google.protobuf.Timestamp
+	0,  // 0: pantherclaw.v1.LedgerIntegrity.state:type_name -> pantherclaw.v1.LedgerIntegrityState
+	15, // 1: pantherclaw.v1.LedgerIntegrity.fail_time:type_name -> google.protobuf.Timestamp
+	15, // 2: pantherclaw.v1.LedgerIntegrity.verify_time:type_name -> google.protobuf.Timestamp
 	15, // 3: pantherclaw.v1.Checkpoint.create_time:type_name -> google.protobuf.Timestamp
 	2,  // 4: pantherclaw.v1.ListCheckpointsResponse.checkpoints:type_name -> pantherclaw.v1.Checkpoint
-	1,  // 5: pantherclaw.v1.ListCheckpointsResponse.integrity:type_name -> pantherclaw.v1.Integrity
+	1,  // 5: pantherclaw.v1.ListCheckpointsResponse.integrity:type_name -> pantherclaw.v1.LedgerIntegrity
 	2,  // 6: pantherclaw.v1.GetCheckpointResponse.checkpoint:type_name -> pantherclaw.v1.Checkpoint
 	11, // 7: pantherclaw.v1.ExportBundleRequest.transactions:type_name -> pantherclaw.v1.BundleTransactions
 	12, // 8: pantherclaw.v1.ExportBundleRequest.range:type_name -> pantherclaw.v1.BundleRange

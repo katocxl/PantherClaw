@@ -50,11 +50,11 @@ func (e *Evidence) ListCheckpoints(ctx context.Context, req *pantherclawv1.ListC
 	if err != nil {
 		return nil, err
 	}
-	out := &pantherclawv1.ListCheckpointsResponse{NextPageToken: p.Next, Origin: p.Origin, Integrity: &pantherclawv1.Integrity{
-		State: pantherclawv1.IntegrityState_INTEGRITY_STATE_OK, VerifiedSize: p.Integrity.VerifiedSize, VerifyTime: ts(p.Integrity.VerifiedAt),
+	out := &pantherclawv1.ListCheckpointsResponse{NextPageToken: p.Next, Origin: p.Origin, Integrity: &pantherclawv1.LedgerIntegrity{
+		State: pantherclawv1.LedgerIntegrityState_LEDGER_INTEGRITY_STATE_OK, VerifiedSize: p.Integrity.VerifiedSize, VerifyTime: ts(p.Integrity.VerifiedAt),
 	}}
 	if p.Integrity.Failed {
-		out.Integrity.State = pantherclawv1.IntegrityState_INTEGRITY_STATE_FAILED
+		out.Integrity.State = pantherclawv1.LedgerIntegrityState_LEDGER_INTEGRITY_STATE_FAILED
 		out.Integrity.FailureCode, out.Integrity.FailedSeq, out.Integrity.FailTime = p.Integrity.Code, p.Integrity.Seq, ts(p.Integrity.FailedAt)
 	}
 	for _, c := range p.Items {

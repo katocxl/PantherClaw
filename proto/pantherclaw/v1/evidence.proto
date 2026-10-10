@@ -49,20 +49,20 @@ service EvidenceService {
   }
 }
 
-// IntegrityState is where the org's evidence integrity stands.
-enum IntegrityState {
-  INTEGRITY_STATE_UNSPECIFIED = 0;
+// LedgerIntegrityState is where the integrity of the org's evidence ledger stands.
+enum LedgerIntegrityState {
+  LEDGER_INTEGRITY_STATE_UNSPECIFIED = 0;
   // No check failed.
-  INTEGRITY_STATE_OK = 1;
+  LEDGER_INTEGRITY_STATE_OK = 1;
   // A check failed: checkpointing is stopped until an operator
   // investigates; receipts are still written and chained.
-  INTEGRITY_STATE_FAILED = 2;
+  LEDGER_INTEGRITY_STATE_FAILED = 2;
 }
 
-// Integrity is the org's integrity status (HR-194).
-message Integrity {
+// LedgerIntegrity is the integrity status of the org's evidence ledger (HR-194).
+message LedgerIntegrity {
   // State.
-  IntegrityState state = 1;
+  LedgerIntegrityState state = 1;
   // For FAILED: the failed check's code, for example CHAIN_LINK.
   string failure_code = 2;
   // For FAILED: the first sequence number involved, when known.
@@ -114,7 +114,7 @@ message ListCheckpointsResponse {
   // The checkpoints' origin: "<log origin>/org/<org id>".
   string origin = 3;
   // The org's integrity status.
-  Integrity integrity = 4;
+  LedgerIntegrity integrity = 4;
 }
 
 // GetCheckpointRequest names a checkpoint.
