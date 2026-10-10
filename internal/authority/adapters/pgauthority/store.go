@@ -29,6 +29,7 @@ import (
 	gdomain "github.com/katocxl/pantherclaw/internal/grants/domain"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	pgwaitlist "github.com/katocxl/pantherclaw/internal/waitlist/adapters/pgwaitlist"
 )
 
 const (
@@ -579,6 +580,8 @@ func (s *Store) RecordExecution(ctx context.Context, org ids.OrgID, gatewayID st
 			}
 			return q.SettleDedupeClaim(ctx, string(pipeline.ClaimReleased), org, txn)
 		case finalize.Unknown: // reservations and claim stay held (HR-003, F115)
+			_, err := pgwaitlist.OpenReconciliation(ctx, tx, org, txn, evdomain.Actor{Type: "gateway", ID: gatewayID})
+			return err
 		}
 		return nil
 	})
@@ -603,8 +606,17 @@ func (s *Store) Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Durati
 			}
 		}
 		stale, err := q.MarkStaleDispatching(ctx, org, staleAfter.Seconds())
+		if err != nil {
+			return err
+		}
+		// Each unknown outcome waits for reconciliation (G0 M5 part 2).
+		for _, p := range stale {
+			if _, err := pgwaitlist.OpenReconciliation(ctx, tx, org, p.TransactionID, pgwaitlist.System); err != nil {
+				return err
+			}
+		}
 		released, unknown = len(expired), len(stale)
-		return err
+		return nil
 	})
 	return released, unknown, err
 }

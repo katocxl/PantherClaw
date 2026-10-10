@@ -17,6 +17,7 @@ import (
 	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	"github.com/katocxl/pantherclaw/internal/authn/adapters/webhttp"
 	authnapp "github.com/katocxl/pantherclaw/internal/authn/app"
+	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
@@ -27,6 +28,8 @@ import (
 var (
 	knownRequest = ids.NewV7()
 	knownBinding = [32]byte{1, 2, 3}
+	knownBatch   = ids.NewV7()
+	batchHash    = [32]byte{4, 5, 6}
 )
 
 // fakeApprovals shows knownRequest, with agent text and evidence that try
@@ -43,6 +46,8 @@ type fakeApprovals struct {
 	params     string
 	validate   bool
 	assertion  apapp.Assertion
+	batch      []ids.UUID
+	batchErr   error
 }
 
 // record notes an action of the calling person and returns err.
@@ -99,6 +104,20 @@ func (f *fakeApprovals) ProposeNarrower(ctx context.Context, _ ids.UUID, params 
 	}, f.record(ctx, "narrower")
 }
 
+func (f *fakeApprovals) BeginBatch(_ context.Context, _ ids.OrgID, r apapp.Responder, requests []ids.UUID) (ids.UUID, [32]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responders, f.batch = append(f.responders, r), requests
+	return knownBatch, batchHash, f.batchErr
+}
+
+func (f *fakeApprovals) ApproveBatch(_ context.Context, _ ids.OrgID, r apapp.Responder, _ ids.UUID, a apapp.Assertion) ([]apapp.Request, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.responders, f.assertion = append(f.responders, r), a
+	return make([]apapp.Request, len(f.batch)), f.batchErr
+}
+
 // fakeBindings is the BINDING ceremony: it records the challenge and the
 // subject, and verifies any response as an assertion over names.
 type fakeBindings struct {
@@ -106,6 +125,7 @@ type fakeBindings struct {
 	challenge [32]byte
 	subject   authnapp.BindingSubject
 	names     ids.UUID
+	batch     ids.UUID
 	verifyErr error
 	spent     []ids.UUID
 }
@@ -122,7 +142,7 @@ func (b *fakeBindings) VerifyBinding(_ context.Context, _ authnapp.BrowserSessio
 		return authnapp.BindingAssertion{}, b.verifyErr
 	}
 	return authnapp.BindingAssertion{
-		Ceremony: ceremony, Subject: authnapp.BindingSubject{Request: b.names}, Challenge: knownBinding, Credential: responderKey,
+		Ceremony: ceremony, Subject: authnapp.BindingSubject{Request: b.names, Batch: b.batch}, Challenge: knownBinding, Credential: responderKey,
 		AuthenticatorData: make([]byte, 37), ClientDataJSON: []byte(`{}`), Signature: []byte{1},
 	}, nil
 }
@@ -157,7 +177,7 @@ func (f *fakeApprovals) View(ctx context.Context, id ids.UUID) (apapp.View, erro
 	may := !f.readOnly
 	return apapp.View{
 		MayRespond: may, MayApprove: may, Params: apdomain.Untrusted{Text: `{"amount":{"value":"40.00","currency":"USD"}}`},
-		Request: apapp.Request{ID: id, DeadlineAt: now.Add(time.Hour)},
+		Request: apapp.Request{ID: id, SubjectKind: "ACTION", DeadlineAt: now.Add(time.Hour)},
 		Display: apdomain.Display{
 			V: 1, Kind: "ACTION", Title: "Refund 40.00 USD",
 			Consequence: apdomain.Consequence{
@@ -401,5 +421,49 @@ func TestHR151_TheApprovalPageLoadsOnlyItsScriptAndOffersOnlyAllowedActions(t *t
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") ||
 		strings.Contains(resp.Body, "innerHTML") {
 		t.Fatalf("approvals.js: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+}
+
+// TestHR175_ABatchApprovalSignsTheBatchHash: batch-options starts one
+// ceremony over the batch's hash for the session's person; batch hands the
+// verified assertion to the use case; a request that must be reviewed alone
+// is named by its code; an assertion over another batch is spent.
+func TestHR175_ABatchApprovalSignsTheBatchHash(t *testing.T) {
+	fa := &fakeApprovals{}
+	mux, fb := newApprovalsHandlerWith(t, fa)
+	other := ids.NewV7()
+	body := `{"ids":["` + knownRequest.String() + `","` + other.String() + `"]}`
+	resp := do(t, mux, postAs(authnapp.ApprovalsPath+"/batch-options", "responder", body))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"batch":"`+knownBatch.String()+`"`) ||
+		fb.challenge != batchHash || fb.subject != (authnapp.BindingSubject{Batch: knownBatch}) || len(fa.batch) != 2 {
+		t.Fatalf("batch-options: %d %s", resp.StatusCode, resp.Body)
+	}
+	if r := fa.responders[0]; r.User != responderID || r.Browser.IsZero() {
+		t.Fatalf("responder %+v", r)
+	}
+	ceremony := ids.NewV7()
+	approve := `{"batch":"` + knownBatch.String() + `","ceremony":"` + ceremony.String() + `","response":{"id":"x"}}`
+	fb.batch = knownBatch
+	resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/batch", "responder", approve))
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Body, `"approved":2`) || fa.assertion.Ceremony != ceremony || len(fb.spent) != 0 {
+		t.Fatalf("batch: %d %s", resp.StatusCode, resp.Body)
+	}
+	fb.batch = ids.NewV7()
+	if resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/batch", "responder", approve)); resp.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(resp.Body, "ceremony_invalid") || len(fb.spent) != 1 {
+		t.Fatalf("an assertion over another batch: %d %s", resp.StatusCode, resp.Body)
+	}
+	fa.batchErr = pcerr.New(pcerr.FailedPrecondition, apdomain.BatchOverCeiling, "alone")
+	if resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/batch-options", "responder", body)); resp.StatusCode != http.StatusConflict ||
+		!strings.Contains(resp.Body, `"reason":"OVER_BATCH_CEILING"`) {
+		t.Fatalf("a request to review alone: %d %s", resp.StatusCode, resp.Body)
+	}
+	fa.batchErr = apapp.ErrEditionRequired
+	if resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/batch-options", "responder", body)); resp.StatusCode != http.StatusForbidden ||
+		!strings.Contains(resp.Body, "edition_required") {
+		t.Fatalf("Community: %d %s", resp.StatusCode, resp.Body)
+	}
+	if resp = do(t, mux, postAs(authnapp.ApprovalsPath+"/batch-options", "responder", `{"ids":["x"]}`)); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a bad id: %d", resp.StatusCode)
 	}
 }

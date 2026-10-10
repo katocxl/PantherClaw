@@ -50,8 +50,8 @@
 <ul>{{range .Basis}}<li>{{.Reason}} <span class="note">({{.Level}})</span></li>{{end}}</ul>
 {{end}}
 <h2>Who can decide</h2>
-<ul>{{range .Deciders}}<li>{{if eq .Kind "step_up"}}A step-up by <code>{{.Subject}}</code>{{else}}{{.Count}} × <code>{{.Role}}</code>{{if .Independent}}, independent of the agent's owners and the grant's issuer{{end}}{{with .Scope}}, {{.}}{{end}}{{end}}</li>{{end}}</ul>
-<p class="note">The run's launcher and principal never decide. Eligibility is checked again at every response and when the approval is used.</p>
+<ul>{{range .Deciders}}<li>{{if eq .Kind "step_up"}}A step-up by <code>{{.Subject}}</code>{{else if eq .Kind "restore"}}A person holding <code>agent.restore</code> where the agent lives, other than the requester{{else}}{{.Count}} × <code>{{.Role}}</code>{{if .Independent}}, independent of the agent's owners and the grant's issuer{{end}}{{with .Scope}}, {{.}}{{end}}{{end}}</li>{{end}}</ul>
+<p class="note">The run's launcher and principal, and a restoration's requester, never decide. Eligibility is checked again at every response and when the approval is used.</p>
 {{if .Variants}}
 <h2>Earlier variants</h2>
 <p class="note">Earlier requests of this grant for the same operation and target.</p>
@@ -107,7 +107,7 @@
 <p><label for="decline-note">Note for people (never sent to the agent)</label>
 <input id="decline-note" type="text" maxlength="500"></p>
 <p><button type="button" id="decline" data-id="{{.Request.ID}}">Decline</button></p>
-{{if eq .State "PENDING"}}
+{{if and (eq .State "PENDING") (eq .Request.SubjectKind "ACTION")}}
 <h2>Ask for evidence</h2>
 <p><label for="evidence-question">Question</label>
 <select id="evidence-question">{{range .Questions}}<option value="{{.}}">{{.}}</option>{{end}}</select></p>
