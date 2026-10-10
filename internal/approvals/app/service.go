@@ -60,10 +60,17 @@ type Responder struct {
 
 // ResponderFrom returns the caller as a responder, or ErrHumanSession.
 func ResponderFrom(c tenancy.Caller) (Responder, error) {
-	if c.Principal.Kind != td.KindUser || c.Credential != tenancy.CredAccessToken || c.Session.IsZero() {
+	if c.Principal.Kind != td.KindUser || c.Session.IsZero() {
 		return Responder{}, ErrHumanSession
 	}
-	return Responder{User: c.Principal.ID, CLI: c.Session}, nil
+	switch c.Credential {
+	case tenancy.CredAccessToken:
+		return Responder{User: c.Principal.ID, CLI: c.Session}, nil
+	case tenancy.CredBrowserSession:
+		return Responder{User: c.Principal.ID, Browser: c.Session}, nil
+	case tenancy.CredAPIKey:
+	}
+	return Responder{}, ErrHumanSession
 }
 
 func (r Responder) sessions() (browser, cli *ids.UUID) {

@@ -1106,6 +1106,51 @@ func (q *Queries) OverdueApprovalRequests(ctx context.Context, orgID ids.OrgID) 
 	return items, nil
 }
 
+const recentResponsesBy = `-- name: RecentResponsesBy :many
+SELECT p.request_id, p.kind, p.created_at, (p.voided_at IS NOT NULL)::boolean AS voided, r.operation, r.state
+FROM pc.approval_responses p
+JOIN pc.approval_requests r ON r.org_id = p.org_id AND r.id = p.request_id
+WHERE p.org_id = $1 AND p.user_id = $2
+ORDER BY p.created_at DESC, p.id
+LIMIT $3
+`
+
+type RecentResponsesByRow struct {
+	RequestID ids.UUID
+	Kind      string
+	CreatedAt time.Time
+	Voided    bool
+	Operation string
+	State     string
+}
+
+func (q *Queries) RecentResponsesBy(ctx context.Context, orgID ids.OrgID, userID ids.UUID, lim int32) ([]RecentResponsesByRow, error) {
+	rows, err := q.db.Query(ctx, recentResponsesBy, orgID, userID, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecentResponsesByRow{}
+	for rows.Next() {
+		var i RecentResponsesByRow
+		if err := rows.Scan(
+			&i.RequestID,
+			&i.Kind,
+			&i.CreatedAt,
+			&i.Voided,
+			&i.Operation,
+			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const releaseHoldSlot = `-- name: ReleaseHoldSlot :execrows
 UPDATE pc.hold_slots SET pending = pending - 1, updated_at = now()
 WHERE org_id = $1 AND scope_kind = $2 AND scope_id = $3 AND pending > 0
@@ -1155,6 +1200,103 @@ func (q *Queries) ReopenHoldEntry(ctx context.Context, iD ids.UUID, orgID ids.Or
 	return result.RowsAffected(), nil
 }
 
+const requestEvidence = `-- name: RequestEvidence :many
+SELECT id, author_kind, author_user_id, author_instance_id, note, created_at
+FROM pc.approval_evidence
+WHERE org_id = $1 AND request_id = $2
+ORDER BY created_at, id
+`
+
+type RequestEvidenceRow struct {
+	ID               ids.UUID
+	AuthorKind       string
+	AuthorUserID     *ids.UUID
+	AuthorInstanceID *ids.UUID
+	Note             string
+	CreatedAt        time.Time
+}
+
+func (q *Queries) RequestEvidence(ctx context.Context, orgID ids.OrgID, requestID ids.UUID) ([]RequestEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, requestEvidence, orgID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequestEvidenceRow{}
+	for rows.Next() {
+		var i RequestEvidenceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorKind,
+			&i.AuthorUserID,
+			&i.AuthorInstanceID,
+			&i.Note,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const requestResponses = `-- name: RequestResponses :many
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+       void_reason
+FROM pc.approval_responses
+WHERE org_id = $1 AND request_id = $2
+ORDER BY created_at, id
+`
+
+type RequestResponsesRow struct {
+	ID              ids.UUID
+	UserID          ids.UUID
+	Kind            string
+	Requirement     pgtype.Int2
+	ReasonCode      *string
+	AlternativeCode *string
+	Note            string
+	ProposedParams  []byte
+	CreatedAt       time.Time
+	VoidedAt        *time.Time
+	VoidReason      *string
+}
+
+func (q *Queries) RequestResponses(ctx context.Context, orgID ids.OrgID, requestID ids.UUID) ([]RequestResponsesRow, error) {
+	rows, err := q.db.Query(ctx, requestResponses, orgID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequestResponsesRow{}
+	for rows.Next() {
+		var i RequestResponsesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Kind,
+			&i.Requirement,
+			&i.ReasonCode,
+			&i.AlternativeCode,
+			&i.Note,
+			&i.ProposedParams,
+			&i.CreatedAt,
+			&i.VoidedAt,
+			&i.VoidReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const requestsWithResponses = `-- name: RequestsWithResponses :many
 SELECT DISTINCT r.id FROM pc.approval_requests r
 JOIN pc.approval_responses x ON x.org_id = r.org_id AND x.request_id = r.id
@@ -1177,6 +1319,32 @@ func (q *Queries) RequestsWithResponses(ctx context.Context, orgID ids.OrgID) ([
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const respondedRequests = `-- name: RespondedRequests :many
+SELECT DISTINCT request_id FROM pc.approval_responses
+WHERE org_id = $1 AND user_id = $2 AND voided_at IS NULL AND kind IN ('APPROVE', 'STEP_UP')
+  AND request_id = ANY($3::uuid[])
+`
+
+func (q *Queries) RespondedRequests(ctx context.Context, orgID ids.OrgID, userID ids.UUID, requestIds []ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, respondedRequests, orgID, userID, requestIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var request_id ids.UUID
+		if err := rows.Scan(&request_id); err != nil {
+			return nil, err
+		}
+		items = append(items, request_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1304,4 +1472,102 @@ func (q *Queries) VoidResponse(ctx context.Context, reason *string, orgID ids.Or
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const waitingApprovalRequests = `-- name: WaitingApprovalRequests :many
+SELECT r.org_id, r.id, r.subject_kind, r.agent_id, r.transaction_id, r.evaluation, r.run_id, r.grant_id, r.grant_revision, r.variant_key, r.requested_by, r.operation, r.previous_id, r.binding, r.binding_input, r.requirements, r.display, r.display_hash, r.state, r.end_reason, r.created_at, r.deadline_at, r.evidence_deadline_at, r.approved_at, r.consume_by, r.consumed_at, r.permit_id, r.ended_at, r.action_ir, coalesce(e.priority, 4)::integer AS priority
+FROM pc.approval_requests r
+LEFT JOIN pc.waitlist_entries e
+  ON e.org_id = r.org_id AND e.subject_type = 'approval_request' AND e.subject_id = r.id AND e.state = 'OPEN'
+WHERE r.org_id = $1 AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED') AND r.deadline_at > now()
+  AND (r.evidence_deadline_at IS NULL OR r.evidence_deadline_at > now())
+ORDER BY priority, r.deadline_at, r.id
+LIMIT $2
+`
+
+type WaitingApprovalRequestsRow struct {
+	OrgID              ids.OrgID
+	ID                 ids.UUID
+	SubjectKind        string
+	AgentID            ids.UUID
+	TransactionID      *ids.UUID
+	Evaluation         *int32
+	RunID              *ids.UUID
+	GrantID            *ids.UUID
+	GrantRevision      *int32
+	VariantKey         []byte
+	RequestedBy        *ids.UUID
+	Operation          string
+	PreviousID         *ids.UUID
+	Binding            []byte
+	BindingInput       []byte
+	Requirements       []byte
+	Display            []byte
+	DisplayHash        []byte
+	State              string
+	EndReason          *string
+	CreatedAt          time.Time
+	DeadlineAt         time.Time
+	EvidenceDeadlineAt *time.Time
+	ApprovedAt         *time.Time
+	ConsumeBy          *time.Time
+	ConsumedAt         *time.Time
+	PermitID           *ids.UUID
+	EndedAt            *time.Time
+	ActionIr           []byte
+	Priority           int32
+}
+
+// The approval page (G0 M5 part 2 slice 209). The list reads the most
+// urgent waiting requests, by their entry's priority and then deadline;
+// eligibility is checked per request in Go (HR-170).
+func (q *Queries) WaitingApprovalRequests(ctx context.Context, orgID ids.OrgID, lim int32) ([]WaitingApprovalRequestsRow, error) {
+	rows, err := q.db.Query(ctx, waitingApprovalRequests, orgID, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WaitingApprovalRequestsRow{}
+	for rows.Next() {
+		var i WaitingApprovalRequestsRow
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.SubjectKind,
+			&i.AgentID,
+			&i.TransactionID,
+			&i.Evaluation,
+			&i.RunID,
+			&i.GrantID,
+			&i.GrantRevision,
+			&i.VariantKey,
+			&i.RequestedBy,
+			&i.Operation,
+			&i.PreviousID,
+			&i.Binding,
+			&i.BindingInput,
+			&i.Requirements,
+			&i.Display,
+			&i.DisplayHash,
+			&i.State,
+			&i.EndReason,
+			&i.CreatedAt,
+			&i.DeadlineAt,
+			&i.EvidenceDeadlineAt,
+			&i.ApprovedAt,
+			&i.ConsumeBy,
+			&i.ConsumedAt,
+			&i.PermitID,
+			&i.EndedAt,
+			&i.ActionIr,
+			&i.Priority,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
