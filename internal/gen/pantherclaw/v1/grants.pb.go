@@ -619,8 +619,12 @@ type ReviseGrantRequest struct {
 	Delegation *GrantDelegation `protobuf:"bytes,8,opt,name=delegation,proto3" json:"delegation,omitempty"`
 	// Lowest attestation level (0-2).
 	MinAttestationLevel int32 `protobuf:"varint,9,opt,name=min_attestation_level,json=minAttestationLevel,proto3" json:"min_attestation_level,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The ACCESS_REQUEST waitlist entry this revision answers (F051); the
+	// revision closes it as approved. The entry must be open and about this
+	// grant.
+	AccessRequestId *string `protobuf:"bytes,10,opt,name=access_request_id,json=accessRequestId,proto3,oneof" json:"access_request_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReviseGrantRequest) Reset() {
@@ -714,6 +718,13 @@ func (x *ReviseGrantRequest) GetMinAttestationLevel() int32 {
 		return x.MinAttestationLevel
 	}
 	return 0
+}
+
+func (x *ReviseGrantRequest) GetAccessRequestId() string {
+	if x != nil && x.AccessRequestId != nil {
+		return *x.AccessRequestId
+	}
+	return ""
 }
 
 // ReviseGrantResponse returns the new revision.
@@ -1446,7 +1457,7 @@ const file_pantherclaw_v1_grants_proto_rawDesc = "" +
 	"\x15min_attestation_level\x18\v \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x02(\x00R\x13minAttestationLevelB\x0e\n" +
 	"\f_instance_id\"A\n" +
 	"\x12IssueGrantResponse\x12+\n" +
-	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant\"\xac\x03\n" +
+	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant\"\xfd\x03\n" +
 	"\x12ReviseGrantRequest\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12#\n" +
 	"\brevision\x18\x02 \x01(\x05B\a\xbaH\x04\x1a\x02(\x01R\brevision\x12#\n" +
@@ -1459,7 +1470,10 @@ const file_pantherclaw_v1_grants_proto_rawDesc = "" +
 	"\n" +
 	"delegation\x18\b \x01(\v2\x1f.pantherclaw.v1.GrantDelegationR\n" +
 	"delegation\x12=\n" +
-	"\x15min_attestation_level\x18\t \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x02(\x00R\x13minAttestationLevel\"Z\n" +
+	"\x15min_attestation_level\x18\t \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x02(\x00R\x13minAttestationLevel\x129\n" +
+	"\x11access_request_id\x18\n" +
+	" \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x0faccessRequestId\x88\x01\x01B\x14\n" +
+	"\x12_access_request_id\"Z\n" +
 	"\x13ReviseGrantResponse\x12+\n" +
 	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant\x12\x16\n" +
 	"\x06widens\x18\x02 \x01(\bR\x06widens\"Q\n" +
@@ -1617,6 +1631,7 @@ func file_pantherclaw_v1_grants_proto_init() {
 	file_pantherclaw_v1_guardrails_proto_init()
 	file_pantherclaw_v1_runs_proto_init()
 	file_pantherclaw_v1_grants_proto_msgTypes[3].OneofWrappers = []any{}
+	file_pantherclaw_v1_grants_proto_msgTypes[5].OneofWrappers = []any{}
 	file_pantherclaw_v1_grants_proto_msgTypes[11].OneofWrappers = []any{}
 	file_pantherclaw_v1_grants_proto_msgTypes[14].OneofWrappers = []any{}
 	type x struct{}

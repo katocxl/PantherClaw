@@ -41,7 +41,7 @@ func (w *world) through(conn, run ids.UUID, charge, amount string) pipeline.Requ
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	return pipeline.Request{Org: w.org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1}}
+	return pipeline.Request{Org: w.org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}}
 }
 
 func (w *world) scalar(sql string, args ...any) string {

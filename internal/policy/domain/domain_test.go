@@ -16,7 +16,7 @@ func rule(id string, k Kind) *Rule {
 	r := &Rule{ID: id, Kind: k, Summary: "rule " + id, Operations: []string{"payments.*"}, When: "true", Reason: "REASON_" + string(k)}
 	switch k { //nolint:exhaustive // FORBID carries nothing extra
 	case RequireApproval:
-		r.Approval = &ApprovalRequirement{Role: "finance.approver", Count: 1}
+		r.Approval = &ApprovalRequirement{Role: "approver", Count: 1}
 	case RequireStepUp:
 		r.StepUp = &StepUpRequirement{Subject: "launcher", Method: "webauthn"}
 	case Constrain:

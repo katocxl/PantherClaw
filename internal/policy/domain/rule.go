@@ -18,6 +18,7 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
+	tdomain "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
 // ErrInvalid reports a rule or bundle that breaks a format rule; such a
@@ -75,17 +76,42 @@ const (
 	maxFactAgeSec = 86400
 )
 
-// ApprovalRequirement says who must approve (enforced in M5).
+// ApprovalRequirement says who must approve (enforced in M5). Role is a
+// default role holding approval.respond (G0 M5 part 2 decision 2);
+// DeadlineSeconds, when set, is the hold's deadline (decision 6: 300 to
+// 604800 seconds; the shortest of a hold's requirements wins).
 type ApprovalRequirement struct {
-	Role        string `json:"role"`
-	Count       int    `json:"count"`
-	Independent bool   `json:"independent,omitzero"`
+	Role            string `json:"role"`
+	Count           int    `json:"count"`
+	Independent     bool   `json:"independent,omitzero"`
+	DeadlineSeconds int    `json:"deadline_seconds,omitzero"`
 }
 
-// StepUpRequirement says who must re-authenticate (enforced in M5).
+// StepUpRequirement says who must re-authenticate (enforced in M5): the
+// launcher or the principal, by WebAuthn (decision 4).
 type StepUpRequirement struct {
-	Subject string `json:"subject"`
-	Method  string `json:"method"`
+	Subject         string `json:"subject"`
+	Method          string `json:"method"`
+	DeadlineSeconds int    `json:"deadline_seconds,omitzero"`
+}
+
+// Hold deadline bounds a requirement may set (G0 M5 part 2 decision 6).
+const (
+	MinDeadlineSeconds = 300
+	MaxDeadlineSeconds = 7 * 24 * 3600
+)
+
+// ValidDeadline reports whether a requirement's deadline is unset or in
+// bounds.
+func ValidDeadline(s int) bool { return s == 0 || (s >= MinDeadlineSeconds && s <= MaxDeadlineSeconds) }
+
+// ApprovalRole reports whether an approval may name role: a default role
+// that holds approval.respond (decision 2; today only "approver"). Stored
+// policies and grants that name another role are not refused when read;
+// the decision pipeline answers REQUIREMENT_INVALID for them.
+func ApprovalRole(role string) bool {
+	r, ok := tdomain.LookupRole(tdomain.RoleName(role))
+	return ok && r.Has(tdomain.PermApprovalRespond)
 }
 
 // ConstraintKind matches the definitions' declared constraint kinds (F100).
@@ -130,6 +156,19 @@ var (
 )
 
 // Validate checks a bundle: unique rule ids and well-formed rules.
+// CheckApprovalRoles refuses a new bundle whose approval rules name a role
+// that is not a default role holding approval.respond (G0 M5 part 2
+// decision 2). It is not part of Validate, so a stored bundle still
+// compiles and its holds are answered REQUIREMENT_INVALID.
+func (b *Bundle) CheckApprovalRoles() error {
+	for _, r := range b.Rules {
+		if r.Approval != nil && !ApprovalRole(r.Approval.Role) {
+			return invalid("%s: approval role %q is not a default role that holds approval.respond", r.ID, r.Approval.Role)
+		}
+	}
+	return nil
+}
+
 func (b *Bundle) Validate() error {
 	if !idRe.MatchString(b.ID) || b.Version < 1 {
 		return invalid("bundle needs an id and a positive version")
@@ -199,12 +238,13 @@ func (r *Rule) Validate() error {
 	}
 	switch r.Kind { //nolint:exhaustive // FORBID carries nothing extra
 	case RequireApproval:
-		if a := r.Approval; !roleRe.MatchString(a.Role) || a.Count < 1 || a.Count > 2 {
-			return invalid("%s: approval needs a role and a count of 1 or 2", id)
+		if a := r.Approval; !roleRe.MatchString(a.Role) || a.Count < 1 || a.Count > 2 || !ValidDeadline(a.DeadlineSeconds) {
+			return invalid("%s: approval needs a role, a count of 1 or 2 and a deadline of 300..604800 seconds if any", id)
 		}
 	case RequireStepUp:
-		if s := r.StepUp; !slices.Contains([]string{"launcher", "principal"}, s.Subject) || s.Method != "webauthn" {
-			return invalid("%s: step-up needs subject launcher|principal and method webauthn", id)
+		if s := r.StepUp; !slices.Contains([]string{"launcher", "principal"}, s.Subject) || s.Method != "webauthn" ||
+			!ValidDeadline(s.DeadlineSeconds) {
+			return invalid("%s: step-up needs subject launcher|principal, method webauthn and a deadline of 300..604800 seconds if any", id)
 		}
 	case Constrain:
 		return r.Constraint.validate(id)

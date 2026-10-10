@@ -8,12 +8,16 @@ package pantherclaw.v1;
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 
-// WaitlistService reads the Agent Waitlist (Pass; PN-004.1). M3 creates
-// ADMISSION entries only; M5 adds the other entry types, escalation and wait
-// handles. Entries are decided through the service that owns their subject
-// (for example IdentityService.AdmitInstance), never here.
+// WaitlistService serves the Agent Waitlist (Pass; PN-004): every pending
+// human decision, with priority, deadline, routing and escalation (G0 M5
+// part 2). Entries are decided through the service that owns their subject
+// (IdentityService.AdmitInstance, the approval page, GrantService,
+// PackageService), never here. An entry's kind, subject, priority and
+// deadline come from PantherClaw's records, never from agent input, and an
+// entry past its deadline resolves to "not done" (HR-177), except a
+// RECONCILIATION entry, which stays open and escalates.
 service WaitlistService {
-  // ListWaitlistEntries lists waitlist entries.
+  // ListWaitlistEntries lists waitlist entries, by priority then deadline.
   // permission: waitlist.read
   rpc ListWaitlistEntries(ListWaitlistEntriesRequest) returns (ListWaitlistEntriesResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
@@ -23,17 +27,72 @@ service WaitlistService {
   rpc GetWaitlistEntry(GetWaitlistEntryRequest) returns (GetWaitlistEntryResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
+  // AssignWaitlistEntry marks the caller, an eligible decider of the entry,
+  // as working on it, or clears that. Assignment only shows who is working
+  // on an entry; it never changes who may decide.
+  // permission: waitlist.read
+  rpc AssignWaitlistEntry(AssignWaitlistEntryRequest) returns (AssignWaitlistEntryResponse);
+  // RequestAccess files an access request for a run's grant (F051), from
+  // the run's launcher or represented principal. It grants nothing: the
+  // grant's issuer decides through GrantService.ReviseGrant citing the
+  // entry, or dismisses it (HR-176).
+  // permission: authenticated
+  rpc RequestAccess(RequestAccessRequest) returns (RequestAccessResponse);
+  // DismissAccessRequest closes an access request without changing the
+  // grant. The caller must be allowed to issue the run's grant.
+  // permission: grant.issue
+  rpc DismissAccessRequest(DismissAccessRequestRequest) returns (DismissAccessRequestResponse);
+  // GetEscalationChain returns the chain that applies to a team (or the
+  // org's), with the default when none is set.
+  // permission: waitlist.read
+  rpc GetEscalationChain(GetEscalationChainRequest) returns (GetEscalationChainResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // SetEscalationChain replaces the org's or a team's chain with a new
+  // revision (at most 5 steps, decision 8). Steps add deciders at wider
+  // scopes; none makes anyone eligible (HR-173). Audited.
+  // permission: waitlist.manage
+  rpc SetEscalationChain(SetEscalationChainRequest) returns (SetEscalationChainResponse);
+  // GetWaitlistSettings returns the org's effective waitlist settings.
+  // permission: waitlist.manage
+  rpc GetWaitlistSettings(GetWaitlistSettingsRequest) returns (GetWaitlistSettingsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // UpdateWaitlistSettings changes them: deadlines may only be shortened,
+  // hold caps only lowered (the grant cap up to 100) and approver cooldowns
+  // only lengthened (decisions 5-7); the batch ceilings start empty
+  // (decision 9). Audited.
+  // permission: waitlist.manage
+  rpc UpdateWaitlistSettings(UpdateWaitlistSettingsRequest) returns (UpdateWaitlistSettingsResponse);
+  // GetWaitlistMetrics reports response and decision times, expiry,
+  // escalation and routing failures per kind and per decider over at most
+  // 90 days, from the entries the caller may read (T-042, Team edition).
+  // permission: waitlist.read
+  rpc GetWaitlistMetrics(GetWaitlistMetricsRequest) returns (GetWaitlistMetricsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
-// WaitlistKind is the type of decision an entry waits for.
+// WaitlistKind is the type of decision an entry waits for (design
+// decision 12).
 enum WaitlistKind {
   WAITLIST_KIND_UNSPECIFIED = 0;
   // Admit an instance's key, or claim a discovered agent.
   WAITLIST_KIND_ADMISSION = 1;
+  // A run asks for more authority on its grant (F051).
+  WAITLIST_KIND_ACCESS_REQUEST = 2;
+  // A held action waits for approval or step-up.
+  WAITLIST_KIND_ACTION_HOLD = 3;
+  // An imported tool package version waits for activation.
+  WAITLIST_KIND_TOOL_REVIEW = 4;
+  // A suspended agent waits for restoration (F563).
+  WAITLIST_KIND_RESTORATION = 5;
+  // A transaction whose outcome is UNKNOWN waits for reconciliation (M7).
+  WAITLIST_KIND_RECONCILIATION = 6;
 }
 
-// WaitlistState is an entry's state; expiry resolves to rejection, never to
-// approval (PN-004.2).
+// WaitlistState is an entry's state; expiry resolves to "not done", never
+// to approval (PN-004.2).
 enum WaitlistState {
   WAITLIST_STATE_UNSPECIFIED = 0;
   WAITLIST_STATE_OPEN = 1;
@@ -43,17 +102,28 @@ enum WaitlistState {
   WAITLIST_STATE_CANCELLED = 5;
 }
 
+// RoutingHealth says whether an entry reaches its deciders (F626, HR-173).
+enum RoutingHealth {
+  ROUTING_HEALTH_UNSPECIFIED = 0;
+  ROUTING_HEALTH_OK = 1;
+  // Nobody is eligible to decide; the entry still resolves at its deadline.
+  ROUTING_HEALTH_NO_ELIGIBLE_DECIDER = 2;
+  // Notifications to its deciders are failing; failures never decide.
+  ROUTING_HEALTH_DELIVERY_FAILING = 3;
+}
+
 // WaitlistEntry is one pending or decided entry.
 message WaitlistEntry {
   // Entry id.
   string id = 1;
   // Kind.
   WaitlistKind kind = 2;
-  // "agent" or "instance".
+  // "agent", "instance", "approval_request", "grant", "package_version" or
+  // "transaction".
   string subject_type = 3;
   // Subject id.
   string subject_id = 4;
-  // The agent concerned.
+  // The agent concerned (empty for a tool review).
   string agent_id = 5;
   // State.
   WaitlistState state = 6;
@@ -63,7 +133,7 @@ message WaitlistEntry {
   // UNTRUSTED evidence reported by the workload or observed at a gateway,
   // shown separately and never used to decide.
   map<string, string> untrusted_evidence = 8;
-  // Deadline; an open entry past it is expired.
+  // Deadline; an open entry past it resolves to "not done".
   google.protobuf.Timestamp deadline_time = 9;
   // Who decided ("user:<id>" or "system").
   string decided_by = 10;
@@ -73,6 +143,28 @@ message WaitlistEntry {
   string decision_reason = 12;
   // Creation time.
   google.protobuf.Timestamp create_time = 13;
+  // Priority, 1 (most urgent) to 4, from the kind, the definition's
+  // reversibility and the deadline.
+  int32 priority = 14;
+  // The run concerned, if any.
+  string run_id = 15;
+  // The transaction concerned, if any.
+  string transaction_id = 16;
+  // Who filed it ("user:<id>", "instance:<id>"), for access requests and
+  // restorations.
+  string requested_by = 17;
+  // Routing health.
+  RoutingHealth routing_health = 18;
+  // Escalation steps taken so far (0 at creation).
+  int32 escalation_step = 19;
+  // When the next escalation step is due.
+  google.protobuf.Timestamp next_step_time = 20;
+  // Who is working on it.
+  string assignee_user_id = 21;
+  // When it was assigned.
+  google.protobuf.Timestamp assign_time = 22;
+  // When a decider first responded.
+  google.protobuf.Timestamp first_response_time = 23;
 }
 
 // ListWaitlistEntriesRequest pages through entries.
@@ -100,14 +192,44 @@ message ListWaitlistEntriesRequest {
   }];
   // Only entries about this agent.
   optional string agent_id = 4 [(buf.validate.field).string.uuid = true];
+  // Only entries of these kinds.
+  repeated WaitlistKind kinds = 5 [(buf.validate.field).repeated = {
+    max_items: 6
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only entries of these priorities (1-4).
+  repeated int32 priorities = 6 [(buf.validate.field).repeated = {
+    max_items: 4
+    unique: true
+    items: {
+      int32: {
+        gte: 1
+        lte: 4
+      }
+    }
+  }];
+  // Only entries assigned to the caller.
+  bool assigned_to_me = 7;
+  // Only open entries past their next escalation step or within a tenth of
+  // their deadline.
+  bool overdue = 8;
 }
 
 // ListWaitlistEntriesResponse is one page.
 message ListWaitlistEntriesResponse {
-  // Entries, oldest first.
+  // Entries by priority, then deadline.
   repeated WaitlistEntry entries = 1;
   // Token for the next page; empty on the last page.
   string next_page_token = 2;
+  // The scopes where the caller holds waitlist.read, so that an empty list
+  // means "nothing waiting there", not "nothing waiting" (F626).
+  repeated string checked_scopes = 3;
 }
 
 // GetWaitlistEntryRequest names an entry.
@@ -120,4 +242,303 @@ message GetWaitlistEntryRequest {
 message GetWaitlistEntryResponse {
   // The entry.
   WaitlistEntry entry = 1;
+}
+
+// AssignWaitlistEntryRequest assigns the caller.
+message AssignWaitlistEntryRequest {
+  // Entry id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Clear the assignment instead.
+  bool unassign = 2;
+}
+
+// AssignWaitlistEntryResponse returns the entry.
+message AssignWaitlistEntryResponse {
+  // The entry.
+  WaitlistEntry entry = 1;
+}
+
+// RequestAccessRequest files an access request.
+message RequestAccessRequest {
+  // The run whose grant should change; the caller must be its launcher or
+  // represented principal.
+  string run_id = 1 [(buf.validate.field).string.uuid = true];
+  // What is needed and why: UNTRUSTED, shown only to people in the
+  // untrusted block (at most 4 KiB).
+  string note = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 4096
+  }];
+  // A denied transaction of the run this is about, if any.
+  optional string transaction_id = 3 [(buf.validate.field).string.uuid = true];
+}
+
+// RequestAccessResponse returns the entry (an open one for the same grant
+// is returned instead of a new one).
+message RequestAccessResponse {
+  // The entry.
+  WaitlistEntry entry = 1;
+}
+
+// DismissAccessRequestRequest dismisses an access request.
+message DismissAccessRequestRequest {
+  // Entry id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Reason, recorded with the decision.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 500
+  }];
+}
+
+// DismissAccessRequestResponse returns the entry.
+message DismissAccessRequestResponse {
+  // The entry.
+  WaitlistEntry entry = 1;
+}
+
+// EscalationScope is how far a step reaches for deciders.
+enum EscalationScope {
+  ESCALATION_SCOPE_UNSPECIFIED = 0;
+  // Environment and team bindings (or the next wider scope if none).
+  ESCALATION_SCOPE_NEAREST = 1;
+  // Also business-unit bindings.
+  ESCALATION_SCOPE_BUSINESS_UNIT = 2;
+  // Also org-scope bindings.
+  ESCALATION_SCOPE_ORG = 3;
+}
+
+// EscalationStep is one step of a chain, taken at a fraction of the
+// deadline.
+message EscalationStep {
+  // When, in percent of the time between creation and deadline (0-99).
+  int32 at_percent = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 99
+  }];
+  // The widest scope whose eligible deciders are notified.
+  EscalationScope scope = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Remind deciders already notified.
+  bool remind = 3;
+  // Also notify the agent's owner and backup owner (no vote unless they
+  // are eligible).
+  bool notify_owners = 4;
+  // Also notify channels subscribed to the entry's event.
+  bool notify_channels = 5;
+}
+
+// EscalationChain is the chain of an org or a team.
+message EscalationChain {
+  // The team, or empty for the org's chain.
+  string team_id = 1;
+  // Revision (0 for the built-in default).
+  int32 revision = 2;
+  // Steps, by at_percent.
+  repeated EscalationStep steps = 3;
+  // Who set it.
+  string created_by = 4;
+  // When.
+  google.protobuf.Timestamp create_time = 5;
+}
+
+// GetEscalationChainRequest names a team.
+message GetEscalationChainRequest {
+  // The team (empty: the org's chain).
+  optional string team_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetEscalationChainResponse returns the chain in effect.
+message GetEscalationChainResponse {
+  // The chain.
+  EscalationChain chain = 1;
+}
+
+// SetEscalationChainRequest replaces a chain.
+message SetEscalationChainRequest {
+  // The team (empty: the org's chain).
+  optional string team_id = 1 [(buf.validate.field).string.uuid = true];
+  // Steps (1-5), with increasing at_percent.
+  repeated EscalationStep steps = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 5
+  }];
+  // The revision being replaced (0 when none is set); a stale one is
+  // refused.
+  int32 revision = 3 [(buf.validate.field).int32.gte = 0];
+}
+
+// SetEscalationChainResponse returns the new chain.
+message SetEscalationChainResponse {
+  // The chain.
+  EscalationChain chain = 1;
+}
+
+// WaitlistSettings are an org's waitlist settings. A zero or empty value
+// in an update means the default.
+message WaitlistSettings {
+  // Batch approval ceiling per ISO currency code, as a canonical decimal
+  // (for example {"USD": "100.00"}); empty means batch approval is off.
+  map<string, string> batch_ceilings = 1 [(buf.validate.field).map = {
+    max_pairs: 16
+    keys: {
+      string: {pattern: "^[A-Z]{3}$"}
+    }
+    values: {
+      string: {
+        pattern: "^(0|[1-9][0-9]{0,17})(\\.[0-9]{1,8})?$"
+        max_len: 27
+      }
+    }
+  }];
+  // Default hold deadline in seconds (300-3600; default 3600).
+  int32 hold_deadline_seconds = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 3600
+  }];
+  // Time to use an approval in seconds (60-900; default 900).
+  int32 consume_window_seconds = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 900
+  }];
+  // Access request deadline in seconds (at most 7 days).
+  int32 access_request_deadline_seconds = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 604800
+  }];
+  // Tool review deadline in seconds (at most 30 days).
+  int32 tool_review_deadline_seconds = 5 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 2592000
+  }];
+  // Restoration deadline in seconds (at most 24 hours).
+  int32 restoration_deadline_seconds = 6 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 86400
+  }];
+  // Reconciliation escalation deadline in seconds (at most 72 hours).
+  int32 reconciliation_deadline_seconds = 7 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 259200
+  }];
+  // Pending holds per grant (1-100; default 20).
+  int32 max_holds_per_grant = 8 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 100
+  }];
+  // Pending holds per run (1-5; default 5).
+  int32 max_holds_per_run = 9 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 5
+  }];
+  // Minimum account age for multi-person approvals in seconds (at least 7
+  // days).
+  int32 min_account_age_seconds = 10 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 31536000
+  }];
+  // Minimum age of the role binding that makes a decider eligible, for
+  // multi-person approvals, in seconds (at least 24 hours).
+  int32 min_role_age_seconds = 11 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 31536000
+  }];
+  // Minimum credential age for multi-person approvals in seconds (at least
+  // 24 hours).
+  int32 min_credential_age_seconds = 12 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 31536000
+  }];
+  // How long a role a person granted themselves waits before it counts, in
+  // seconds (at least 24 hours).
+  int32 self_grant_delay_seconds = 13 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 31536000
+  }];
+  // Who changed them last (read only).
+  string updated_by = 14;
+  // When (read only).
+  google.protobuf.Timestamp update_time = 15;
+}
+
+// GetWaitlistSettingsRequest asks for the settings.
+message GetWaitlistSettingsRequest {}
+
+// GetWaitlistSettingsResponse returns the effective settings.
+message GetWaitlistSettingsResponse {
+  // The settings, defaults filled in.
+  WaitlistSettings settings = 1;
+}
+
+// UpdateWaitlistSettingsRequest replaces the settings.
+message UpdateWaitlistSettingsRequest {
+  // The new settings; zero values mean the default.
+  WaitlistSettings settings = 1 [(buf.validate.field).required = true];
+}
+
+// UpdateWaitlistSettingsResponse returns the effective settings.
+message UpdateWaitlistSettingsResponse {
+  // The settings, defaults filled in.
+  WaitlistSettings settings = 1;
+}
+
+// GetWaitlistMetricsRequest chooses the window.
+message GetWaitlistMetricsRequest {
+  // Days back from now (1-90; default 30).
+  int32 window_days = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 90
+  }];
+  // Only these kinds (all when empty).
+  repeated WaitlistKind kinds = 2 [(buf.validate.field).repeated = {
+    max_items: 6
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+}
+
+// WaitlistMetric aggregates entries of one kind, or of one decider.
+message WaitlistMetric {
+  // The kind.
+  WaitlistKind kind = 1;
+  // The decider (per-decider rows only).
+  string decider_user_id = 2;
+  // Entries created in the window.
+  int64 count = 3;
+  // Entries decided in the window.
+  int64 decided = 4;
+  // Median and 90th percentile time to first response, in seconds.
+  double first_response_p50_seconds = 5;
+  // 90th percentile time to first response, in seconds.
+  double first_response_p90_seconds = 6;
+  // Median time to decision, in seconds.
+  double decision_p50_seconds = 7;
+  // 90th percentile time to decision, in seconds.
+  double decision_p90_seconds = 8;
+  // Share of entries that expired (0-1).
+  double expiry_rate = 9;
+  // Share of entries that escalated at least once (0-1).
+  double escalation_rate = 10;
+  // Entries whose routing failed (no eligible decider or failing
+  // deliveries).
+  int64 routing_failures = 11;
+}
+
+// GetWaitlistMetricsResponse returns the metrics.
+message GetWaitlistMetricsResponse {
+  // Per kind.
+  repeated WaitlistMetric by_kind = 1;
+  // Per decider and kind.
+  repeated WaitlistMetric by_decider = 2;
+  // Window start.
+  google.protobuf.Timestamp start_time = 3;
+  // Window end.
+  google.protobuf.Timestamp end_time = 4;
 }

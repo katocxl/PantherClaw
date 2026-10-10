@@ -37,6 +37,13 @@ var (
 	// ErrDuplicate: a concurrent request for the same (run, action)
 	// committed first. The Authority answers from it.
 	ErrDuplicate = errors.New("finalize: transaction already recorded")
+	// ErrHoldLimit: the grant or the run has its maximum of pending holds
+	// (HR-037). The Authority answers CANNOT_AUTHORIZE HOLD_LIMIT_REACHED.
+	ErrHoldLimit = errors.New("finalize: hold limit reached")
+	// ErrApprovalNotMet: an approver of the approval being used is no longer
+	// eligible (HR-170). The Authority revalidates the request and
+	// evaluates again.
+	ErrApprovalNotMet = errors.New("finalize: the approval is no longer met")
 )
 
 // MaxEvaluations caps how often one OPEN transaction is evaluated (T-023);
@@ -124,6 +131,15 @@ type Write struct {
 	Sign func(budgets []BudgetState) (Receipt, error)
 	// GatewayID records which gateway asked.
 	GatewayID string
+	// HoldRequest is the id of the approval request a hold records (G0 M5
+	// part 2): set when the decision holds and the evaluation's binding
+	// differs from the transaction's live request, if any. The finalization
+	// then also checks containment and the grant chain, supersedes the
+	// live request, takes the hold slots and opens the waitlist entry
+	// (HR-037, HR-171). A permit whose evaluation is Hold.Satisfied
+	// consumes the approval; a DENY whose Hold.Expire is set records the
+	// expiry.
+	HoldRequest ids.UUID
 }
 
 // Receipt is a signed decision receipt and the canonical body that the
@@ -197,6 +213,10 @@ type Store interface {
 	// Sweep releases expired ISSUED permits (and their claims) and marks
 	// stale DISPATCHING ones UNKNOWN, never releasing them (HR-003).
 	Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Duration) (released, unknown int, err error)
+	// Revalidate voids the responses of an approval request whose people
+	// are no longer eligible and returns an approved request that is no
+	// longer met to PENDING (HR-170), in its own transaction.
+	Revalidate(ctx context.Context, org ids.OrgID, request ids.UUID) error
 }
 
 // Dispatch errors: the gateway must not dispatch on any of them (HR-001).

@@ -106,6 +106,9 @@ func DecodeBundle(raw []byte) (*domain.Bundle, error) {
 	if err := b.Validate(); err != nil {
 		return nil, invalidBundle(err)
 	}
+	if err := b.CheckApprovalRoles(); err != nil {
+		return nil, invalidBundle(err)
+	}
 	return &b, nil
 }
 

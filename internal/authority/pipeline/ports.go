@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
 	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
 	fdomain "github.com/katocxl/pantherclaw/internal/facts/domain"
@@ -34,6 +35,9 @@ type Identity struct {
 	InstanceID       ids.UUID
 	AgentID          ids.UUID
 	AttestationLevel int
+	// JKT is the thumbprint of the key that signed the request; approvals
+	// bind it (HR-030).
+	JKT string
 }
 
 // Request is one action to decide. Gateway is the id of the gateway asking,
@@ -70,6 +74,38 @@ type Run struct {
 	EnvironmentID ids.UUID
 	GrantID       gdomain.GrantID
 	Active        bool
+	// TaskRef is the run's UNTRUSTED task label, shown to approvers only in
+	// the untrusted block (HR-034).
+	TaskRef string
+	// Ancestors are the launchers and principals of every ancestor run,
+	// nearest first: none of them may approve the run's actions (HR-036).
+	Ancestors []gdomain.Principal
+}
+
+// HoldRequest is the latest approval request of a transaction, as step 8
+// needs it (G0 M5 part 2).
+type HoldRequest struct {
+	ID               ids.UUID
+	State            apdomain.State
+	EndReason        string
+	Binding          [32]byte
+	Deadline         time.Time
+	EvidenceDeadline *time.Time
+	ConsumeBy        *time.Time
+	// Variants and Context are what its display was rendered with, so a
+	// resubmission renders the same display.
+	Variants []apdomain.VariantLine
+	Context  []apdomain.ContextLine
+	// Question is the open evidence question (EVIDENCE_REQUESTED), and
+	// ProposedParams the narrower parameters a decider proposed.
+	Question       string
+	ProposedParams []byte
+}
+
+// HoldSettings are an org's settings the hold path applies; zero values
+// mean the defaults (decisions 6 and 7).
+type HoldSettings struct {
+	HoldDeadline time.Duration
 }
 
 // Agent is what the pipeline needs to know about an agent (M3).
@@ -173,6 +209,16 @@ type Reader interface {
 	Claim(ctx context.Context, org ids.OrgID, key string) (*Claim, error)
 	// Connection returns a connection with its route modes.
 	Connection(ctx context.Context, org ids.OrgID, id ids.UUID) (Connection, error)
+	// Hold returns the latest approval request of the transaction for
+	// (run, action), or nil (G0 M5 part 2).
+	Hold(ctx context.Context, org ids.OrgID, run, action ids.UUID) (*HoldRequest, error)
+	// Variants returns the earlier requests with the same variant key
+	// (HR-037) and up to five requests for the same operation and target
+	// approved in the 30 days before now, newest first.
+	Variants(ctx context.Context, org ids.OrgID, key [32]byte, operation string, target actionir.Target, now time.Time) (
+		[]apdomain.VariantLine, []apdomain.ContextLine, error)
+	// HoldSettings returns the org's hold settings.
+	HoldSettings(ctx context.Context, org ids.OrgID) (HoldSettings, error)
 }
 
 // Snapshotter is a Reader that can serve every read of one evaluation from

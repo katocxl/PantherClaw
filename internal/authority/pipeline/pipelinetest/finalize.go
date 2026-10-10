@@ -144,7 +144,7 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 	// grants store has its own.
 	var current []gdomain.Version
 	var active bool
-	if wr.Permit != nil && len(wr.Eval.Chain.Grants) > 0 {
+	if (wr.Permit != nil || finalize.Holds(wr.Eval)) && len(wr.Eval.Chain.Grants) > 0 {
 		leaf, _ := wr.Eval.Chain.Leaf()
 		grants, err := w.Grants.Chain(ctx, org, leaf.ID)
 		if err != nil {
@@ -165,7 +165,7 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 	defer w.mu.Unlock()
 	f := w.fin()
 	ev := wr.Eval
-	if wr.Permit != nil {
+	if wr.Permit != nil || finalize.Holds(ev) {
 		// A monitor permit binds no authority, only containment (HR-184).
 		authority := ev.MonitorPermit() || (active && slices.Equal(current, ev.Chain.Versions()))
 		if w.Cont.Epoch != ev.Epoch || w.Cont.KillSwitch || !authority {
@@ -184,6 +184,9 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 		if parked, _ := pipeline.Parked(w.claims[wr.Claim.Key], ev.ActionID, w.Cont.Now, ev.RepeatWindow); parked {
 			return finalize.ErrParked
 		}
+	}
+	if err := w.holdWrite(wr); err != nil {
+		return err
 	}
 	// The limits are the evaluated plan's, as the database adapter passes
 	// them to its conditional updates, whether or not Prepare ran.

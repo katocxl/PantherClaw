@@ -74,6 +74,17 @@ const (
 	PermWaitlistRead Permission = "waitlist.read"
 )
 
+// Approval and waitlist permissions (G0 M5 part 2). approval.read shows
+// approval requests and their content; it is not on Org Admin, which stays
+// out of approvals (F583). waitlist.manage changes escalation chains and
+// waitlist settings. agent.restore decides restorations of suspended agents
+// and is human only (decision 11).
+const (
+	PermApprovalRead   Permission = "approval.read"
+	PermWaitlistManage Permission = "waitlist.manage"
+	PermAgentRestore   Permission = "agent.restore"
+)
+
 // Grant, guardrail, budget, fact, package and policy permissions (G0 M4
 // part 2). grant.issue (decision 7), guardrails.manage (HR-161),
 // fact.provider.manage (HR-160) and package.activate are human only.
@@ -165,7 +176,7 @@ var catalog = []Permission{
 	PermNotificationRead, PermNotificationManage,
 	PermAgentRead, PermAgentManage,
 	PermRunRead, PermRunStart, PermRunRepresent, PermRunManage,
-	PermWaitlistRead,
+	PermWaitlistRead, PermWaitlistManage, PermApprovalRead, PermAgentRestore,
 	PermAgentEnroll, PermAgentAdmit,
 	PermIssuerRead, PermIssuerManage, PermIssuerActivate,
 	PermPolicyAuthor, PermPolicyPublish, PermPolicyRead,
@@ -184,7 +195,7 @@ var catalog = []Permission{
 var humanOnly = []Permission{
 	PermApprovalRespond, PermPolicyPublish, PermEvidenceReadRestricted, PermAgentAdmit, PermIssuerActivate,
 	PermGrantIssue, PermGuardrailsManage, PermFactProviderManage, PermPackageActivate,
-	PermGatewayManage, PermConnectionManage, PermCredentialSeal, PermContainmentKillSwitch,
+	PermGatewayManage, PermConnectionManage, PermCredentialSeal, PermContainmentKillSwitch, PermAgentRestore,
 }
 
 // Catalog returns every grantable permission in a stable order.

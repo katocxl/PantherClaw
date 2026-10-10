@@ -10,9 +10,11 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
+	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
 	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
@@ -78,7 +80,14 @@ type Evaluation struct {
 	Obligations []pdomain.Obligation
 	Approvals   []pdomain.ApprovalRequirement
 	StepUps     []pdomain.StepUpRequirement
-	Labels      map[string]string
+	// Requirements are the same requirements, each with its source (a grant
+	// or guardrail level, or a policy rule), as step 8 found them.
+	Requirements []apdomain.Input
+	// Hold is what step 8 established about approvals: the binding a hold
+	// records or an approval must match, or the request that ended the
+	// action (G0 M5 part 2). Nil when nothing was required or asked for.
+	Hold   *Hold
+	Labels map[string]string
 	// ActionHash is the requested action; EffectiveHash differs when an
 	// obligation clamps a parameter (F104, F107).
 	ActionHash    string
@@ -110,6 +119,29 @@ type Evaluation struct {
 	// Channel and Target are the action's, for the transaction record.
 	Channel string
 	Target  actionir.Target
+}
+
+// Hold is step 8's view of the transaction's approval request.
+type Hold struct {
+	// Requirements are the merged requirements; Deadline, Display and
+	// Binding what a request records (or an approval must match).
+	Requirements []apdomain.Requirement
+	Deadline     time.Time
+	Display      apdomain.Display
+	DisplayHash  [32]byte
+	Binding      apdomain.Binding
+	VariantKey   [32]byte
+	// Request is the transaction's latest request, as read (nil: none).
+	Request *HoldRequest
+	// Keep: Request is live and has this binding, so nothing new is
+	// recorded. Satisfied: it is APPROVED, so the finalization that issues
+	// the permit consumes it (HR-031, HR-171).
+	Keep, Satisfied bool
+	// Expire: Request expired at use; the finalization records that.
+	Expire bool
+	// State and Code are what a waiter sees (HR-174).
+	State string
+	Code  string
 }
 
 // Permits reports whether the evaluation allows dispatch.
@@ -212,7 +244,7 @@ func (p *Pipeline) evaluate(ctx context.Context, req Request) (*Evaluation, erro
 	p.meaning(s)
 	p.currentFacts(ctx, s)
 	p.boundaries(ctx, s)
-	p.requirements(s)
+	p.requirements(ctx, s)
 	s.ev.Decision, s.ev.Checklist = s.cl.compose(s.covered)
 	s.ev.Basis = s.basis()
 	return s.ev, nil
@@ -655,6 +687,25 @@ func (p *Pipeline) policyRules(ctx context.Context, s *state) {
 	s.ev.Obligations, s.ev.Labels = out.Obligations, out.Labels
 	s.ev.Approvals = append(s.ev.Approvals, out.Approvals...)
 	s.ev.StepUps = append(s.ev.StepUps, out.StepUps...)
+	for _, r := range out.Required {
+		s.ev.Requirements = append(s.ev.Requirements, input(r.Approval, r.StepUp,
+			apdomain.Source{Level: "policy " + s.policy.Version + " rule " + r.Rule, Reason: r.Reason}))
+	}
+}
+
+// input turns a policy or grant requirement into an approvals input with
+// its source.
+func input(a *pdomain.ApprovalRequirement, su *pdomain.StepUpRequirement, src apdomain.Source) apdomain.Input {
+	in := apdomain.Input{Source: src}
+	if a != nil {
+		in.Kind, in.Role, in.Count, in.Independent = apdomain.KindApproval, a.Role, a.Count, a.Independent
+		in.Deadline = time.Duration(a.DeadlineSeconds) * time.Second
+	}
+	if su != nil {
+		in.Kind, in.Subject, in.Method = apdomain.KindStepUp, su.Subject, su.Method
+		in.Deadline = time.Duration(su.DeadlineSeconds) * time.Second
+	}
+	return in
 }
 
 func verdictEffect(v pdomain.Verdict) adomain.Decision {
@@ -775,35 +826,168 @@ func Parked(c *Claim, self ids.UUID, now time.Time, window time.Duration) (bool,
 	return false, ""
 }
 
-// Step 8: approvals and step-ups from every level and the policy, and the
-// effective action when an obligation clamps a parameter.
-func (p *Pipeline) requirements(s *state) {
+// Step 8: approvals and step-ups from every level and the policy, each with
+// its source, the effective action when an obligation clamps a parameter,
+// and the transaction's approval request (G0 M5 part 2). A request that
+// was declined or expired ends the action as DENY, whatever else changed
+// (HR-171); an approved request whose binding this evaluation recomputes
+// satisfies the requirements, and the finalization that permits consumes
+// it (HR-031).
+func (p *Pipeline) requirements(ctx context.Context, s *state) {
 	if s.gAction == nil || len(s.chain.Grants) == 0 {
 		s.cl.skip(StepRequirements, "the meaning or the grant is not known")
 		return
 	}
-	held := false
 	for _, r := range s.chain.Requirements(*s.gAction) {
-		held = true
-		if r.Requirement.Approval != nil {
-			s.ev.Approvals = append(s.ev.Approvals, *r.Requirement.Approval)
-			s.cl.add(StepRequirements, adomain.RequireApproval, r.Requirement.Reason, "approval by "+r.Requirement.Approval.Role+" is required", r.Level.String())
+		if a := r.Requirement.Approval; a != nil {
+			s.ev.Approvals = append(s.ev.Approvals, *a)
+			s.cl.add(StepRequirements, adomain.RequireApproval, r.Requirement.Reason, "approval by "+a.Role+" is required", r.Level.String())
 		} else {
 			s.ev.StepUps = append(s.ev.StepUps, *r.Requirement.StepUp)
 			s.cl.add(StepRequirements, adomain.RequireStepUp, r.Requirement.Reason, "step-up by the "+r.Requirement.StepUp.Subject+" is required", r.Level.String())
 		}
+		s.ev.Requirements = append(s.ev.Requirements, input(r.Requirement.Approval, r.Requirement.StepUp,
+			apdomain.Source{Level: r.Level.String(), Reason: r.Requirement.Reason}))
 	}
-	if eff, ok := s.effective(); ok {
-		s.ev.EffectiveHash = eff
+	effective := s.vals
+	if eff, vals, ok := s.effective(); ok {
+		s.ev.EffectiveHash, effective = eff, vals
 	}
-	if !held && !slices.ContainsFunc(s.cl.items, func(it Item) bool { return it.Step == StepRequirements && it.effect != adomain.Allow }) {
-		s.cl.pass(StepRequirements, ReasonRequirementsMet)
+	latest, err := p.Reader.Hold(ctx, s.req.Org, s.ev.RunID, s.ev.ActionID)
+	if err != nil {
+		s.missing(StepRequirements, err, "the approval request")
+		return
+	}
+	if latest != nil {
+		st, code := apdomain.At(latest.State, latest.times(), s.cont.Now)
+		if apdomain.Terminal(st) {
+			if code == "" {
+				code = latest.EndReason
+			}
+			s.cl.add(StepRequirements, adomain.Deny, code, "the approval request "+latest.ID.String()+" ended: "+strings.ToLower(string(st)), "")
+			s.ev.Hold = &Hold{Request: latest, State: apdomain.WaitState(st, code), Code: code, Expire: st != latest.State}
+			return
+		}
+	}
+	if len(s.ev.Requirements) == 0 {
+		if !slices.ContainsFunc(s.cl.items, func(it Item) bool { return it.Step == StepRequirements && it.effect != adomain.Allow }) {
+			s.cl.pass(StepRequirements, ReasonRequirementsMet)
+		}
+		return
+	}
+	h, err := p.hold(ctx, s, latest, effective)
+	switch {
+	case errors.Is(err, apdomain.ErrRequirementInvalid):
+		s.cl.add(StepRequirements, adomain.CannotAuthorize, apdomain.ReasonRequirementInvalid,
+			"a requirement names a role, subject, method or deadline that cannot be satisfied", "")
+		return
+	case errors.Is(err, apdomain.ErrStepUpSubjectNotAPerson):
+		s.cl.add(StepRequirements, adomain.CannotAuthorize, apdomain.ReasonStepUpSubjectNotAPerson,
+			"a step-up names the launcher or principal, which is not a person here; use an approval for automation", "")
+		return
+	case err != nil:
+		s.missing(StepRequirements, err, "the approval request")
+		return
+	}
+	s.ev.Hold = h
+	if h.Satisfied {
+		for i, it := range s.cl.items {
+			if it.Step == StepRequirements && (it.effect == adomain.RequireApproval || it.effect == adomain.RequireStepUp) {
+				it.effect, it.Status, it.Detail = adomain.Allow, StatusPassed, "satisfied by approval request "+latest.ID.String()
+				s.cl.items[i] = it
+			}
+		}
+		s.cl.pass(StepRequirements, apdomain.ReasonApprovalSatisfied)
 	}
 }
 
+func (h *HoldRequest) times() apdomain.Times {
+	return apdomain.Times{Deadline: h.Deadline, EvidenceDeadline: h.EvidenceDeadline, ConsumeBy: h.ConsumeBy}
+}
+
+// hold merges the requirements, checks the step-up subjects and computes
+// the display and the binding (HR-030, HR-034). While the transaction has
+// a live request, the binding is recomputed with that request's deadline
+// and context, so an unchanged action, basis and requirement keep it; any
+// change gives a new binding and a new request with a fresh deadline.
+func (p *Pipeline) hold(ctx context.Context, s *state, latest *HoldRequest, effective defs.Values) (*Hold, error) {
+	reqs, deadline, err := apdomain.Merge(s.ev.Requirements)
+	if err != nil {
+		return nil, err
+	}
+	people := apdomain.RunPeople{Launcher: s.run.Launcher, Principal: s.run.Principal, Ancestors: s.run.Ancestors}
+	for _, r := range reqs {
+		if r.Kind == apdomain.KindStepUp {
+			if _, err := apdomain.StepUpUser(r, people); err != nil {
+				return nil, err
+			}
+		}
+	}
+	leaf, _ := s.chain.Leaf()
+	t := s.a.Target
+	key, err := apdomain.VariantKey(leaf.ID.UUID(), s.a.Operation, apdomain.Target{Type: t.Type, ID: t.ID, Account: t.Account})
+	if err != nil {
+		return nil, err
+	}
+	h := &Hold{Requirements: reqs, VariantKey: key, Request: latest, State: apdomain.WaitPending}
+	if latest != nil && latest.State.Live() {
+		if err := p.bind(s, h, effective, latest.Deadline, latest.Variants, latest.Context); err != nil {
+			return nil, err
+		}
+		if h.Binding.Hash == latest.Binding {
+			st, _ := apdomain.At(latest.State, latest.times(), s.cont.Now)
+			h.Keep, h.Satisfied, h.State = true, st == apdomain.StateApproved, apdomain.WaitState(st, "")
+			return h, nil
+		}
+	}
+	settings, err := p.Reader.HoldSettings(ctx, s.req.Org)
+	if err != nil {
+		return nil, err
+	}
+	variants, approved, err := p.Reader.Variants(ctx, s.req.Org, key, s.a.Operation, t, s.cont.Now)
+	if err != nil {
+		return nil, err
+	}
+	return h, p.bind(s, h, effective, apdomain.Deadline(s.cont.Now, deadline, settings.HoldDeadline), variants, approved)
+}
+
+// bind renders the display for the given deadline and context and computes
+// the binding over it.
+func (p *Pipeline) bind(s *state, h *Hold, effective defs.Values, deadline time.Time, variants []apdomain.VariantLine,
+	approved []apdomain.ContextLine,
+) error {
+	disp, err := apdomain.RenderAction(apdomain.ActionInput{
+		Definition: s.def, Target: s.a.Target, Requested: s.vals, Effective: effective, Facts: s.used,
+		Run: apdomain.RunLine{
+			Run: s.ev.RunID.String(), Agent: s.run.AgentID.String(), Instance: s.req.Identity.InstanceID.String(),
+			Launcher: s.run.Launcher.String(), Principal: s.run.Principal.String(),
+		},
+		TaskLabel: s.run.TaskRef, Requirements: h.Requirements, Deadline: deadline, Variants: variants, Context: approved,
+	})
+	if err != nil {
+		return err
+	}
+	c, err := disp.Canonical()
+	if err != nil {
+		return err
+	}
+	leaf, _ := s.chain.Leaf()
+	b, err := apdomain.ActionParts{
+		ActionHash: s.ev.ActionHash, EffectiveActionHash: s.ev.EffectiveHash, BasisDigest: s.basis().Digest(),
+		FactsDigest: fdomain.Digest(s.used), DefinitionDigest: s.a.Definition.Digest, GrantID: leaf.ID.UUID(),
+		GrantRevision: leaf.Revision, RunID: s.ev.RunID, Instance: s.req.Identity.InstanceID, JKT: s.req.Identity.JKT,
+		Requirements: h.Requirements, ExpiresAt: deadline, DisplayHash: c.Hash,
+	}.Binding()
+	if err != nil {
+		return err
+	}
+	h.Deadline, h.Display, h.DisplayHash, h.Binding = deadline, disp, c.Hash, b
+	return nil
+}
+
 // effective applies clamping obligations to the action and returns the
-// effective action's hash (F104, F107).
-func (s *state) effective() (string, bool) {
+// effective action's hash and parameters (F104, F107).
+func (s *state) effective() (string, defs.Values, bool) {
 	vals := maps.Clone(s.vals)
 	changed := false
 	for _, o := range s.ev.Obligations {
@@ -820,17 +1004,17 @@ func (s *state) effective() (string, bool) {
 		changed = true
 	}
 	if !changed {
-		return "", false
+		return "", nil, false
 	}
 	raw, err := s.def.EncodeParams(vals)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	eff := s.a
 	eff.Params = raw
 	parsed, err := actionir.Encode(eff)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
-	return parsed.HashHex(), true
+	return parsed.HashHex(), vals, true
 }

@@ -33,6 +33,30 @@ const (
 	// WaitlistServiceGetWaitlistEntryProcedure is the procedure name of the WaitlistService's
 	// GetWaitlistEntry RPC.
 	WaitlistServiceGetWaitlistEntryProcedure = "/pantherclaw.v1.WaitlistService/GetWaitlistEntry"
+	// WaitlistServiceAssignWaitlistEntryProcedure is the procedure name of the WaitlistService's
+	// AssignWaitlistEntry RPC.
+	WaitlistServiceAssignWaitlistEntryProcedure = "/pantherclaw.v1.WaitlistService/AssignWaitlistEntry"
+	// WaitlistServiceRequestAccessProcedure is the procedure name of the WaitlistService's
+	// RequestAccess RPC.
+	WaitlistServiceRequestAccessProcedure = "/pantherclaw.v1.WaitlistService/RequestAccess"
+	// WaitlistServiceDismissAccessRequestProcedure is the procedure name of the WaitlistService's
+	// DismissAccessRequest RPC.
+	WaitlistServiceDismissAccessRequestProcedure = "/pantherclaw.v1.WaitlistService/DismissAccessRequest"
+	// WaitlistServiceGetEscalationChainProcedure is the procedure name of the WaitlistService's
+	// GetEscalationChain RPC.
+	WaitlistServiceGetEscalationChainProcedure = "/pantherclaw.v1.WaitlistService/GetEscalationChain"
+	// WaitlistServiceSetEscalationChainProcedure is the procedure name of the WaitlistService's
+	// SetEscalationChain RPC.
+	WaitlistServiceSetEscalationChainProcedure = "/pantherclaw.v1.WaitlistService/SetEscalationChain"
+	// WaitlistServiceGetWaitlistSettingsProcedure is the procedure name of the WaitlistService's
+	// GetWaitlistSettings RPC.
+	WaitlistServiceGetWaitlistSettingsProcedure = "/pantherclaw.v1.WaitlistService/GetWaitlistSettings"
+	// WaitlistServiceUpdateWaitlistSettingsProcedure is the procedure name of the WaitlistService's
+	// UpdateWaitlistSettings RPC.
+	WaitlistServiceUpdateWaitlistSettingsProcedure = "/pantherclaw.v1.WaitlistService/UpdateWaitlistSettings"
+	// WaitlistServiceGetWaitlistMetricsProcedure is the procedure name of the WaitlistService's
+	// GetWaitlistMetrics RPC.
+	WaitlistServiceGetWaitlistMetricsProcedure = "/pantherclaw.v1.WaitlistService/GetWaitlistMetrics"
 )
 
 var (
@@ -52,16 +76,113 @@ var (
 			IdempotencyLevel: connect.IdempotencyNoSideEffects,
 		}
 	})
+	waitlistServiceAssignWaitlistEntrySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("AssignWaitlistEntry"),
+			Procedure:  WaitlistServiceAssignWaitlistEntryProcedure,
+		}
+	})
+	waitlistServiceRequestAccessSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("RequestAccess"),
+			Procedure:  WaitlistServiceRequestAccessProcedure,
+		}
+	})
+	waitlistServiceDismissAccessRequestSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("DismissAccessRequest"),
+			Procedure:  WaitlistServiceDismissAccessRequestProcedure,
+		}
+	})
+	waitlistServiceGetEscalationChainSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("GetEscalationChain"),
+			Procedure:        WaitlistServiceGetEscalationChainProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
+	waitlistServiceSetEscalationChainSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("SetEscalationChain"),
+			Procedure:  WaitlistServiceSetEscalationChainProcedure,
+		}
+	})
+	waitlistServiceGetWaitlistSettingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("GetWaitlistSettings"),
+			Procedure:        WaitlistServiceGetWaitlistSettingsProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
+	waitlistServiceUpdateWaitlistSettingsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("UpdateWaitlistSettings"),
+			Procedure:  WaitlistServiceUpdateWaitlistSettingsProcedure,
+		}
+	})
+	waitlistServiceGetWaitlistMetricsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_waitlist_proto.Services().ByName("WaitlistService").Methods().ByName("GetWaitlistMetrics"),
+			Procedure:        WaitlistServiceGetWaitlistMetricsProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
 )
 
 // WaitlistServiceClient is a client for the pantherclaw.v1.WaitlistService service.
 type WaitlistServiceClient interface {
-	// ListWaitlistEntries lists waitlist entries.
+	// ListWaitlistEntries lists waitlist entries, by priority then deadline.
 	// permission: waitlist.read
 	ListWaitlistEntries(context.Context, *v1.ListWaitlistEntriesRequest) (*v1.ListWaitlistEntriesResponse, error)
 	// GetWaitlistEntry returns one entry.
 	// permission: waitlist.read
 	GetWaitlistEntry(context.Context, *v1.GetWaitlistEntryRequest) (*v1.GetWaitlistEntryResponse, error)
+	// AssignWaitlistEntry marks the caller, an eligible decider of the entry,
+	// as working on it, or clears that. Assignment only shows who is working
+	// on an entry; it never changes who may decide.
+	// permission: waitlist.read
+	AssignWaitlistEntry(context.Context, *v1.AssignWaitlistEntryRequest) (*v1.AssignWaitlistEntryResponse, error)
+	// RequestAccess files an access request for a run's grant (F051), from
+	// the run's launcher or represented principal. It grants nothing: the
+	// grant's issuer decides through GrantService.ReviseGrant citing the
+	// entry, or dismisses it (HR-176).
+	// permission: authenticated
+	RequestAccess(context.Context, *v1.RequestAccessRequest) (*v1.RequestAccessResponse, error)
+	// DismissAccessRequest closes an access request without changing the
+	// grant. The caller must be allowed to issue the run's grant.
+	// permission: grant.issue
+	DismissAccessRequest(context.Context, *v1.DismissAccessRequestRequest) (*v1.DismissAccessRequestResponse, error)
+	// GetEscalationChain returns the chain that applies to a team (or the
+	// org's), with the default when none is set.
+	// permission: waitlist.read
+	GetEscalationChain(context.Context, *v1.GetEscalationChainRequest) (*v1.GetEscalationChainResponse, error)
+	// SetEscalationChain replaces the org's or a team's chain with a new
+	// revision (at most 5 steps, decision 8). Steps add deciders at wider
+	// scopes; none makes anyone eligible (HR-173). Audited.
+	// permission: waitlist.manage
+	SetEscalationChain(context.Context, *v1.SetEscalationChainRequest) (*v1.SetEscalationChainResponse, error)
+	// GetWaitlistSettings returns the org's effective waitlist settings.
+	// permission: waitlist.manage
+	GetWaitlistSettings(context.Context, *v1.GetWaitlistSettingsRequest) (*v1.GetWaitlistSettingsResponse, error)
+	// UpdateWaitlistSettings changes them: deadlines may only be shortened,
+	// hold caps only lowered (the grant cap up to 100) and approver cooldowns
+	// only lengthened (decisions 5-7); the batch ceilings start empty
+	// (decision 9). Audited.
+	// permission: waitlist.manage
+	UpdateWaitlistSettings(context.Context, *v1.UpdateWaitlistSettingsRequest) (*v1.UpdateWaitlistSettingsResponse, error)
+	// GetWaitlistMetrics reports response and decision times, expiry,
+	// escalation and routing failures per kind and per decider over at most
+	// 90 days, from the entries the caller may read (T-042, Team edition).
+	// permission: waitlist.read
+	GetWaitlistMetrics(context.Context, *v1.GetWaitlistMetricsRequest) (*v1.GetWaitlistMetricsResponse, error)
 }
 
 // NewWaitlistServiceClient constructs a client for the pantherclaw.v1.WaitlistService service.
@@ -72,12 +193,50 @@ func NewWaitlistServiceClient(client *connect.Client) WaitlistServiceClient {
 
 // WaitlistServiceHandler is an implementation of the pantherclaw.v1.WaitlistService service.
 type WaitlistServiceHandler interface {
-	// ListWaitlistEntries lists waitlist entries.
+	// ListWaitlistEntries lists waitlist entries, by priority then deadline.
 	// permission: waitlist.read
 	ListWaitlistEntries(context.Context, *v1.ListWaitlistEntriesRequest) (*v1.ListWaitlistEntriesResponse, error)
 	// GetWaitlistEntry returns one entry.
 	// permission: waitlist.read
 	GetWaitlistEntry(context.Context, *v1.GetWaitlistEntryRequest) (*v1.GetWaitlistEntryResponse, error)
+	// AssignWaitlistEntry marks the caller, an eligible decider of the entry,
+	// as working on it, or clears that. Assignment only shows who is working
+	// on an entry; it never changes who may decide.
+	// permission: waitlist.read
+	AssignWaitlistEntry(context.Context, *v1.AssignWaitlistEntryRequest) (*v1.AssignWaitlistEntryResponse, error)
+	// RequestAccess files an access request for a run's grant (F051), from
+	// the run's launcher or represented principal. It grants nothing: the
+	// grant's issuer decides through GrantService.ReviseGrant citing the
+	// entry, or dismisses it (HR-176).
+	// permission: authenticated
+	RequestAccess(context.Context, *v1.RequestAccessRequest) (*v1.RequestAccessResponse, error)
+	// DismissAccessRequest closes an access request without changing the
+	// grant. The caller must be allowed to issue the run's grant.
+	// permission: grant.issue
+	DismissAccessRequest(context.Context, *v1.DismissAccessRequestRequest) (*v1.DismissAccessRequestResponse, error)
+	// GetEscalationChain returns the chain that applies to a team (or the
+	// org's), with the default when none is set.
+	// permission: waitlist.read
+	GetEscalationChain(context.Context, *v1.GetEscalationChainRequest) (*v1.GetEscalationChainResponse, error)
+	// SetEscalationChain replaces the org's or a team's chain with a new
+	// revision (at most 5 steps, decision 8). Steps add deciders at wider
+	// scopes; none makes anyone eligible (HR-173). Audited.
+	// permission: waitlist.manage
+	SetEscalationChain(context.Context, *v1.SetEscalationChainRequest) (*v1.SetEscalationChainResponse, error)
+	// GetWaitlistSettings returns the org's effective waitlist settings.
+	// permission: waitlist.manage
+	GetWaitlistSettings(context.Context, *v1.GetWaitlistSettingsRequest) (*v1.GetWaitlistSettingsResponse, error)
+	// UpdateWaitlistSettings changes them: deadlines may only be shortened,
+	// hold caps only lowered (the grant cap up to 100) and approver cooldowns
+	// only lengthened (decisions 5-7); the batch ceilings start empty
+	// (decision 9). Audited.
+	// permission: waitlist.manage
+	UpdateWaitlistSettings(context.Context, *v1.UpdateWaitlistSettingsRequest) (*v1.UpdateWaitlistSettingsResponse, error)
+	// GetWaitlistMetrics reports response and decision times, expiry,
+	// escalation and routing failures per kind and per decider over at most
+	// 90 days, from the entries the caller may read (T-042, Team edition).
+	// permission: waitlist.read
+	GetWaitlistMetrics(context.Context, *v1.GetWaitlistMetricsRequest) (*v1.GetWaitlistMetricsResponse, error)
 }
 
 // RegisterWaitlistServiceHandler registers svc as the pantherclaw.v1.WaitlistService implementation
@@ -87,6 +246,14 @@ func RegisterWaitlistServiceHandler(server *connect.Server, svc WaitlistServiceH
 	server.Register(
 		connect.Method{Spec: waitlistServiceListWaitlistEntriesSpec(), Handler: adapter.listWaitlistEntries},
 		connect.Method{Spec: waitlistServiceGetWaitlistEntrySpec(), Handler: adapter.getWaitlistEntry},
+		connect.Method{Spec: waitlistServiceAssignWaitlistEntrySpec(), Handler: adapter.assignWaitlistEntry},
+		connect.Method{Spec: waitlistServiceRequestAccessSpec(), Handler: adapter.requestAccess},
+		connect.Method{Spec: waitlistServiceDismissAccessRequestSpec(), Handler: adapter.dismissAccessRequest},
+		connect.Method{Spec: waitlistServiceGetEscalationChainSpec(), Handler: adapter.getEscalationChain},
+		connect.Method{Spec: waitlistServiceSetEscalationChainSpec(), Handler: adapter.setEscalationChain},
+		connect.Method{Spec: waitlistServiceGetWaitlistSettingsSpec(), Handler: adapter.getWaitlistSettings},
+		connect.Method{Spec: waitlistServiceUpdateWaitlistSettingsSpec(), Handler: adapter.updateWaitlistSettings},
+		connect.Method{Spec: waitlistServiceGetWaitlistMetricsSpec(), Handler: adapter.getWaitlistMetrics},
 	)
 }
 
@@ -99,6 +266,38 @@ func (UnimplementedWaitlistServiceHandler) ListWaitlistEntries(context.Context, 
 
 func (UnimplementedWaitlistServiceHandler) GetWaitlistEntry(context.Context, *v1.GetWaitlistEntryRequest) (*v1.GetWaitlistEntryResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.GetWaitlistEntry is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) AssignWaitlistEntry(context.Context, *v1.AssignWaitlistEntryRequest) (*v1.AssignWaitlistEntryResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.AssignWaitlistEntry is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) RequestAccess(context.Context, *v1.RequestAccessRequest) (*v1.RequestAccessResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.RequestAccess is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) DismissAccessRequest(context.Context, *v1.DismissAccessRequestRequest) (*v1.DismissAccessRequestResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.DismissAccessRequest is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) GetEscalationChain(context.Context, *v1.GetEscalationChainRequest) (*v1.GetEscalationChainResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.GetEscalationChain is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) SetEscalationChain(context.Context, *v1.SetEscalationChainRequest) (*v1.SetEscalationChainResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.SetEscalationChain is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) GetWaitlistSettings(context.Context, *v1.GetWaitlistSettingsRequest) (*v1.GetWaitlistSettingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.GetWaitlistSettings is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) UpdateWaitlistSettings(context.Context, *v1.UpdateWaitlistSettingsRequest) (*v1.UpdateWaitlistSettingsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.UpdateWaitlistSettings is not implemented")
+}
+
+func (UnimplementedWaitlistServiceHandler) GetWaitlistMetrics(context.Context, *v1.GetWaitlistMetricsRequest) (*v1.GetWaitlistMetricsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WaitlistService.GetWaitlistMetrics is not implemented")
 }
 
 type waitlistServiceClient struct {
@@ -116,6 +315,70 @@ func (c *waitlistServiceClient) ListWaitlistEntries(ctx context.Context, req *v1
 func (c *waitlistServiceClient) GetWaitlistEntry(ctx context.Context, req *v1.GetWaitlistEntryRequest) (*v1.GetWaitlistEntryResponse, error) {
 	var res v1.GetWaitlistEntryResponse
 	if err := c.client.CallUnary(ctx, waitlistServiceGetWaitlistEntrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) AssignWaitlistEntry(ctx context.Context, req *v1.AssignWaitlistEntryRequest) (*v1.AssignWaitlistEntryResponse, error) {
+	var res v1.AssignWaitlistEntryResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceAssignWaitlistEntrySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) RequestAccess(ctx context.Context, req *v1.RequestAccessRequest) (*v1.RequestAccessResponse, error) {
+	var res v1.RequestAccessResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceRequestAccessSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) DismissAccessRequest(ctx context.Context, req *v1.DismissAccessRequestRequest) (*v1.DismissAccessRequestResponse, error) {
+	var res v1.DismissAccessRequestResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceDismissAccessRequestSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) GetEscalationChain(ctx context.Context, req *v1.GetEscalationChainRequest) (*v1.GetEscalationChainResponse, error) {
+	var res v1.GetEscalationChainResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceGetEscalationChainSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) SetEscalationChain(ctx context.Context, req *v1.SetEscalationChainRequest) (*v1.SetEscalationChainResponse, error) {
+	var res v1.SetEscalationChainResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceSetEscalationChainSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) GetWaitlistSettings(ctx context.Context, req *v1.GetWaitlistSettingsRequest) (*v1.GetWaitlistSettingsResponse, error) {
+	var res v1.GetWaitlistSettingsResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceGetWaitlistSettingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) UpdateWaitlistSettings(ctx context.Context, req *v1.UpdateWaitlistSettingsRequest) (*v1.UpdateWaitlistSettingsResponse, error) {
+	var res v1.UpdateWaitlistSettingsResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceUpdateWaitlistSettingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *waitlistServiceClient) GetWaitlistMetrics(ctx context.Context, req *v1.GetWaitlistMetricsRequest) (*v1.GetWaitlistMetricsResponse, error) {
+	var res v1.GetWaitlistMetricsResponse
+	if err := c.client.CallUnary(ctx, waitlistServiceGetWaitlistMetricsSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -141,6 +404,102 @@ func (h waitlistServiceHandler) getWaitlistEntry(ctx context.Context, _ connect.
 		return err
 	}
 	res, err := h.svc.GetWaitlistEntry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) assignWaitlistEntry(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AssignWaitlistEntryRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AssignWaitlistEntry(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) requestAccess(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RequestAccessRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestAccess(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) dismissAccessRequest(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.DismissAccessRequestRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.DismissAccessRequest(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) getEscalationChain(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetEscalationChainRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetEscalationChain(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) setEscalationChain(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SetEscalationChainRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SetEscalationChain(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) getWaitlistSettings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetWaitlistSettingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetWaitlistSettings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) updateWaitlistSettings(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UpdateWaitlistSettingsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UpdateWaitlistSettings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h waitlistServiceHandler) getWaitlistMetrics(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetWaitlistMetricsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetWaitlistMetrics(ctx, &req)
 	if err != nil {
 		return err
 	}

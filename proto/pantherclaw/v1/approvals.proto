@@ -1,0 +1,470 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
+
+syntax = "proto3";
+
+package pantherclaw.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/authority.proto";
+
+// ApprovalService serves approval requests (Pass; G0 M5 part 2): reading
+// them, and the decider actions that grant nothing (HR-172): declining,
+// requesting evidence and proposing a narrower action. Approving, stepping
+// up and approving a batch are page actions on /approvals with a WebAuthn
+// assertion whose challenge is the binding (decision 1, HR-033): no RPC,
+// CLI command or channel message approves anything.
+//
+// A request is visible to its eligible deciders, the run's launcher and
+// represented principal, and holders of approval.read on the agent's scope
+// path; anyone else gets NotFound (T-037).
+service ApprovalService {
+  // ListApprovalRequests lists the requests the caller may see, newest
+  // first. Holding approval.read is not required: the caller always sees
+  // the requests they may decide and their own runs' requests.
+  // permission: authenticated
+  rpc ListApprovalRequests(ListApprovalRequestsRequest) returns (ListApprovalRequestsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetApprovalRequest returns one request with its stored display, the
+  // untrusted evidence, the responses, the variant history and the
+  // caller's eligibility.
+  // permission: authenticated
+  rpc GetApprovalRequest(GetApprovalRequestRequest) returns (GetApprovalRequestResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // DeclineApprovalRequest declines a pending request: the held action
+  // ends as DENY (APPROVAL_DECLINED). Needs a person signed in through a
+  // browser or the CLI who is eligible to decide it; the note is shown to
+  // people only (design decision 18).
+  // permission: approval.respond
+  rpc DeclineApprovalRequest(DeclineApprovalRequestRequest) returns (DeclineApprovalRequestResponse);
+  // RequestApprovalEvidence asks the run for evidence before an evidence
+  // deadline; the request waits in EVIDENCE_REQUESTED until evidence
+  // arrives or the evidence deadline passes (then DENY).
+  // permission: approval.respond
+  rpc RequestApprovalEvidence(RequestApprovalEvidenceRequest) returns (RequestApprovalEvidenceResponse);
+  // ProposeNarrowerAction proposes the same action with narrower material
+  // parameters (F147). The original action ends as DENY
+  // (NARROWER_PROPOSED); the agent may submit the proposal as a new
+  // action, which gets its own decision and approval. validate_only
+  // simulates it without ending anything.
+  // permission: approval.respond
+  rpc ProposeNarrowerAction(ProposeNarrowerActionRequest) returns (ProposeNarrowerActionResponse);
+  // SubmitApprovalEvidence adds an UNTRUSTED note from the run's launcher
+  // or represented principal (HR-172). It never changes the binding.
+  // permission: authenticated
+  rpc SubmitApprovalEvidence(SubmitApprovalEvidenceRequest) returns (SubmitApprovalEvidenceResponse);
+  // DeclineApprovalBatch declines up to 25 pending requests for one
+  // operation at once; each gets its own response and audit event
+  // (HR-175, Team edition).
+  // permission: approval.respond
+  rpc DeclineApprovalBatch(DeclineApprovalBatchRequest) returns (DeclineApprovalBatchResponse);
+}
+
+// ApprovalState is a request's state (HR-171). PENDING and
+// EVIDENCE_REQUESTED wait for deciders; APPROVED waits for the agent to
+// resubmit; the others are final.
+enum ApprovalState {
+  APPROVAL_STATE_UNSPECIFIED = 0;
+  APPROVAL_STATE_PENDING = 1;
+  APPROVAL_STATE_EVIDENCE_REQUESTED = 2;
+  APPROVAL_STATE_APPROVED = 3;
+  // Used by the finalization that issued the permit (at most once).
+  APPROVAL_STATE_CONSUMED = 4;
+  APPROVAL_STATE_DECLINED = 5;
+  APPROVAL_STATE_EXPIRED = 6;
+  // Ended by a change that makes the request moot (a revoked grant, a
+  // suspended agent, the kill switch); the next evaluation decides again.
+  APPROVAL_STATE_INVALIDATED = 7;
+  // Replaced by a request with a new binding for the same transaction.
+  APPROVAL_STATE_SUPERSEDED = 8;
+}
+
+// ApprovalSubjectKind is what a request decides.
+enum ApprovalSubjectKind {
+  APPROVAL_SUBJECT_KIND_UNSPECIFIED = 0;
+  // A held action (an ACTION_HOLD entry).
+  APPROVAL_SUBJECT_KIND_ACTION = 1;
+  // Restoring a suspended agent (a RESTORATION entry, decision 11).
+  APPROVAL_SUBJECT_KIND_RESTORATION = 2;
+}
+
+// DeciderResponseKind is the kind of a decider's response.
+enum DeciderResponseKind {
+  DECIDER_RESPONSE_KIND_UNSPECIFIED = 0;
+  DECIDER_RESPONSE_KIND_APPROVE = 1;
+  DECIDER_RESPONSE_KIND_STEP_UP = 2;
+  DECIDER_RESPONSE_KIND_DECLINE = 3;
+  DECIDER_RESPONSE_KIND_REQUEST_EVIDENCE = 4;
+  DECIDER_RESPONSE_KIND_PROPOSE_NARROWER = 5;
+}
+
+// DeclineReason is why a decider declined (design decision 11).
+enum DeclineReason {
+  DECLINE_REASON_UNSPECIFIED = 0;
+  DECLINE_REASON_NOT_NEEDED = 1;
+  DECLINE_REASON_TOO_RISKY = 2;
+  DECLINE_REASON_WRONG_TARGET = 3;
+  DECLINE_REASON_NEEDS_DIFFERENT_APPROACH = 4;
+  DECLINE_REASON_OTHER = 5;
+}
+
+// SaferAlternative is an optional pointer a decider gives with a decline.
+enum SaferAlternative {
+  SAFER_ALTERNATIVE_UNSPECIFIED = 0;
+  // Propose or submit a narrower action.
+  SAFER_ALTERNATIVE_NARROWER_ACTION = 1;
+  // Leave it to a person.
+  SAFER_ALTERNATIVE_PERSON_PERFORMS = 2;
+  // Try again later.
+  SAFER_ALTERNATIVE_RETRY_LATER = 3;
+  // Ask the agent's owner first.
+  SAFER_ALTERNATIVE_ASK_OWNER = 4;
+}
+
+// EvidenceQuestion is what a decider asks the run for.
+enum EvidenceQuestion {
+  EVIDENCE_QUESTION_UNSPECIFIED = 0;
+  // Why the action is needed.
+  EVIDENCE_QUESTION_WHY_NEEDED = 1;
+  // The customer or ticket it is for.
+  EVIDENCE_QUESTION_CONTEXT = 2;
+  // How the parameters were chosen.
+  EVIDENCE_QUESTION_PARAMETER_BASIS = 3;
+  // Anything else (see the note).
+  EVIDENCE_QUESTION_OTHER = 4;
+}
+
+// ApprovalRequirement is one merged requirement of a request with its
+// sources (design decisions 1 and 14).
+message ApprovalRequirement {
+  // "approval" or "step_up".
+  string kind = 1;
+  // Approval: the default role whose approval.respond counts (decision 2).
+  string role = 2;
+  // Approval: distinct people (and credentials) needed.
+  int32 count = 3;
+  // Approval: the agent's owners and the grant's issuer are excluded too
+  // (decision 3).
+  bool independent = 4;
+  // Step-up: "launcher" or "principal".
+  string subject = 5;
+  // Step-up: "webauthn".
+  string method = 6;
+  // Where the requirement comes from: grant levels and policy rules.
+  repeated string sources = 7;
+  // Responses that currently count toward it.
+  int32 satisfied = 8;
+}
+
+// ApprovalRequest is one request.
+message ApprovalRequest {
+  // Request id.
+  string id = 1;
+  // What it decides.
+  ApprovalSubjectKind subject_kind = 2;
+  // State.
+  ApprovalState state = 3;
+  // Why a final request ended (for example APPROVAL_DECLINED,
+  // GRANT_REVOKED, BINDING_CHANGED).
+  string end_reason = 4;
+  // The agent concerned.
+  string agent_id = 5;
+  // ACTION: the run, the transaction and the grant revision it binds.
+  string run_id = 6;
+  // ACTION: the held transaction (the wait handle).
+  string transaction_id = 7;
+  // ACTION: the run's grant.
+  string grant_id = 8;
+  // ACTION: the grant revision.
+  int32 grant_revision = 9;
+  // The operation, or "agent.restore".
+  string operation = 10;
+  // The binding (PAP-1 §8), base64url.
+  string binding = 11;
+  // The merged requirements.
+  repeated ApprovalRequirement requirements = 12;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 13;
+  // Deadline; without approval by then the action ends as DENY.
+  google.protobuf.Timestamp deadline_time = 14;
+  // Evidence deadline (EVIDENCE_REQUESTED only).
+  google.protobuf.Timestamp evidence_deadline_time = 15;
+  // When every requirement was met.
+  google.protobuf.Timestamp approve_time = 16;
+  // The agent must resubmit before this time.
+  google.protobuf.Timestamp consume_by_time = 17;
+  // When the approval was used.
+  google.protobuf.Timestamp consume_time = 18;
+  // The request this one superseded.
+  string previous_id = 19;
+  // RESTORATION: who asked.
+  string requested_by = 20;
+}
+
+// DeciderResponse is one recorded response.
+message DeciderResponse {
+  // Response id.
+  string id = 1;
+  // Kind.
+  DeciderResponseKind kind = 2;
+  // The person.
+  string user_id = 3;
+  // APPROVE and STEP_UP: the requirement it counts toward (index).
+  int32 requirement = 4;
+  // DECLINE: the reason.
+  DeclineReason decline_reason = 5;
+  // DECLINE: an optional safer alternative.
+  SaferAlternative alternative = 6;
+  // REQUEST_EVIDENCE: the question.
+  EvidenceQuestion question = 7;
+  // The decider's note, for people only: never returned to workloads,
+  // never sent in a notification and never logged.
+  string note = 8;
+  // PROPOSE_NARROWER: the proposed canonical parameters (JSON).
+  bytes proposed_params = 9;
+  // APPROVE and STEP_UP: the WebAuthn credential used.
+  string credential_id = 10;
+  // The batch it was part of, if any.
+  string batch_id = 11;
+  // Response time.
+  google.protobuf.Timestamp create_time = 12;
+  // Set when the response stopped counting (HR-170).
+  google.protobuf.Timestamp void_time = 13;
+  // ROLE_REMOVED, USER_DISABLED, CREDENTIAL_REMOVED, CREDENTIAL_SUSPENDED
+  // or NOT_ELIGIBLE.
+  string void_reason = 14;
+}
+
+// ApprovalEvidence is one UNTRUSTED note from the run (HR-172): shown only
+// in the untrusted block, never in notifications, never part of the binding.
+message ApprovalEvidence {
+  // Evidence id.
+  string id = 1;
+  // "workload" or "user".
+  string author_kind = 2;
+  // The instance or user id.
+  string author_id = 3;
+  // UNTRUSTED text, with bidi and control characters removed.
+  string note = 4;
+  // Whether the text mixes scripts in one word (HR-034).
+  bool mixed_script = 5;
+  // Submission time.
+  google.protobuf.Timestamp create_time = 6;
+}
+
+// ApprovalVariant is an earlier request for the same grant, operation and
+// target (HR-037).
+message ApprovalVariant {
+  // Request id.
+  string request_id = 1;
+  // Its transaction.
+  string transaction_id = 2;
+  // Its state.
+  ApprovalState state = 3;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 4;
+}
+
+// ApprovalEligibility says whether the caller may decide a request now.
+message ApprovalEligibility {
+  // Whether the caller may approve (or step up) now.
+  bool can_approve = 1;
+  // Whether the caller may decline, ask for evidence or propose.
+  bool can_respond = 2;
+  // Requirements the caller's response would count toward (indexes).
+  repeated int32 requirements = 3;
+  // Why not, as a stable code (for example LAUNCHER_EXCLUDED,
+  // ROLE_COOLDOWN, NO_ACTIVE_CREDENTIAL, ALREADY_RESPONDED).
+  string reason = 4;
+}
+
+// ListApprovalRequestsRequest pages through requests.
+message ListApprovalRequestsRequest {
+  // Maximum results (default 50, at most 200).
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only requests in these states (PENDING and EVIDENCE_REQUESTED when
+  // empty).
+  repeated ApprovalState states = 3 [(buf.validate.field).repeated = {
+    max_items: 8
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only requests about this agent.
+  optional string agent_id = 4 [(buf.validate.field).string.uuid = true];
+  // Only requests of this run.
+  optional string run_id = 5 [(buf.validate.field).string.uuid = true];
+  // Only requests the caller may decide now.
+  bool waiting_for_me = 6;
+}
+
+// ListApprovalRequestsResponse is one page.
+message ListApprovalRequestsResponse {
+  // Requests, newest first.
+  repeated ApprovalRequest requests = 1;
+  // Token for the next page; empty on the last page.
+  string next_page_token = 2;
+  // The scopes whose requests the caller can see, so that an empty list
+  // means "nothing waiting there" (F626).
+  repeated string checked_scopes = 3;
+}
+
+// GetApprovalRequestRequest names a request.
+message GetApprovalRequestRequest {
+  // Request id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetApprovalRequestResponse returns it.
+message GetApprovalRequestResponse {
+  // The request.
+  ApprovalRequest request = 1;
+  // The stored display (canonical JSON, HR-034): exactly what the binding
+  // covers. Its untrusted block holds agent-supplied text.
+  bytes display = 2;
+  // SHA-256 of display, base64url (the binding's display_hash).
+  string display_hash = 3;
+  // UNTRUSTED evidence notes.
+  repeated ApprovalEvidence evidence = 4;
+  // Responses, oldest first.
+  repeated DeciderResponse responses = 5;
+  // Earlier variants of this grant, operation and target.
+  repeated ApprovalVariant variants = 6;
+  // The caller's eligibility.
+  ApprovalEligibility eligibility = 7;
+}
+
+// DeclineApprovalRequestRequest declines a request.
+message DeclineApprovalRequestRequest {
+  // Request id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Why.
+  DeclineReason reason = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // An optional safer alternative.
+  SaferAlternative alternative = 3 [(buf.validate.field).enum.defined_only = true];
+  // A note for people (at most 500 characters).
+  string note = 4 [(buf.validate.field).string.max_len = 500];
+}
+
+// DeclineApprovalRequestResponse returns the request.
+message DeclineApprovalRequestResponse {
+  // The request.
+  ApprovalRequest request = 1;
+}
+
+// RequestApprovalEvidenceRequest asks the run for evidence.
+message RequestApprovalEvidenceRequest {
+  // Request id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // What is asked.
+  EvidenceQuestion question = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // A note for people (at most 500 characters).
+  string note = 3 [(buf.validate.field).string.max_len = 500];
+  // When the evidence is due; before the request's deadline.
+  google.protobuf.Timestamp evidence_deadline_time = 4 [(buf.validate.field).required = true];
+}
+
+// RequestApprovalEvidenceResponse returns the request.
+message RequestApprovalEvidenceResponse {
+  // The request.
+  ApprovalRequest request = 1;
+}
+
+// ProposeNarrowerActionRequest proposes narrower parameters.
+message ProposeNarrowerActionRequest {
+  // Request id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The proposed material parameters as a JSON object in the definition's
+  // canonical form. Only material parameters may change, and only toward
+  // narrower values: amounts and integers no larger in magnitude, lists as
+  // subsets (HR-172).
+  bytes params = 2 [(buf.validate.field).bytes = {
+    min_len: 2
+    max_len: 16384
+  }];
+  // A note for people (at most 500 characters).
+  string note = 3 [(buf.validate.field).string.max_len = 500];
+  // Simulate only: check the proposal and return its decision without
+  // ending the request.
+  bool validate_only = 4;
+}
+
+// ProposeNarrowerActionResponse returns the simulated decision.
+message ProposeNarrowerActionResponse {
+  // The request (DECLINED with NARROWER_PROPOSED unless validate_only).
+  ApprovalRequest request = 1;
+  // The proposed canonical parameters.
+  bytes params = 2;
+  // The pipeline's decision for the proposal, as the agent would get it.
+  Decision simulated_decision = 3;
+  // Its reasons, decisive first.
+  repeated Reason simulated_reasons = 4;
+}
+
+// SubmitApprovalEvidenceRequest adds an UNTRUSTED note.
+message SubmitApprovalEvidenceRequest {
+  // Request id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The note (at most 4 KiB).
+  string note = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 4096
+  }];
+}
+
+// SubmitApprovalEvidenceResponse returns the evidence and the request.
+message SubmitApprovalEvidenceResponse {
+  // The evidence.
+  ApprovalEvidence evidence = 1;
+  // The request (back to PENDING when evidence was requested).
+  ApprovalRequest request = 2;
+}
+
+// DeclineApprovalBatchRequest declines several requests for one operation.
+message DeclineApprovalBatchRequest {
+  // Request ids (1-25).
+  repeated string ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 25
+    unique: true
+    items: {
+      string: {uuid: true}
+    }
+  }];
+  // Why.
+  DeclineReason reason = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // A note for people (at most 500 characters).
+  string note = 3 [(buf.validate.field).string.max_len = 500];
+}
+
+// DeclineApprovalBatchResponse returns the batch and its requests.
+message DeclineApprovalBatchResponse {
+  // Batch id.
+  string batch_id = 1;
+  // The declined requests.
+  repeated ApprovalRequest requests = 2;
+}

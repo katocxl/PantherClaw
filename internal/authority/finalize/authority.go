@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
@@ -78,6 +79,59 @@ type Result struct {
 	AccessMode string
 	// Repeat is set when the answer is a stored decision (HR-005).
 	Repeat bool
+	// Wait is the wait handle of a held action, or of one its approval
+	// request ended (G0 M5 part 2); nil otherwise.
+	Wait *Wait
+}
+
+// DefaultRetryAfter is how long a held agent waits before waiting again or
+// resubmitting (PAP-1 §7.1 retry_after_s).
+const DefaultRetryAfter = 5 * time.Second
+
+// Wait is a wait handle (PAP-1 §7.1, §8): the transaction id, the state of
+// its approval request as a waiter sees it, and its times. It never carries
+// approver identities, notes or the display (HR-174).
+type Wait struct {
+	Handle           ids.UUID
+	RetryAfter       time.Duration
+	Deadline         time.Time
+	State            string
+	ConsumeBy        *time.Time
+	RequestID        ids.UUID
+	Code             string
+	EvidenceDeadline *time.Time
+	ProposedParams   []byte
+}
+
+// waitOf returns the wait handle of an evaluation: for a hold, and for a
+// DENY that its approval request decided (declined, narrower proposed or
+// expired).
+func waitOf(ev *pipeline.Evaluation, txn ids.UUID) *Wait {
+	h := ev.Hold
+	if h == nil {
+		return nil
+	}
+	held := ev.Decision == adomain.RequireApproval || ev.Decision == adomain.RequireStepUp
+	ended := ev.Decision == adomain.Deny && h.Code != "" && ev.Decisive().Code == h.Code
+	if !held && !ended {
+		return nil
+	}
+	w := &Wait{Handle: txn, RetryAfter: DefaultRetryAfter, Deadline: h.Deadline, State: h.State, Code: h.Code}
+	if r := h.Request; r != nil && (h.Keep || ended) {
+		w.RequestID, w.Deadline = r.ID, r.Deadline
+		switch h.State {
+		case apdomain.WaitEvidenceRequested:
+			w.Code, w.EvidenceDeadline = r.Question, r.EvidenceDeadline
+		case apdomain.WaitReady:
+			w.ConsumeBy = r.ConsumeBy
+		case apdomain.WaitNarrowerProposed:
+			w.ProposedParams = r.ProposedParams
+		}
+	}
+	if ended {
+		w.RetryAfter = 0
+	}
+	return w
 }
 
 // Authorize decides one action and binds the decision. A finalized
@@ -125,12 +179,22 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 			a.log(ctx).InfoContext(ctx, "authz.decision", slog.String("txn_id", res.TransactionID.String()),
 				slog.String("decision", string(res.Decision)), slog.String("reason_code", ev.Decisive().Code))
 			return res, nil
-		case errors.Is(err, ErrParked):
-			ev = override(ev, pipeline.ReasonReconciliation, "an identical irreversible action is in flight, unknown or recently succeeded")
+		case errors.Is(err, ErrParked), errors.Is(err, ErrHoldLimit):
+			code, detail := pipeline.ReasonReconciliation, "an identical irreversible action is in flight, unknown or recently succeeded"
+			if errors.Is(err, ErrHoldLimit) {
+				code, detail = apdomain.ReasonHoldLimitReached, "the grant or the run already has its maximum of pending holds"
+			}
+			ev = override(ev, code, detail)
 			if res, err = a.bind(ctx, gw, ev, prev); err == nil {
 				return res, nil
 			}
 			if !retryable(err) {
+				return Result{}, err
+			}
+		case errors.Is(err, ErrApprovalNotMet):
+			// An approver is no longer eligible (HR-170): record it, then
+			// decide again, which holds the action until the request is met.
+			if err := a.Store.Revalidate(ctx, gw.Org, ev.Hold.Request.ID); err != nil {
 				return Result{}, err
 			}
 		case retryable(err):
@@ -173,6 +237,14 @@ func (a *Authority) evaluate(ctx context.Context, req pipeline.Request, run, act
 		return nil, nil, err
 	}
 	return prev, ev, nil
+}
+
+// Holds reports whether an evaluation records a hold: an enforced
+// REQUIRE_APPROVAL or REQUIRE_STEP_UP with what step 8 established (a
+// DENY or CANNOT_AUTHORIZE never does, even when it lists approvals: S03).
+func Holds(ev *pipeline.Evaluation) bool {
+	return ev.Hold != nil && !ev.MonitorPermit() &&
+		(ev.Decision == adomain.RequireApproval || ev.Decision == adomain.RequireStepUp)
 }
 
 func retryable(err error) bool {
@@ -226,10 +298,16 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 	if prev != nil {
 		w.TransactionID, w.Evaluation = prev.TransactionID, prev.Evaluations+1
 	}
+	if Holds(ev) && !ev.Hold.Keep {
+		w.HoldRequest = ids.NewV7()
+	}
 	res := Result{
 		Decision: ev.Decision, TransactionID: w.TransactionID, Evaluation: w.Evaluation, ActionHash: ev.ActionHash,
 		EffectiveHash: ev.EffectiveHash, BasisDigest: ev.Basis.Digest(), Checklist: ev.Checklist,
-		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode,
+		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode, Wait: waitOf(ev, w.TransactionID),
+	}
+	if res.Wait != nil && !w.HoldRequest.IsZero() {
+		res.Wait.RequestID = w.HoldRequest
 	}
 	if ev.Connection != nil {
 		res.AccessMode = ev.Connection.AccessMode

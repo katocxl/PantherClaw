@@ -61,6 +61,10 @@ type stack struct {
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
 	apiURL   string
+	// serverCfg is the server's configuration file and logs its output, for
+	// a restart (serve).
+	serverCfg string
+	logs      syncBuffer
 
 	// The gateway's configuration and its enrollment file (mTLS, M6), the
 	// running gateway and the seeded payments connection.
@@ -69,10 +73,12 @@ type stack struct {
 	gw            *gateway.Gateway
 	conn          ids.UUID
 
-	// The seeded PAP/1 workload: its key, its workload token and its run.
-	key   ed25519.PrivateKey
-	token string
-	run   string
+	// The seeded PAP/1 workload: its key file and key, its workload token
+	// and its run.
+	keyFile string
+	key     ed25519.PrivateKey
+	token   string
+	run     string
 }
 
 type options struct {
@@ -89,6 +95,9 @@ type options struct {
 	// actionTokens makes the target require an action token for the
 	// payments connection (target_enforced, PAP-1 §10).
 	actionTokens bool
+	// shell also seeds pc.shell and the hook connection "shell" (dev seed
+	// --shell).
+	shell bool
 }
 
 func freeAddr(t *testing.T) string {
@@ -118,7 +127,7 @@ var (
 
 func start(t *testing.T, o options) *stack {
 	t.Helper()
-	s := &stack{db: dbtest.New(t), simCalls: &atomic.Int64{}, done: make(chan struct{})}
+	s := &stack{db: dbtest.New(t), simCalls: &atomic.Int64{}}
 	dir := t.TempDir()
 	kek := filepath.Join(dir, "kek")
 	if err := keys.GenerateKEKFile(kek); err != nil {
@@ -165,6 +174,9 @@ func start(t *testing.T, o options) *stack {
 	if o.access != "" {
 		args = append(args, "--access-mode", o.access)
 	}
+	if o.shell {
+		args = append(args, "--shell")
+	}
 	var out, errb bytes.Buffer
 	if code := server.Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("dev seed: %d %s", code, errb.String())
@@ -198,25 +210,9 @@ func start(t *testing.T, o options) *stack {
 		}
 	}
 
-	serverCfg := write("server.json")
-	ctx, cancel := context.WithCancel(context.Background())
-	s.stop = cancel
-	var logs syncBuffer
-	go func() {
-		defer close(s.done)
-		if err := runServer(ctx, serverCfg, &logs); err != nil {
-			t.Errorf("%v\n%s", err, logs.String())
-		}
-	}()
-	t.Cleanup(func() {
-		s.stop()
-		select {
-		case <-s.done:
-		case <-time.After(30 * time.Second):
-			t.Error("server did not stop")
-		}
-	})
-	waitReady(t, "http://"+apiAddr, &logs)
+	s.serverCfg = write("server.json")
+	s.serve(t)
+	s.keyFile = keyFile
 	s.workload(t, keyFile)
 	refundable(t, "http://"+apiAddr, factsFile, "ch_1")
 
@@ -275,6 +271,41 @@ func (s *stack) startGateway(t *testing.T) *gateway.Gateway {
 		t.Fatal(err)
 	}
 	return g
+}
+
+// serve starts the server (again, after stopServer). It stops when the test
+// ends or s.stop is called; s.done closes once it has.
+func (s *stack) serve(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.stop, s.done = cancel, done
+	go func() {
+		defer close(done)
+		if err := runServer(ctx, s.serverCfg, &s.logs); err != nil {
+			t.Errorf("%v\n%s", err, s.logs.String())
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+	waitReady(t, s.apiURL, &s.logs)
+}
+
+// stopServer stops the server and waits until it has.
+func (s *stack) stopServer(t *testing.T) {
+	t.Helper()
+	s.stop()
+	select {
+	case <-s.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("server did not stop")
+	}
 }
 
 func runServer(ctx context.Context, cfgPath string, logs io.Writer) error {
@@ -376,7 +407,9 @@ func (s *stack) tryRefundVia(conn string, act ids.UUID, amount string) (int, rep
 func (s *stack) budget(t *testing.T, txn string) (reserved, spent, permit string) {
 	t.Helper()
 	err := s.db.AppPool(t).InTenantTx(context.Background(), s.org, func(ctx context.Context, tx db.TenantTx) error {
-		if err := tx.QueryRow(ctx, "SELECT reserved::float8::text, spent::float8::text FROM pc.budget_accounts").Scan(&reserved, &spent); err != nil {
+		// The account exists from the first reservation; before it, both are 0.
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(reserved), 0)::float8::text, coalesce(sum(spent), 0)::float8::text
+			FROM pc.budget_accounts`).Scan(&reserved, &spent); err != nil {
 			return err
 		}
 		if txn == "" {
@@ -390,9 +423,9 @@ func (s *stack) budget(t *testing.T, txn string) (reserved, spent, permit string
 	return reserved, spent, permit
 }
 
-// S01 ($30 within grant → accepted, exactly one effect on retry) and S03
-// ($125 over the grant → DENY, nothing reserved or sent).
-func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
+// S01: $30 within the grant is accepted, with exactly one effect when the
+// agent retries.
+func TestS01_ARefundWithinTheGrantIsAcceptedOnce(t *testing.T) {
 	s := start(t, options{budget: "1000.00"})
 	act := ids.NewV7()
 	code, r := s.refund(t, act, "30.00")
@@ -409,12 +442,18 @@ func TestS01_S03_RefundWithinAndOverGrant(t *testing.T) {
 	if st := s.sim.Stats(); st.Refunds != 1 || st.Replays != 0 {
 		t.Fatalf("S01 target stats %+v", st)
 	}
+}
 
-	code, r = s.refund(t, ids.NewV7(), "125.00")
+// S03: $125 is over the grant's $100 per refund: DENY, with nothing
+// reserved or sent. "Even if a manager tries to approve" needs M5 part 2's
+// approvals (M6 slice 23).
+func TestS03_ARefundOverTheGrantIsDenied(t *testing.T) {
+	s := start(t, options{budget: "1000.00"})
+	code, r := s.refund(t, ids.NewV7(), "125.00")
 	if code != http.StatusForbidden || r.Decision != "DENY" || len(r.Reasons) == 0 || r.Reasons[0] != "GRANT_LIMIT_EXCEEDED" {
 		t.Fatalf("S03: %d %+v", code, r)
 	}
-	if reserved, spent, _ := s.budget(t, ""); reserved != "0" || spent != "30" || s.simCalls.Load() != 1 {
+	if reserved, spent, _ := s.budget(t, ""); reserved != "0" || spent != "0" || s.simCalls.Load() != 0 {
 		t.Fatalf("S03 reserved=%s spent=%s target calls=%d", reserved, spent, s.simCalls.Load())
 	}
 }
@@ -466,12 +505,7 @@ func TestS07_TargetTimeoutIsUnknownAndHeld(t *testing.T) {
 // S09: the Authority is down: fail closed, nothing dispatched.
 func TestS09_AuthorityUnavailableDispatchesNothing(t *testing.T) {
 	s := start(t, options{budget: "1000.00"})
-	s.stop()
-	select {
-	case <-s.done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("server did not stop")
-	}
+	s.stopServer(t)
 	code, r := s.refund(t, ids.NewV7(), "30.00")
 	if code != http.StatusServiceUnavailable || r.Error != "authority_unavailable" || s.simCalls.Load() != 0 {
 		t.Fatalf("S09: %d %+v, target calls %d", code, r, s.simCalls.Load())
