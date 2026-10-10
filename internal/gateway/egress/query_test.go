@@ -5,6 +5,7 @@ package egress
 
 import (
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
@@ -50,7 +51,7 @@ func TestHR073_QueryParametersComeOnlyFromTheTemplate(t *testing.T) {
 		}
 		a := actionir.ActionIR{Operation: d.Operation, Target: c.target, Params: []byte(c.params)}
 		r, err := Build("https://payments.example.test", d, a, txn)
-		if err != nil || r.URL.String() != c.want || r.Method != "GET" || r.Body != nil || r.IdempotencyHeader != "" {
+		if err != nil || r.URL.String() != c.want || r.Method != http.MethodGet || r.Body != nil || r.IdempotencyHeader != "" {
 			t.Errorf("%s: %v %+v", c.name, err, r)
 		}
 	}

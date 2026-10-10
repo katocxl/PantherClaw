@@ -327,7 +327,7 @@ func readOperation(at string, ops map[string]*Definition, op string, listing boo
 		return nil, invalid("%s: %s must be a read operation in this package", at, op)
 	}
 	switch x := r.Dispatch; {
-	case x != nil && x.HTTP != nil && x.HTTP.Method == "GET":
+	case x != nil && x.HTTP != nil && x.HTTP.Method == methods[0]: // GET
 	case x != nil && x.MCP != nil && !listing:
 	case listing:
 		return nil, invalid("%s: %s needs an HTTP GET dispatch template", at, op)
