@@ -67,7 +67,8 @@ type Lease struct {
 }
 
 // Report is what a gateway observed under a lease: only the fields the
-// verifier declares, by JSON pointer, and a digest of the answer.
+// verifier declares, by JSON pointer, and a digest of the answer; for a
+// target-log task, the objects listed (HR-112).
 type Report struct {
 	Task           ids.UUID
 	Secret         []byte
@@ -76,7 +77,27 @@ type Report struct {
 	Complete       bool
 	Fields         map[string]string
 	ResponseDigest []byte
+	Items          []TargetLogItem
 }
+
+// TargetLogItem is one object a target log listed: its id at the target,
+// the idempotency key it was created with (empty when none), and when.
+type TargetLogItem struct {
+	ObjectRef   string
+	Correlation string
+	Created     time.Time
+}
+
+// MaxTargetLogItems is the most objects one target-log report carries.
+const MaxTargetLogItems = 1000
+
+// TargetLogEvery is how often each connection's target log is read, and
+// TargetLogOverlap how far each window reaches back into the previous one
+// (G0 M7 design decision 6).
+const (
+	TargetLogEvery   = 15 * time.Minute
+	TargetLogOverlap = 5 * time.Minute
+)
 
 // Applied is what a report changed.
 type Applied struct {
@@ -117,7 +138,14 @@ type Effect struct {
 	Effects []EffectResult
 	Limits  string
 	Reason  string
-	At      time.Time
+	// Person is who resolved it, for the "person" basis.
+	Person *ids.UUID
+	// Compensation is the compensating transaction, for the
+	// "compensation" basis; Reversibility is the original definition's, so
+	// an irreversible effect reads "compensated, not reversed" (HR-193).
+	Compensation  *ids.UUID
+	Reversibility defs.Reversibility
+	At            time.Time
 }
 
 // EffectResult is the state of one declared effect kind.
@@ -150,6 +178,11 @@ type Store interface {
 	// Expire returns leases nobody reported to PENDING and ends tasks whose
 	// window closed, appending the deadline's effect receipt.
 	Expire(ctx context.Context, org ids.OrgID, sign Sign) (int, error)
+	// ScheduleTargetLogs creates a target-log task for each active
+	// connection whose pinned package declares a target log and has none
+	// open, for the window since its last complete run, minus overlap
+	// (HR-112).
+	ScheduleTargetLogs(ctx context.Context, org ids.OrgID, overlap time.Duration) (int, error)
 }
 
 // Signer signs a compact JWS of a JOSE type (the receipts key's signer).
@@ -186,7 +219,15 @@ func (s *Service) Report(ctx context.Context, org ids.OrgID, gateway ids.UUID, r
 	if len(r.Secret) != 32 || (len(r.ResponseDigest) != 0 && len(r.ResponseDigest) != sha256.Size) {
 		return Applied{}, ErrLease
 	}
+	if len(r.Items) > MaxTargetLogItems {
+		return Applied{}, ErrUndeclared
+	}
 	return s.Store.Report(ctx, org, gateway, r, s.sign)
+}
+
+// ScheduleTargetLogs schedules one org's target-log reads.
+func (s *Service) ScheduleTargetLogs(ctx context.Context, org ids.OrgID) (int, error) {
+	return s.Store.ScheduleTargetLogs(ctx, org, TargetLogOverlap)
 }
 
 // Expire ends what the clock ended for one org.
@@ -207,6 +248,12 @@ func (s *Service) sign(e Effect) (Signed, error) {
 			obs[i] = o.String()
 		}
 		basis["observations"] = obs
+	}
+	if e.Person != nil {
+		basis["person"] = e.Person.String()
+	}
+	if e.Compensation != nil {
+		basis["transaction"] = e.Compensation.String()
 	}
 	pap := map[string]any{
 		"v": 1, "kind": "effect", "org": e.Org.String(), "txn": e.Transaction.String(), "seq": e.Seq,
@@ -233,6 +280,9 @@ func (s *Service) sign(e Effect) (Signed, error) {
 	}
 	if e.Reason != "" {
 		pap["reason"] = e.Reason
+	}
+	if e.Reversibility != "" {
+		pap["reversibility"] = string(e.Reversibility)
 	}
 	iss := s.Issuer
 	if iss == "" {

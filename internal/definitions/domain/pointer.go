@@ -41,6 +41,29 @@ func PointerValue(doc []byte, ptr string) (string, bool) {
 	return "", false
 }
 
+// PointerItems reads the array at a package's JSON pointer (a listing's
+// items), at most limit elements; it returns false for anything that is
+// not an array there, or for more than limit elements.
+func PointerItems(doc []byte, ptr string, limit int) ([]jsontext.Value, bool) {
+	if !ValidPointer(ptr) {
+		return nil, false
+	}
+	v := jsontext.Value(doc)
+	for _, tok := range strings.Split(ptr[1:], "/") {
+		tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
+		next, ok := member(v, tok)
+		if !ok {
+			return nil, false
+		}
+		v = next
+	}
+	var a []jsontext.Value
+	if v.Kind() != jsontext.KindBeginArray || json.Unmarshal(v, &a) != nil || len(a) > limit {
+		return nil, false
+	}
+	return a, true
+}
+
 // member returns the member tok of an object, or the element at index tok
 // of an array (decimal, no leading zero); anything else is absent.
 func member(v jsontext.Value, tok string) (jsontext.Value, bool) {

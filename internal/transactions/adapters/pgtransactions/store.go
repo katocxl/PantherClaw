@@ -23,6 +23,7 @@ import (
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/evidence/ledger"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/transactions/app"
@@ -36,9 +37,17 @@ const receiptKindEffect = "receipt.effect"
 // (pipeline.ClaimSucceeded).
 const claimSucceeded = "SUCCEEDED"
 
+// Notifier queues a notification in the caller's transaction (M5).
+type Notifier interface {
+	Enqueue(ctx context.Context, tx db.TenantTx, m napp.Message) (napp.Enqueued, error)
+}
+
 // Store implements app.Store.
 type Store struct {
 	Pool *db.Pool
+	// Notify tells admins about effects without a receipt; nil sends
+	// nothing.
+	Notify Notifier
 }
 
 var _ app.Store = (*Store)(nil)
@@ -66,13 +75,17 @@ func (s *Store) Claim(ctx context.Context, org ids.OrgID, gateway ids.UUID, limi
 			if err != nil {
 				return err
 			}
-			if n != 1 || v.TransactionID == nil {
+			if n != 1 {
 				continue
 			}
-			out = append(out, app.Lease{
+			l := app.Lease{
 				Task: v.ID, Secret: secret, Purpose: domain.Purpose(v.Purpose), Connection: v.ConnectionID, Operation: v.Operation,
-				Request: v.Request, Correlate: "pc-" + v.TransactionID.String(), Attempt: int(v.Attempts) + 1, Deadline: v.DeadlineAt,
-			})
+				Request: v.Request, Attempt: int(v.Attempts) + 1, Deadline: v.DeadlineAt,
+			}
+			if v.TransactionID != nil {
+				l.Correlate = "pc-" + v.TransactionID.String()
+			}
+			out = append(out, l)
 		}
 		return nil
 	})
@@ -88,7 +101,14 @@ func (s *Store) Report(ctx context.Context, org ids.OrgID, gateway ids.UUID, r a
 		gw := gateway
 		task, err := q.LeasedVerification(ctx, dbq.LeasedVerificationParams{OrgID: org, ID: r.Task, GatewayID: &gw, LeaseHash: hash[:]})
 		if db.IsNoRows(err) {
-			return app.ErrLease
+			tl, err := q.LeasedTargetLog(ctx, dbq.LeasedTargetLogParams{OrgID: org, ID: r.Task, GatewayID: &gw, LeaseHash: hash[:]})
+			if db.IsNoRows(err) {
+				return app.ErrLease
+			} else if err != nil {
+				return err
+			}
+			out, err = s.targetLog(ctx, tx, q, org, gateway, tl, r, sign)
+			return err
 		} else if err != nil {
 			return err
 		}
@@ -296,7 +316,13 @@ func appendEffect(ctx context.Context, tx db.TenantTx, q *dbq.Queries, e app.Eff
 		return err
 	}
 	state := string(e.State)
-	return q.SetEffectState(ctx, dbq.SetEffectStateParams{State: &state, Achieved: achieved, OrgID: e.Org, ID: e.Transaction})
+	if err := q.SetEffectState(ctx, dbq.SetEffectStateParams{State: &state, Achieved: achieved, OrgID: e.Org, ID: e.Transaction}); err != nil {
+		return err
+	}
+	if e.State != domain.Confirmed {
+		return nil
+	}
+	return compensations(ctx, tx, q, e.Org, e.Transaction, sign) // HR-193
 }
 
 // observe records what the gateway reported (HR-190).
