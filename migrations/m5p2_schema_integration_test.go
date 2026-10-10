@@ -29,8 +29,8 @@ type m5p2Fixture struct {
 const (
 	m5p2Request = `INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id,
 		grant_id, grant_revision, variant_key, operation, binding, binding_input, requirements, display, display_hash,
-		deadline_at) VALUES ($1, $2, 'ACTION', $3, $4, 1, $5, $6, 1, $7, 'payments.refund.create', $8, '\x7b7d',
-		'[{"kind":"approval","role":"approver","count":1}]', '{}', $7, date_trunc('second', now()) + $9::interval)`
+		action_ir, deadline_at) VALUES ($1, $2, 'ACTION', $3, $4, 1, $5, $6, 1, $7, 'payments.refund.create', $8, '\x7b7d',
+		'[{"kind":"approval","role":"approver","count":1}]', '{}', $7, '\x7b7d', date_trunc('second', now()) + $9::interval)`
 	m5p2Restoration = `INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, requested_by, operation,
 		binding, binding_input, requirements, display, display_hash, deadline_at)
 		VALUES ($1, $2, 'RESTORATION', $3, $4, 'agent.restore', $5, '\x7b7d', '[{"kind":"approval","role":"approver","count":1}]',

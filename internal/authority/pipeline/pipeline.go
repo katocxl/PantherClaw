@@ -128,6 +128,9 @@ type Hold struct {
 	DisplayHash  [32]byte
 	Binding      apdomain.Binding
 	VariantKey   [32]byte
+	// Action is the canonical action held, which a narrower proposal is
+	// checked against (HR-172).
+	Action []byte
 	// Request is the transaction's latest request, as read (nil: none).
 	Request *HoldRequest
 	// Keep: Request is live and has this binding, so nothing new is
@@ -919,7 +922,7 @@ func (p *Pipeline) hold(ctx context.Context, s *state, latest *HoldRequest, effe
 	if err != nil {
 		return nil, err
 	}
-	h := &Hold{Requirements: reqs, VariantKey: key, Request: latest, State: apdomain.WaitPending}
+	h := &Hold{Requirements: reqs, VariantKey: key, Request: latest, State: apdomain.WaitPending, Action: s.req.Action.Canonical}
 	if latest != nil && latest.State.Live() {
 		if err := p.bind(s, h, effective, latest.Deadline, latest.Variants, latest.Context); err != nil {
 			return nil, err

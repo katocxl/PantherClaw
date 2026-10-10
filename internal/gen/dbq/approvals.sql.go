@@ -12,6 +12,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -179,6 +180,20 @@ func (q *Queries) ApprovedForTarget(ctx context.Context, arg ApprovedForTargetPa
 	return items, nil
 }
 
+const askForEvidence = `-- name: AskForEvidence :execrows
+UPDATE pc.approval_requests SET state = 'EVIDENCE_REQUESTED', evidence_deadline_at = $1
+WHERE org_id = $2 AND id = $3 AND state = 'PENDING'
+  AND $1::timestamptz > now() AND $1::timestamptz < deadline_at
+`
+
+func (q *Queries) AskForEvidence(ctx context.Context, evidenceDeadline *time.Time, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, askForEvidence, evidenceDeadline, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const chainIssuers = `-- name: ChainIssuers :many
 SELECT g.grantor_id AS user_id FROM pc.grant_lineage l
 JOIN pc.grants g ON g.org_id = l.org_id AND g.id = l.ancestor_id
@@ -272,6 +287,60 @@ func (q *Queries) ConsumeApprovalRequest(ctx context.Context, arg ConsumeApprova
 	return i, err
 }
 
+const consumeBindingCeremony = `-- name: ConsumeBindingCeremony :execrows
+UPDATE pc.webauthn_ceremonies SET consumed_at = now()
+WHERE org_id = $1 AND id = $2 AND purpose = 'BINDING'
+  AND approval_request_id = $3 AND user_id = $4 AND session_id = $5
+  AND consumed_at IS NULL AND expires_at > now()
+`
+
+type ConsumeBindingCeremonyParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	RequestID *ids.UUID
+	UserID    ids.UUID
+	SessionID ids.UUID
+}
+
+// The BINDING ceremony is consumed once, in the transaction that records
+// the response (HR-033, HR-153): bound to the browser session, the user
+// and the request, within its 5 minutes.
+func (q *Queries) ConsumeBindingCeremony(ctx context.Context, arg ConsumeBindingCeremonyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeBindingCeremony,
+		arg.OrgID,
+		arg.ID,
+		arg.RequestID,
+		arg.UserID,
+		arg.SessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const consumeWindow = `-- name: ConsumeWindow :one
+SELECT s.consume_window_s FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = $1
+`
+
+func (q *Queries) ConsumeWindow(ctx context.Context, orgID ids.OrgID) (*int32, error) {
+	row := q.db.QueryRow(ctx, consumeWindow, orgID)
+	var consume_window_s *int32
+	err := row.Scan(&consume_window_s)
+	return consume_window_s, err
+}
+
+const countApprovalEvidence = `-- name: CountApprovalEvidence :one
+SELECT count(*)::integer FROM pc.approval_evidence WHERE org_id = $1 AND request_id = $2
+`
+
+func (q *Queries) CountApprovalEvidence(ctx context.Context, orgID ids.OrgID, requestID ids.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countApprovalEvidence, orgID, requestID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countRecentVariants = `-- name: CountRecentVariants :one
 SELECT count(DISTINCT transaction_id)::integer FROM pc.approval_requests
 WHERE org_id = $1 AND variant_key = $2 AND created_at > now() - interval '24 hours'
@@ -325,6 +394,25 @@ func (q *Queries) CountingResponses(ctx context.Context, orgID ids.OrgID, reques
 		return nil, err
 	}
 	return items, nil
+}
+
+const declineApprovalRequest = `-- name: DeclineApprovalRequest :one
+UPDATE pc.approval_requests SET state = 'DECLINED', end_reason = $1, ended_at = now()
+WHERE org_id = $2 AND id = $3 AND state IN ('PENDING', 'EVIDENCE_REQUESTED') AND deadline_at > now()
+RETURNING grant_id, run_id
+`
+
+type DeclineApprovalRequestRow struct {
+	GrantID *ids.UUID
+	RunID   *ids.UUID
+}
+
+// A decline or a narrower proposal ends a waiting request (HR-171).
+func (q *Queries) DeclineApprovalRequest(ctx context.Context, endReason *string, orgID ids.OrgID, iD ids.UUID) (DeclineApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, declineApprovalRequest, endReason, orgID, iD)
+	var i DeclineApprovalRequestRow
+	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
 }
 
 const eligibilityBindings = `-- name: EligibilityBindings :many
@@ -446,6 +534,19 @@ func (q *Queries) EligibilityUsers(ctx context.Context, orgID ids.OrgID, ids []i
 	return items, nil
 }
 
+const evidenceArrived = `-- name: EvidenceArrived :execrows
+UPDATE pc.approval_requests SET state = 'PENDING', evidence_deadline_at = NULL
+WHERE org_id = $1 AND id = $2 AND state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at > now()
+`
+
+func (q *Queries) EvidenceArrived(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, evidenceArrived, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expireApprovalRequest = `-- name: ExpireApprovalRequest :one
 UPDATE pc.approval_requests
 SET state = 'EXPIRED', end_reason = 'APPROVAL_EXPIRED', ended_at = now()
@@ -467,6 +568,90 @@ func (q *Queries) ExpireApprovalRequest(ctx context.Context, orgID ids.OrgID, iD
 	row := q.db.QueryRow(ctx, expireApprovalRequest, orgID, iD)
 	var i ExpireApprovalRequestRow
 	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
+}
+
+const getApprovalRequest = `-- name: GetApprovalRequest :one
+SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests WHERE org_id = $1 AND id = $2
+`
+
+func (q *Queries) GetApprovalRequest(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (PcApprovalRequest, error) {
+	row := q.db.QueryRow(ctx, getApprovalRequest, orgID, iD)
+	var i PcApprovalRequest
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.SubjectKind,
+		&i.AgentID,
+		&i.TransactionID,
+		&i.Evaluation,
+		&i.RunID,
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.VariantKey,
+		&i.RequestedBy,
+		&i.Operation,
+		&i.PreviousID,
+		&i.Binding,
+		&i.BindingInput,
+		&i.Requirements,
+		&i.Display,
+		&i.DisplayHash,
+		&i.State,
+		&i.EndReason,
+		&i.CreatedAt,
+		&i.DeadlineAt,
+		&i.EvidenceDeadlineAt,
+		&i.ApprovedAt,
+		&i.ConsumeBy,
+		&i.ConsumedAt,
+		&i.PermitID,
+		&i.EndedAt,
+		&i.ActionIr,
+	)
+	return i, err
+}
+
+const getApprovalRequestForUpdate = `-- name: GetApprovalRequestForUpdate :one
+SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests WHERE org_id = $1 AND id = $2 FOR UPDATE
+`
+
+// Responses (G0 M5 part 2 slice 207). Each use case locks the request,
+// checks the responder and changes the state by a conditional update.
+func (q *Queries) GetApprovalRequestForUpdate(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (PcApprovalRequest, error) {
+	row := q.db.QueryRow(ctx, getApprovalRequestForUpdate, orgID, iD)
+	var i PcApprovalRequest
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.SubjectKind,
+		&i.AgentID,
+		&i.TransactionID,
+		&i.Evaluation,
+		&i.RunID,
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.VariantKey,
+		&i.RequestedBy,
+		&i.Operation,
+		&i.PreviousID,
+		&i.Binding,
+		&i.BindingInput,
+		&i.Requirements,
+		&i.Display,
+		&i.DisplayHash,
+		&i.State,
+		&i.EndReason,
+		&i.CreatedAt,
+		&i.DeadlineAt,
+		&i.EvidenceDeadlineAt,
+		&i.ApprovedAt,
+		&i.ConsumeBy,
+		&i.ConsumedAt,
+		&i.PermitID,
+		&i.EndedAt,
+		&i.ActionIr,
+	)
 	return i, err
 }
 
@@ -515,14 +700,44 @@ func (q *Queries) HoldCaps(ctx context.Context, orgID ids.OrgID) (HoldCapsRow, e
 	return i, err
 }
 
+const insertApprovalEvidence = `-- name: InsertApprovalEvidence :exec
+INSERT INTO pc.approval_evidence (org_id, id, request_id, author_kind, author_user_id, author_instance_id, note)
+VALUES ($1, $2, $3, $4, $5,
+    $6, $7)
+`
+
+type InsertApprovalEvidenceParams struct {
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	RequestID        ids.UUID
+	AuthorKind       string
+	AuthorUserID     *ids.UUID
+	AuthorInstanceID *ids.UUID
+	Note             string
+}
+
+func (q *Queries) InsertApprovalEvidence(ctx context.Context, arg InsertApprovalEvidenceParams) error {
+	_, err := q.db.Exec(ctx, insertApprovalEvidence,
+		arg.OrgID,
+		arg.ID,
+		arg.RequestID,
+		arg.AuthorKind,
+		arg.AuthorUserID,
+		arg.AuthorInstanceID,
+		arg.Note,
+	)
+	return err
+}
+
 const insertApprovalRequest = `-- name: InsertApprovalRequest :exec
 INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id,
     grant_revision, variant_key, operation, previous_id, binding, binding_input, requirements, display, display_hash,
+    action_ir,
     deadline_at)
 VALUES ($1, $2, 'ACTION', $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15,
-    $16, $17)
+    $16, $17, $18)
 `
 
 type InsertApprovalRequestParams struct {
@@ -542,6 +757,7 @@ type InsertApprovalRequestParams struct {
 	Requirements  []byte
 	Display       []byte
 	DisplayHash   []byte
+	ActionIr      []byte
 	DeadlineAt    time.Time
 }
 
@@ -565,7 +781,61 @@ func (q *Queries) InsertApprovalRequest(ctx context.Context, arg InsertApprovalR
 		arg.Requirements,
 		arg.Display,
 		arg.DisplayHash,
+		arg.ActionIr,
 		arg.DeadlineAt,
+	)
+	return err
+}
+
+const insertApprovalResponse = `-- name: InsertApprovalResponse :exec
+INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
+    credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
+    batch_id)
+VALUES ($1, $2, $3, $4, $5,
+    $6, $7, $8, $9,
+    $10, $11, $12, $13,
+    $14, $15, $16, $17)
+`
+
+type InsertApprovalResponseParams struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	RequestID         ids.UUID
+	UserID            ids.UUID
+	SessionID         *ids.UUID
+	CliSessionID      *ids.UUID
+	Kind              string
+	Requirement       pgtype.Int2
+	CredentialID      *ids.UUID
+	AuthenticatorData []byte
+	ClientDataJson    []byte
+	Signature         []byte
+	ReasonCode        *string
+	AlternativeCode   *string
+	Note              string
+	ProposedParams    []byte
+	BatchID           *ids.UUID
+}
+
+func (q *Queries) InsertApprovalResponse(ctx context.Context, arg InsertApprovalResponseParams) error {
+	_, err := q.db.Exec(ctx, insertApprovalResponse,
+		arg.OrgID,
+		arg.ID,
+		arg.RequestID,
+		arg.UserID,
+		arg.SessionID,
+		arg.CliSessionID,
+		arg.Kind,
+		arg.Requirement,
+		arg.CredentialID,
+		arg.AuthenticatorData,
+		arg.ClientDataJson,
+		arg.Signature,
+		arg.ReasonCode,
+		arg.AlternativeCode,
+		arg.Note,
+		arg.ProposedParams,
+		arg.BatchID,
 	)
 	return err
 }
@@ -656,6 +926,50 @@ func (q *Queries) LatestApprovalRequest(ctx context.Context, orgID ids.OrgID, ru
 	return i, err
 }
 
+const liveRequestOfTransaction = `-- name: LiveRequestOfTransaction :one
+SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests
+WHERE org_id = $1 AND transaction_id = $2
+  AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+FOR UPDATE
+`
+
+func (q *Queries) LiveRequestOfTransaction(ctx context.Context, orgID ids.OrgID, transactionID *ids.UUID) (PcApprovalRequest, error) {
+	row := q.db.QueryRow(ctx, liveRequestOfTransaction, orgID, transactionID)
+	var i PcApprovalRequest
+	err := row.Scan(
+		&i.OrgID,
+		&i.ID,
+		&i.SubjectKind,
+		&i.AgentID,
+		&i.TransactionID,
+		&i.Evaluation,
+		&i.RunID,
+		&i.GrantID,
+		&i.GrantRevision,
+		&i.VariantKey,
+		&i.RequestedBy,
+		&i.Operation,
+		&i.PreviousID,
+		&i.Binding,
+		&i.BindingInput,
+		&i.Requirements,
+		&i.Display,
+		&i.DisplayHash,
+		&i.State,
+		&i.EndReason,
+		&i.CreatedAt,
+		&i.DeadlineAt,
+		&i.EvidenceDeadlineAt,
+		&i.ApprovedAt,
+		&i.ConsumeBy,
+		&i.ConsumedAt,
+		&i.PermitID,
+		&i.EndedAt,
+		&i.ActionIr,
+	)
+	return i, err
+}
+
 const lockApprovalRequest = `-- name: LockApprovalRequest :one
 SELECT id, state FROM pc.approval_requests WHERE org_id = $1 AND id = $2 FOR UPDATE
 `
@@ -670,6 +984,22 @@ func (q *Queries) LockApprovalRequest(ctx context.Context, orgID ids.OrgID, iD i
 	var i LockApprovalRequestRow
 	err := row.Scan(&i.ID, &i.State)
 	return i, err
+}
+
+const markApproved = `-- name: MarkApproved :execrows
+UPDATE pc.approval_requests SET state = 'APPROVED', approved_at = now(), consume_by = $1
+WHERE org_id = $2 AND id = $3 AND state = 'PENDING' AND deadline_at > now()
+  AND $1::timestamptz > now()
+`
+
+// When every requirement is met, the request is APPROVED with its
+// consume-by time (decision 6).
+func (q *Queries) MarkApproved(ctx context.Context, consumeBy *time.Time, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markApproved, consumeBy, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseHoldSlot = `-- name: ReleaseHoldSlot :execrows
@@ -767,6 +1097,17 @@ func (q *Queries) RunAncestors(ctx context.Context, orgID ids.OrgID, iD ids.UUID
 		return nil, err
 	}
 	return items, nil
+}
+
+const runInstance = `-- name: RunInstance :one
+SELECT instance_id FROM pc.runs WHERE org_id = $1 AND id = $2
+`
+
+func (q *Queries) RunInstance(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (*ids.UUID, error) {
+	row := q.db.QueryRow(ctx, runInstance, orgID, iD)
+	var instance_id *ids.UUID
+	err := row.Scan(&instance_id)
+	return instance_id, err
 }
 
 const supersedeApprovalRequest = `-- name: SupersedeApprovalRequest :one

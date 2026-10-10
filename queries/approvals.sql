@@ -59,11 +59,12 @@ ORDER BY up.depth;
 -- name: InsertApprovalRequest :exec
 INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id,
     grant_revision, variant_key, operation, previous_id, binding, binding_input, requirements, display, display_hash,
+    action_ir,
     deadline_at)
 VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ACTION', sqlc.arg(agent_id), sqlc.arg(transaction_id), sqlc.arg(evaluation),
     sqlc.arg(run_id), sqlc.arg(grant_id), sqlc.arg(grant_revision), sqlc.arg(variant_key), sqlc.arg(operation),
     sqlc.narg(previous_id), sqlc.arg(binding), sqlc.arg(binding_input), sqlc.arg(requirements), sqlc.arg(display),
-    sqlc.arg(display_hash), sqlc.arg(deadline_at));
+    sqlc.arg(display_hash), sqlc.arg(action_ir), sqlc.arg(deadline_at));
 
 -- A live request whose binding no longer matches is superseded, never
 -- updated.
@@ -201,3 +202,71 @@ ORDER BY created_at, id;
 -- name: VoidResponse :execrows
 UPDATE pc.approval_responses SET voided_at = now(), void_reason = sqlc.arg(reason)
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND voided_at IS NULL;
+
+-- Responses (G0 M5 part 2 slice 207). Each use case locks the request,
+-- checks the responder and changes the state by a conditional update.
+-- name: GetApprovalRequestForUpdate :one
+SELECT * FROM pc.approval_requests WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) FOR UPDATE;
+
+-- name: GetApprovalRequest :one
+SELECT * FROM pc.approval_requests WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);
+
+-- name: LiveRequestOfTransaction :one
+SELECT * FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id)
+  AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+FOR UPDATE;
+
+-- name: InsertApprovalResponse :exec
+INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
+    credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
+    batch_id)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(request_id), sqlc.arg(user_id), sqlc.narg(session_id),
+    sqlc.narg(cli_session_id), sqlc.arg(kind), sqlc.narg(requirement), sqlc.narg(credential_id),
+    sqlc.narg(authenticator_data), sqlc.narg(client_data_json), sqlc.narg(signature), sqlc.narg(reason_code),
+    sqlc.narg(alternative_code), sqlc.arg(note), sqlc.narg(proposed_params), sqlc.narg(batch_id));
+
+-- A decline or a narrower proposal ends a waiting request (HR-171).
+-- name: DeclineApprovalRequest :one
+UPDATE pc.approval_requests SET state = 'DECLINED', end_reason = sqlc.arg(end_reason), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state IN ('PENDING', 'EVIDENCE_REQUESTED') AND deadline_at > now()
+RETURNING grant_id, run_id;
+
+-- name: AskForEvidence :execrows
+UPDATE pc.approval_requests SET state = 'EVIDENCE_REQUESTED', evidence_deadline_at = sqlc.arg(evidence_deadline)
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'PENDING'
+  AND sqlc.arg(evidence_deadline)::timestamptz > now() AND sqlc.arg(evidence_deadline)::timestamptz < deadline_at;
+
+-- name: EvidenceArrived :execrows
+UPDATE pc.approval_requests SET state = 'PENDING', evidence_deadline_at = NULL
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at > now();
+
+-- name: InsertApprovalEvidence :exec
+INSERT INTO pc.approval_evidence (org_id, id, request_id, author_kind, author_user_id, author_instance_id, note)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(request_id), sqlc.arg(author_kind), sqlc.narg(author_user_id),
+    sqlc.narg(author_instance_id), sqlc.arg(note));
+
+-- name: CountApprovalEvidence :one
+SELECT count(*)::integer FROM pc.approval_evidence WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id);
+
+-- When every requirement is met, the request is APPROVED with its
+-- consume-by time (decision 6).
+-- name: MarkApproved :execrows
+UPDATE pc.approval_requests SET state = 'APPROVED', approved_at = now(), consume_by = sqlc.arg(consume_by)
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'PENDING' AND deadline_at > now()
+  AND sqlc.arg(consume_by)::timestamptz > now();
+
+-- The BINDING ceremony is consumed once, in the transaction that records
+-- the response (HR-033, HR-153): bound to the browser session, the user
+-- and the request, within its 5 minutes.
+-- name: ConsumeBindingCeremony :execrows
+UPDATE pc.webauthn_ceremonies SET consumed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND purpose = 'BINDING'
+  AND approval_request_id = sqlc.arg(request_id) AND user_id = sqlc.arg(user_id) AND session_id = sqlc.arg(session_id)
+  AND consumed_at IS NULL AND expires_at > now();
+
+-- name: ConsumeWindow :one
+SELECT s.consume_window_s FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s ON s.org_id = sqlc.arg(org_id);
+
+-- name: RunInstance :one
+SELECT instance_id FROM pc.runs WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);

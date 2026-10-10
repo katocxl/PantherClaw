@@ -57,6 +57,8 @@ type Hold struct {
 	Display      apdomain.Display
 	DisplayHash  [32]byte
 	Deadline     time.Time
+	// Action is the canonical action held (HR-172).
+	Action []byte
 	// Actor is the gateway that asked.
 	Actor evdomain.Actor
 }
@@ -70,13 +72,27 @@ const (
 	entryCancelled = "CANCELLED" //nolint:misspell // stored value, British spelling as in ARCHITECTURE §6.2
 )
 
+// slot is one hold-slot counter.
+type slot struct {
+	kind string
+	id   *ids.UUID
+	cap  int32
+}
+
+// slots lists a request's counters in the one lock order every
+// transaction uses, the grant's before the run's, so concurrent holds and
+// releases never wait for each other in a cycle.
+func slots(grant, run *ids.UUID, perGrant, perRun int32) []slot {
+	return []slot{{scopeGrant, grant, perGrant}, {scopeRun, run, perRun}}
+}
+
 // release gives back a request's hold slots.
 func release(ctx context.Context, q *dbq.Queries, org ids.OrgID, grant, run *ids.UUID) error {
-	for kind, id := range map[string]*ids.UUID{scopeGrant: grant, scopeRun: run} {
-		if id == nil {
+	for _, s := range slots(grant, run, 0, 0) {
+		if s.id == nil {
 			continue
 		}
-		if _, err := q.ReleaseHoldSlot(ctx, org, kind, *id); err != nil {
+		if _, err := q.ReleaseHoldSlot(ctx, org, s.kind, *s.id); err != nil {
 			return err
 		}
 	}
@@ -130,11 +146,8 @@ func RecordHold(ctx context.Context, tx db.TenantTx, org ids.OrgID, h Hold) erro
 	if err != nil {
 		return err
 	}
-	for kind, c := range map[string]struct {
-		id  ids.UUID
-		cap int32
-	}{scopeGrant: {h.GrantID, caps.PerGrant}, scopeRun: {h.RunID, caps.PerRun}} {
-		n, err := q.TakeHoldSlot(ctx, dbq.TakeHoldSlotParams{OrgID: org, ScopeKind: kind, ScopeID: c.id, Cap: c.cap})
+	for _, s := range slots(&h.GrantID, &h.RunID, caps.PerGrant, caps.PerRun) {
+		n, err := q.TakeHoldSlot(ctx, dbq.TakeHoldSlotParams{OrgID: org, ScopeKind: s.kind, ScopeID: *s.id, Cap: s.cap})
 		if err != nil {
 			return err
 		}
@@ -154,7 +167,7 @@ func RecordHold(ctx context.Context, tx db.TenantTx, org ids.OrgID, h Hold) erro
 		OrgID: org, ID: h.RequestID, AgentID: h.AgentID, TransactionID: &h.TransactionID, Evaluation: ptr(int32(h.Evaluation)), //nolint:gosec // ≤ 64
 		RunID: &h.RunID, GrantID: &h.GrantID, GrantRevision: ptr(int32(h.GrantRevision)), VariantKey: h.VariantKey[:], //nolint:gosec // small
 		Operation: h.Operation, PreviousID: h.Previous, Binding: h.Binding.Hash[:], BindingInput: h.Binding.Input,
-		Requirements: reqs, Display: display.Input, DisplayHash: h.DisplayHash[:], DeadlineAt: h.Deadline,
+		Requirements: reqs, Display: display.Input, DisplayHash: h.DisplayHash[:], ActionIr: h.Action, DeadlineAt: h.Deadline,
 	}); err != nil {
 		return err
 	}
@@ -271,4 +284,23 @@ func Revalidate(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.
 	}
 	_, err = q.ReopenHoldEntry(ctx, ids.NewV7(), org, request)
 	return err
+}
+
+// End ends a waiting request as DECLINED with endReason (a decline or a
+// narrower proposal, HR-171), frees its hold slots and closes its entry
+// with entryState. It returns ErrChanged when the request was no longer
+// waiting.
+func End(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.UUID, endReason, entryState string) error {
+	q := dbq.New(tx)
+	row, err := q.DeclineApprovalRequest(ctx, &endReason, org, request)
+	if db.IsNoRows(err) {
+		return ErrChanged
+	}
+	if err != nil {
+		return err
+	}
+	if err := release(ctx, q, org, row.GrantID, row.RunID); err != nil {
+		return err
+	}
+	return closeEntry(ctx, q, org, request, entryState, endReason)
 }
