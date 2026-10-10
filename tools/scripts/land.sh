@@ -239,6 +239,14 @@ clean_worktree() {
 serve() {
   [ -z "$(git status --porcelain)" ] || die "the lander's worktree has uncommitted changes; it lands from a clean worktree of its own"
   [ -f deploy/compose/.env ] || die "the lander's worktree has no deploy/compose/.env, which task test:integration needs"
+  git fetch --quiet origin main || true
+  if git merge-base --is-ancestor HEAD origin/main &&
+    [ "$(git rev-parse HEAD:tools/scripts/land.sh)" != "$(git rev-parse origin/main:tools/scripts/land.sh)" ]; then
+    say "main has a newer land.sh than this worktree; starting that one"
+    git switch --quiet --detach origin/main
+    [ "$ONCE" = 1 ] && exec bash tools/scripts/land.sh --serve --once
+    exec bash tools/scripts/land.sh --serve
+  fi
   if ! mkdir "$LOCK" 2>/dev/null; then
     lander_alive && die "a lander is already running in $(field "$LOCK/owner" worktree 2>/dev/null || echo '?'); see tools/scripts/land.sh --status"
     say "taking over from a lander that stopped $(age "$BEAT")s ago"
@@ -251,8 +259,10 @@ serve() {
   local beat=$!
   trap 'kill "$beat" 2>/dev/null; rm -rf "$LOCK" "$STATE/current"' EXIT
   say "lander running in $(pwd); queue in $QUEUE"
-  local entry self waiting=0
-  self="$(git rev-parse HEAD:tools/scripts/land.sh)"
+  # seen is this script as main had it when the lander started: a landing
+  # that changes it there restarts the lander with the new version.
+  local entry seen waiting=0
+  seen="$(git rev-parse origin/main:tools/scripts/land.sh)"
   while true; do
     entry="$(entries | head -1)"
     if [ -z "$entry" ]; then
@@ -268,7 +278,7 @@ serve() {
     fi
     waiting=0
     git fetch --quiet origin main || true
-    if [ "$(git rev-parse origin/main:tools/scripts/land.sh)" != "$self" ]; then
+    if [ "$(git rev-parse origin/main:tools/scripts/land.sh)" != "$seen" ]; then
       say "land.sh changed on main; restarting the lander with the new version"
       clean_worktree
       git switch --quiet --detach origin/main
