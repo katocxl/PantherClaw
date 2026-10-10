@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/billing/domain"
@@ -104,7 +105,7 @@ func passphrase(path string) ([]byte, error) {
 
 // loadSigner decodes a root private key and refuses a root of another
 // purpose.
-func loadSigner(keyFile, ppFile string, want rootkey.Purpose) (*jws.Signer, error) {
+func loadSigner(keyFile, ppFile string, want ...rootkey.Purpose) (*jws.Signer, error) {
 	pp, err := passphrase(ppFile)
 	if err != nil {
 		return nil, err
@@ -117,8 +118,8 @@ func loadSigner(keyFile, ppFile string, want rootkey.Purpose) (*jws.Signer, erro
 	if err != nil {
 		return nil, err
 	}
-	if p != want {
-		return nil, fmt.Errorf("key %s is a %s root, not a %s root", keyFile, p, want)
+	if !slices.Contains(want, p) {
+		return nil, fmt.Errorf("key %s is a %s key, not a %s root", keyFile, p, want[0])
 	}
 	pub, _ := priv.Public().(ed25519.PublicKey)
 	return jws.NewSigner(rootkey.KID(p, pub), priv)

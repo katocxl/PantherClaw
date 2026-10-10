@@ -38,4 +38,17 @@ This brief is written before implementation (G0). It closes the gap that [G0 M4]
 
 **Delivery:** one pull request: this brief, HR-163, the code and tests, and BUILD_GUIDE §4.
 
-**Decision:** pending (asked in the Claude Code session on 2026-10-10).
+**Decision:** APPROVED — Joshua Kato, 2026-10-10, in the Claude Code session: option A (the loopback-only development key), and HR-163 with the text above.
+
+---
+
+### Status — 2026-10-10
+
+**Delivered** in one pull request, as designed:
+- `rootkey.PurposeDevPackages` and `trust.DevKID`/`ParseDevKey`; `trust.Sign` accepts the development key; the importer audits every import with its signer's kid (`signing_key`), so imports signed by a package root, an org key and the development key are told apart.
+- `dev.package_key_file` (`internal/server/config_dev.go`), with the checks of design 3 in configuration validation and again where the server builds its package roots. The setting has no environment variable, so only a configuration file turns it on. A missing key file only logs `packages.dev_key_missing`: `dev seed` creates it, and the M1 steps in BUILD_GUIDE §4 start the server before seeding.
+- `dev seed` creates, reuses or refuses the pair (`internal/server/devpackagekey.go`), and still uses a throwaway key when the setting is absent.
+- `pclaw-admin packages sign` takes the development key and says it is one; `keygen` refuses the purpose.
+- BUILD_GUIDE §4 shows how to sign and import locally.
+
+**Tests:** `TestHR163_DevPackageKeyOnlyOnLoopback`, `TestHR163_ProductionConfigsDoNotTrustTheDevKey`, `TestHR163_DevSeedKeepsOneDevelopmentKey` (server), `TestHR163_DevKeyIsNeverAPackageRoot` (trust), `TestHR163_PackagesSignWithTheDevelopmentKey` (pclaw-admin) and the integration test `TestHR163_DevSeedThenImportThroughPackageService` (dev seed twice, then `pc.shell` signed with `pclaw-admin` imports through `PackageService` on the development server and is `FailedPrecondition` on the same server without the setting).

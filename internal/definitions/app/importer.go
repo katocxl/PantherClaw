@@ -134,10 +134,9 @@ func (im *Importer) Import(ctx context.Context, org ids.OrgID, name, version, ta
 		return Result{Package: p, Pin: pin, Unchanged: true}, nil
 	}
 	if ev != nil {
-		ev.Details = map[string]string{"digest": digest, "definitions": strconv.Itoa(len(p.Definitions))}
-		if key != nil {
-			ev.Details["signing_key"] = v.KID
-		}
+		// The signer's kid tells a package root, an org key and the
+		// development key (HR-163) apart in the audit log.
+		ev.Details = map[string]string{"digest": digest, "definitions": strconv.Itoa(len(p.Definitions)), "signing_key": v.KID}
 	}
 	err = im.Repo.Import(ctx, org, Record{
 		PreviousMetadata: last, Metadata: trust.State{Version: v.Version, PayloadDigest: v.PayloadDigest},

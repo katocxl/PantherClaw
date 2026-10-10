@@ -4,6 +4,8 @@
 package admincli
 
 import (
+	"crypto/ed25519"
+	"encoding/json/v2"
 	"errors"
 	"io/fs"
 	"os"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/definitions/trust"
+	"github.com/katocxl/pantherclaw/internal/platform/crypto/jws"
+	"github.com/katocxl/pantherclaw/internal/platform/rootkey"
 )
 
 var mockPayments = filepath.Join("..", "..", "packages", "mock-payments", "package.yaml")
@@ -118,5 +122,43 @@ func TestT036_PackagesVerifyRefusesOtherRoot(t *testing.T) {
 	empty := write(t, dir, "roots.json", `{"keys":[]}`)
 	if code, _, errs := run(t, "packages", "verify", "--roots", empty, "--targets", targets, mockPayments); code != exitError || !strings.Contains(errs, "no package root keys") {
 		t.Fatalf("empty roots: %d %s", code, errs)
+	}
+}
+
+// TestHR163_PackagesSignWithTheDevelopmentKey: the development package key
+// that dev seed keeps signs targets like the package root, and says so; it
+// is never accepted as a package root by verify.
+func TestHR163_PackagesSignWithTheDevelopmentKey(t *testing.T) {
+	dir := t.TempDir()
+	priv, kid, err := rootkey.Generate(rootkey.PurposeDevPackages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pem, err := rootkey.Encode(rootkey.PurposeDevPackages, priv, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := write(t, dir, "package-dev.key", string(pem))
+	pub, _ := priv.Public().(ed25519.PublicKey)
+	devJWKS, err := json.Marshal(map[string][]jws.JWK{"keys": {jws.PublicJWK(pub, kid)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubFile := write(t, dir, "package-dev.pub.json", string(devJWKS))
+	targets := filepath.Join(dir, "targets.jws")
+	code, out, errs := run(t, "packages", "sign", "--key", key, "--version", "2", "--expires-days", "30", "--out", targets, mockPayments)
+	if code != 0 || !strings.Contains(out, kid) || !strings.Contains(out, "development package key") {
+		t.Fatalf("sign exit %d:\n%s%s", code, out, errs)
+	}
+	doc, _ := os.ReadFile(targets)
+	dev, err := trust.ParseDevKey(devJWKS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := trust.Verify(string(doc), dev, time.Now()); err != nil || v.KID != kid {
+		t.Fatalf("verified %v, %v", v.KID, err)
+	}
+	if code, _, errs := run(t, "packages", "verify", "--roots", pubFile, "--targets", targets, mockPayments); code != exitError || !strings.Contains(errs, "does not match its key") {
+		t.Fatalf("the development key verified as a package root: %d %s", code, errs)
 	}
 }
