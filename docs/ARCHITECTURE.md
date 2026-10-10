@@ -213,7 +213,7 @@ Standard library only. Ed25519 signatures (optional ML-DSA-65 dual signature), A
 ## 12. Evidence ledger
 
 - Receipts (decision, execution, effect) and platform audit events are written **unchained** inside their business transaction.
-- A per-org **chainer** (advisory lock) links rows older than `pg_snapshot_xmin(pg_current_snapshot())` into the hash chain — no rollback gaps, no hot row in the authorization path.
+- A per-org **chainer** (a per-org lock on the ledger head) links rows older than `pg_snapshot_xmin(pg_current_snapshot())` into the hash chain — no rollback gaps, no hot row in the authorization path.
 - Merkle tiles and **signed checkpoints** per time window; one **global** root periodically anchored to Sigstore **Rekor v2** with an RFC 3161 timestamp (tenant activity is not revealed).
 - `pclaw verify` checks signatures, chain continuity and consistency proofs offline. The ledger proves integrity of what it contains, not completeness.
 
