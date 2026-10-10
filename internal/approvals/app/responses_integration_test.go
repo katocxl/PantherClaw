@@ -309,7 +309,7 @@ func TestHR172_ANarrowerProposalEndsTheHeldAction(t *testing.T) {
 
 func (f *fx) sweep() approvals.Swept {
 	f.t.Helper()
-	s, err := approvals.SweepOrg(context.Background(), f.p, f.org)
+	s, err := approvals.SweepOrg(context.Background(), f.p, nil, f.org)
 	if err != nil {
 		f.t.Fatal(err)
 	}

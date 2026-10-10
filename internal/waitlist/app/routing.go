@@ -172,6 +172,11 @@ func (r *Router) step(ctx context.Context, tx db.TenantTx, org ids.OrgID, id ids
 			return err
 		}
 	}
+	if i == 0 && e.Kind == wdomain.KindActionHold {
+		if err := r.variants(ctx, tx, q, org, e); err != nil {
+			return err
+		}
+	}
 	var next *time.Time
 	if t := wdomain.StepAt(chain, i+1, e.CreatedAt, e.DeadlineAt); !t.IsZero() && t.Before(e.DeadlineAt) {
 		next = &t
@@ -248,6 +253,32 @@ func (r *Router) owners(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org
 		kind = "decider"
 	}
 	return r.send(ctx, tx, q, org, e.ID, step, kind, m)
+}
+
+// variants tells the Security Admins, once per request, when a hold is at
+// least the third variant of one grant, operation and target within 24
+// hours (HR-037, decision 7); the detection rule is M10.
+func (r *Router) variants(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, e dbq.EntryForRoutingRow) error {
+	req, err := q.GetApprovalRequest(ctx, org, e.SubjectID)
+	if err != nil || len(req.VariantKey) == 0 {
+		return err
+	}
+	n, err := q.CountRecentVariants(ctx, org, req.VariantKey)
+	if err != nil || n < pgapprovals.VariantThreshold {
+		return err
+	}
+	admins, err := q.OrgUsersWithRoles(ctx, org, []string{string(td.RoleSecurityAdmin)})
+	if err != nil {
+		return err
+	}
+	_, err = r.Notify.Enqueue(ctx, tx, notifapp.Message{
+		Org: org, Type: "security.variant_suspected", Personal: admins, DedupeKey: "variant:" + req.ID.String(),
+		Subject: &notifapp.Subject{Type: "approval_request", ID: req.ID},
+		Params: map[string]string{
+			"operation": req.Operation, "agent": req.AgentID.String(), "count": strconv.Itoa(int(n)), "request": req.ID.String(),
+		},
+	})
+	return err
 }
 
 // send enqueues m and records its recipients.

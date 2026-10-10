@@ -1376,6 +1376,45 @@ func (q *Queries) RequestEvidence(ctx context.Context, orgID ids.OrgID, requestI
 	return items, nil
 }
 
+const requestRecipients = `-- name: RequestRecipients :many
+SELECT DISTINCT x.user_id::uuid AS user_id FROM (
+    SELECT r.user_id FROM pc.waitlist_routes r
+    JOIN pc.waitlist_entries e ON e.org_id = r.org_id AND e.id = r.entry_id
+    WHERE e.org_id = $1 AND e.subject_type = 'approval_request' AND e.subject_id = $2
+    UNION
+    SELECT run.launcher_user_id FROM pc.approval_requests a
+    JOIN pc.runs run ON run.org_id = a.org_id AND run.id = a.run_id
+    WHERE a.org_id = $1 AND a.id = $2
+    UNION
+    SELECT a.requested_by FROM pc.approval_requests a WHERE a.org_id = $1 AND a.id = $2
+) x
+WHERE x.user_id IS NOT NULL
+LIMIT 100
+`
+
+// The people told a request's outcome (slice 211): those it was routed to,
+// and the person who asked for it (the run's launcher, or a restoration's
+// requester).
+func (q *Queries) RequestRecipients(ctx context.Context, orgID ids.OrgID, requestID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, requestRecipients, orgID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var user_id ids.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const requestResponses = `-- name: RequestResponses :many
 SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
        void_reason

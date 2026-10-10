@@ -66,6 +66,10 @@ func (s *Service) end(ctx context.Context, id ids.UUID, resp dbq.InsertApprovalR
 		if err := event(ctx, tx, eventName, userActor(r.User), code, id, nil); err != nil {
 			return err
 		}
+		if err := tell(ctx, tx, s.Notify, c.Org, id, string(apdomain.StateDeclined), "approval.decided",
+			map[string]string{"outcome": endReason}); err != nil {
+			return err
+		}
 		out, err = q.GetApprovalRequest(ctx, c.Org, id)
 		return err
 	})
@@ -391,12 +395,23 @@ func (s *Service) Approve(ctx context.Context, orgID ids.OrgID, r Responder, id 
 			if err := approved(ctx, tx, q, orgID, l, counted); err != nil {
 				return err
 			}
+			state := apdomain.StateApproved
 			if l.row.SubjectKind == subjectRestoration {
 				if err := restored(ctx, q, orgID, l, r.User); err != nil {
 					return err
 				}
 				if err := event(ctx, tx, "approval.restoration_completed", userActor(r.User), "", id,
 					map[string]string{"agent": l.row.AgentID.String()}); err != nil {
+					return err
+				}
+				state = apdomain.StateConsumed
+			}
+			if err := tell(ctx, tx, s.Notify, orgID, id, string(state), "approval.decided",
+				map[string]string{"outcome": string(apdomain.StateApproved)}); err != nil {
+				return err
+			}
+			if slices.ContainsFunc(reqs, func(r apdomain.Requirement) bool { return r.Count >= 2 }) {
+				if err := tellAdmins(ctx, tx, s.Notify, orgID, l.row, "approval.multi_person_completed"); err != nil {
 					return err
 				}
 			}

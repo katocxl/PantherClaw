@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	pgapprovals "github.com/katocxl/pantherclaw/internal/approvals/adapters/pgapprovals"
+	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
@@ -44,7 +45,7 @@ type Swept struct {
 // change gives a new binding, and consumption checks eligibility itself.
 // Each request is changed in its own transaction. It also ends the access
 // requests and tool reviews past their deadline, which changes nothing.
-func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) {
+func SweepOrg(ctx context.Context, pool *db.Pool, n Notifier, org ids.OrgID) (Swept, error) {
 	var out Swept
 	var overdue []ids.UUID
 	var moot []dbq.MootApprovalRequestsRow
@@ -76,7 +77,12 @@ func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) 
 		return pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error { return fn(ctx, tx) })
 	}
 	for _, id := range overdue {
-		if err := each(func(ctx context.Context, tx db.TenantTx) error { return pgapprovals.Expire(ctx, tx, org, id, system) }); err != nil {
+		if err := each(func(ctx context.Context, tx db.TenantTx) error {
+			if err := pgapprovals.Expire(ctx, tx, org, id, system); err != nil {
+				return err
+			}
+			return tell(ctx, tx, n, org, id, string(apdomain.StateExpired), "approval.expired", nil)
+		}); err != nil {
 			return out, err
 		}
 		out.Expired++
@@ -86,7 +92,10 @@ func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) 
 			continue
 		}
 		if err := each(func(ctx context.Context, tx db.TenantTx) error {
-			return pgapprovals.Invalidate(ctx, tx, org, m.ID, m.Reason)
+			if err := pgapprovals.Invalidate(ctx, tx, org, m.ID, m.Reason); err != nil {
+				return err
+			}
+			return tell(ctx, tx, n, org, m.ID, string(apdomain.StateInvalidated), "approval.invalidated", map[string]string{"reason": m.Reason})
 		}); err != nil {
 			return out, err
 		}
@@ -128,12 +137,13 @@ func (JanitorOrgArgs) InsertOpts() river.InsertOpts {
 
 type janitorOrgWorker struct {
 	river.WorkerDefaults[JanitorOrgArgs]
-	pool *db.Pool
-	log  *slog.Logger
+	pool   *db.Pool
+	notify Notifier
+	log    *slog.Logger
 }
 
 func (w *janitorOrgWorker) Work(ctx context.Context, job *river.Job[JanitorOrgArgs]) error {
-	s, err := SweepOrg(ctx, w.pool, job.Args.Org)
+	s, err := SweepOrg(ctx, w.pool, w.notify, job.Args.Org)
 	if s.Expired+s.Invalidated+s.EntriesExpired > 0 {
 		w.log.InfoContext(ctx, "approvals.janitor", slog.String("org", job.Args.Org.String()),
 			slog.Int("expired", s.Expired), slog.Int("invalidated", s.Invalidated), slog.Int("entries_expired", s.EntriesExpired))
@@ -172,11 +182,11 @@ func (w *janitorDispatchWorker) Work(ctx context.Context, _ *river.Job[JanitorDi
 }
 
 // RegisterJanitor adds the janitor workers to reg.
-func RegisterJanitor(reg *jobs.Registry, pool *db.Pool, log *slog.Logger) error {
+func RegisterJanitor(reg *jobs.Registry, pool *db.Pool, n Notifier, log *slog.Logger) error {
 	if log == nil {
 		log = pclog.Discard()
 	}
-	if err := jobs.Register[JanitorOrgArgs](reg, &janitorOrgWorker{pool: pool, log: log}); err != nil {
+	if err := jobs.Register[JanitorOrgArgs](reg, &janitorOrgWorker{pool: pool, notify: n, log: log}); err != nil {
 		return err
 	}
 	return jobs.Register[JanitorDispatchArgs](reg, &janitorDispatchWorker{pool: pool})

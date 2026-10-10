@@ -110,6 +110,8 @@ type Reason struct {
 type Service struct {
 	Pool      *db.Pool
 	Simulator Simulator
+	// Notify sends outcome notices (slice 211); nil sends none.
+	Notify Notifier
 }
 
 // Request is an approval request as the use cases return it.
