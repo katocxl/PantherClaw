@@ -144,13 +144,6 @@ type RetrySpec struct {
 	TargetIdempotency bool      `json:"target_idempotency,omitzero"`
 }
 
-// VerifierSpec names the follow-up read that establishes the effect (F382).
-type VerifierSpec struct {
-	Operation     string `json:"operation"`
-	Establishes   string `json:"establishes"`
-	WithinSeconds int    `json:"within_seconds"`
-}
-
 // ApprovalTemplate is the per-operation approval text (HR-034). Title
 // placeholders and fields name canonical fields only: operation,
 // target.type, target.id, target.account or params.<material param>.
@@ -234,8 +227,12 @@ func (d *Definition) Validate() error {
 		return invalid("%s: reversibility must be reversible, compensatable or irreversible", op)
 	case len(d.Effects) == 0 || len(d.Effects) > maxItems || len(d.SideEffects) > maxItems:
 		return invalid("%s: 1..%d effects and at most %d side effects", op, maxItems, maxItems)
-	case len(d.Params) > maxItems || len(d.Mappings) == 0 || len(d.Mappings) > maxItems:
-		return invalid("%s: at most %d params and 1..%d mappings", op, maxItems, maxItems)
+	case len(d.Params) > maxItems || len(d.Mappings) > maxItems:
+		return invalid("%s: at most %d params and %d mappings", op, maxItems, maxItems)
+	case len(d.Mappings) == 0 && d.Access != AccessRead:
+		// A read without mappings is internal: only a verifier or a target
+		// log may use it (Package.Validate), never an agent.
+		return invalid("%s: a write needs 1..%d mappings", op, maxItems)
 	}
 	if err := text(op+": summary", d.Summary); err != nil {
 		return err
@@ -272,9 +269,8 @@ func (d *Definition) Validate() error {
 	if err := d.validateRetry(); err != nil {
 		return err
 	}
-	if v := d.Verifier; v != nil && (!actionir.ValidOperation(v.Operation) || !kindRe.MatchString(v.Establishes) ||
-		v.WithinSeconds <= 0 || v.WithinSeconds > maxSecond) {
-		return invalid("%s: verifier needs an operation, what it establishes and 1..%d within_seconds", op, maxSecond)
+	if err := d.validateVerifier(); err != nil {
+		return err
 	}
 	if err := d.validateApproval(); err != nil {
 		return err
