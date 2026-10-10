@@ -355,6 +355,12 @@ func (s *Service) Approve(ctx context.Context, orgID ids.OrgID, r Responder, id 
 		if n == 0 {
 			return ErrCeremony
 		}
+		l, err := lock(ctx, q, orgID, id, r.User)
+		if err != nil {
+			return err
+		}
+		// Count the responses only under the lock: two people approving at
+		// once each see the other's response (TestRace_TwoApproversAtOnce).
 		rows, err := q.CountingResponses(ctx, orgID, id)
 		if err != nil {
 			return err
@@ -364,10 +370,6 @@ func (s *Service) Approve(ctx context.Context, orgID ids.OrgID, r Responder, id 
 		for _, x := range rows {
 			users = append(users, x.UserID)
 			counted = append(counted, apdomain.Response{UserID: x.UserID, CredentialID: x.CredentialID, Requirement: int(x.Requirement)})
-		}
-		l, err := lock(ctx, q, orgID, id, r.User)
-		if err != nil {
-			return err
 		}
 		if e, err := pgapprovals.LoadEligibility(ctx, q, orgID, id, users); err == nil {
 			l.elig = e
