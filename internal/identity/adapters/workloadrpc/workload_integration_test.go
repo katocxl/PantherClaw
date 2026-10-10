@@ -74,7 +74,11 @@ type stack struct {
 	url    string
 }
 
-func newStack(t *testing.T) *stack {
+func newStack(t *testing.T) *stack { return newStackAt(t, clock.System{}) }
+
+// newStackAt runs the identity service and WorkloadService on clk (the
+// database keeps its own clock for nonces).
+func newStackAt(t *testing.T, clk clock.Clock) *stack {
 	t.Helper()
 	pool := dbtest.New(t).AppPool(t)
 	reg := keys.NewRegistry()
@@ -110,7 +114,7 @@ func newStack(t *testing.T) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := iapp.New(pool, reg, ts.URL, clock.System{})
+	svc := iapp.New(pool, reg, ts.URL, clk)
 	gstore := &grantspg.Store{Pool: pool}
 	grants := &grantsapp.Service{
 		Repo: gstore, Subjects: gstore, Defs: &defspg.Store{Pool: pool}, Authz: grantsapp.SubjectAuthorizer{},
@@ -121,7 +125,7 @@ func newStack(t *testing.T) *stack {
 	pantherclawv1connect.RegisterGrantServiceHandler(s, grantsrpc.NewGrants(grants))
 	pantherclawv1connect.RegisterAgentServiceHandler(s, agentsrpc.NewAgents(aapp.NewInventory(pool, unlimited{})))
 	pantherclawv1connect.RegisterIdentityServiceHandler(s, identityrpc.NewIdentity(svc, nil))
-	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, runs, ts.URL, clock.System{}).WithGrants(grants))
+	pantherclawv1connect.RegisterWorkloadServiceHandler(s, workloadrpc.NewWorkload(svc, runs, ts.URL, clk).WithGrants(grants))
 	inner := http.NewServeMux()
 	rpc.Mount(inner, s)
 	mux.Handle("/", workloadrpc.RawBody(inner, nil))
