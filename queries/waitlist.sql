@@ -59,3 +59,23 @@ RETURNING id, kind;
 UPDATE pc.waitlist_entries
 SET assignee_user_id = sqlc.narg(assignee), assigned_at = CASE WHEN sqlc.narg(assignee)::uuid IS NULL THEN NULL ELSE now() END
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'OPEN';
+
+-- Access requests (decision 10). They grant nothing: a grant revision
+-- citing the entry settles it, or a grant.issue holder dismisses it.
+-- name: SettleAccessRequest :execrows
+UPDATE pc.waitlist_entries
+SET state = sqlc.arg(state), decided_by = sqlc.arg(decided_by), decided_at = now(), decision_reason = sqlc.arg(reason)
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND kind = 'ACCESS_REQUEST' AND subject_type = 'grant'
+  AND subject_id = sqlc.arg(grant_id) AND state = 'OPEN';
+
+-- name: CountWorkloadAccessRequests :one
+SELECT count(*)::integer FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND run_id = sqlc.arg(run_id) AND kind = 'ACCESS_REQUEST' AND requested_by LIKE 'instance:%';
+
+-- A transaction of the run, with its decision and decisive reason.
+-- name: RunTransaction :one
+SELECT decision, reason_code FROM pc.transactions
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND run_id = sqlc.arg(run_id);
+
+-- name: GrantCurrentRevision :one
+SELECT current_revision FROM pc.grants WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);

@@ -63,6 +63,18 @@ func (q *Queries) CloseEntryOf(ctx context.Context, arg CloseEntryOfParams) (int
 	return result.RowsAffected(), nil
 }
 
+const countWorkloadAccessRequests = `-- name: CountWorkloadAccessRequests :one
+SELECT count(*)::integer FROM pc.waitlist_entries
+WHERE org_id = $1 AND run_id = $2 AND kind = 'ACCESS_REQUEST' AND requested_by LIKE 'instance:%'
+`
+
+func (q *Queries) CountWorkloadAccessRequests(ctx context.Context, orgID ids.OrgID, runID *ids.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countWorkloadAccessRequests, orgID, runID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const expireWaitlistEntries = `-- name: ExpireWaitlistEntries :many
 UPDATE pc.waitlist_entries
 SET state = 'EXPIRED', decided_by = 'system', decided_at = now(), decision_reason = 'EXPIRED'
@@ -130,6 +142,17 @@ func (q *Queries) GetWaitlistEntry(ctx context.Context, orgID ids.OrgID, iD ids.
 		&i.FirstResponseAt,
 	)
 	return i, err
+}
+
+const grantCurrentRevision = `-- name: GrantCurrentRevision :one
+SELECT current_revision FROM pc.grants WHERE org_id = $1 AND id = $2
+`
+
+func (q *Queries) GrantCurrentRevision(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, grantCurrentRevision, orgID, iD)
+	var current_revision int32
+	err := row.Scan(&current_revision)
+	return current_revision, err
 }
 
 const listWaitlistEntries = `-- name: ListWaitlistEntries :many
@@ -266,6 +289,57 @@ func (q *Queries) OpenWaitlistEntry(ctx context.Context, arg OpenWaitlistEntryPa
 	var id ids.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const runTransaction = `-- name: RunTransaction :one
+SELECT decision, reason_code FROM pc.transactions
+WHERE org_id = $1 AND id = $2 AND run_id = $3
+`
+
+type RunTransactionRow struct {
+	Decision   string
+	ReasonCode string
+}
+
+// A transaction of the run, with its decision and decisive reason.
+func (q *Queries) RunTransaction(ctx context.Context, orgID ids.OrgID, iD ids.UUID, runID ids.UUID) (RunTransactionRow, error) {
+	row := q.db.QueryRow(ctx, runTransaction, orgID, iD, runID)
+	var i RunTransactionRow
+	err := row.Scan(&i.Decision, &i.ReasonCode)
+	return i, err
+}
+
+const settleAccessRequest = `-- name: SettleAccessRequest :execrows
+UPDATE pc.waitlist_entries
+SET state = $1, decided_by = $2, decided_at = now(), decision_reason = $3
+WHERE org_id = $4 AND id = $5 AND kind = 'ACCESS_REQUEST' AND subject_type = 'grant'
+  AND subject_id = $6 AND state = 'OPEN'
+`
+
+type SettleAccessRequestParams struct {
+	State     string
+	DecidedBy *string
+	Reason    string
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	GrantID   ids.UUID
+}
+
+// Access requests (decision 10). They grant nothing: a grant revision
+// citing the entry settles it, or a grant.issue holder dismisses it.
+func (q *Queries) SettleAccessRequest(ctx context.Context, arg SettleAccessRequestParams) (int64, error) {
+	result, err := q.db.Exec(ctx, settleAccessRequest,
+		arg.State,
+		arg.DecidedBy,
+		arg.Reason,
+		arg.OrgID,
+		arg.ID,
+		arg.GrantID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const transactionOfRun = `-- name: TransactionOfRun :one

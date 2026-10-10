@@ -31,11 +31,15 @@ type entry struct {
 	requestedBy       *string
 	// trusted is what PantherClaw established about the subject.
 	trusted map[string]string
+	// untrusted was written by a person or a workload and is shown only
+	// in the untrusted block.
+	untrusted map[string]string
 }
 
 // evidence is the stored shape of waitlist_entries.evidence.
 type evidence struct {
-	Trusted map[string]string `json:"trusted,omitzero"`
+	Trusted   map[string]string `json:"trusted,omitzero"`
+	Untrusted map[string]string `json:"untrusted,omitzero"`
 }
 
 // configured is the org's deadline setting for kind, if any.
@@ -65,7 +69,7 @@ func open(ctx context.Context, tx db.TenantTx, org ids.OrgID, e entry, actor evd
 		return ids.UUID{}, err
 	}
 	deadline := now.Add(wdomain.Deadline(e.kind, configured(s, e.kind)))
-	ev, err := json.Marshal(evidence{Trusted: e.trusted})
+	ev, err := json.Marshal(evidence{Trusted: e.trusted, Untrusted: e.untrusted})
 	if err != nil {
 		return ids.UUID{}, err
 	}

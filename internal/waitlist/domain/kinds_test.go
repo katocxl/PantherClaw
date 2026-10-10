@@ -60,3 +60,27 @@ func TestHR177_DecidersComeFromPermissions(t *testing.T) {
 		}
 	}
 }
+
+// TestHR176_AWorkloadCitesOnlyScopeDenials (decision 10): only a denial
+// whose decisive reason a revision of the grant could change.
+func TestHR176_AWorkloadCitesOnlyScopeDenials(t *testing.T) {
+	for _, c := range []struct {
+		decision, reason string
+		want             bool
+	}{
+		{"DENY", "OPERATION_NOT_GRANTED", true},
+		{"DENY", "TARGET_NOT_GRANTED", true},
+		{"DENY", "DESTINATION_NOT_GRANTED", true},
+		{"DENY", "GRANT_LIMIT_EXCEEDED", true},
+		{"DENY", "OUTSIDE_TIME_WINDOW", true},
+		{"DENY", "OUTSIDE_GUARDRAIL", false},
+		{"DENY", "NO_GRANT", false},
+		{"DENY", "BUDGET_EXHAUSTED", false},
+		{"ALLOW", "OPERATION_NOT_GRANTED", false},
+		{"REQUIRE_APPROVAL", "GRANT_REQUIRES_APPROVAL", false},
+	} {
+		if got := domain.ScopeDenial(c.decision, c.reason); got != c.want {
+			t.Errorf("%s %s: %v", c.decision, c.reason, got)
+		}
+	}
+}
