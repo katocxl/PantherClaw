@@ -142,7 +142,7 @@ func (s *Transactions) GetTransactionEvidence(ctx context.Context, req *pantherc
 	for _, l := range e.Links {
 		out.Links = append(out.Links, &pantherclawv1.TransactionLink{
 			FromTransactionId: l.From.String(), ToTransactionId: l.To.String(),
-			Kind:      pantherclawv1.LinkKind(pantherclawv1.LinkKind_value["LINK_KIND_"+strings.ToUpper(string(l.Kind))]),
+			Kind:      linkKind(l.Kind),
 			CreatedBy: l.CreatedBy, CreateTime: timestamppb.New(l.Created),
 		})
 	}

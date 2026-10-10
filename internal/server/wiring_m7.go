@@ -15,9 +15,13 @@ import (
 )
 
 // registerM7 mounts the M7 track A services people use: the transaction
-// list and the evidence explorer.
-func registerM7(rs *connect.Server, pool *db.Pool) {
-	pantherclawv1connect.RegisterTransactionServiceHandler(rs, transactionsrpc.New(&txapp.Explorer{Pool: pool}))
+// list, the evidence explorer and reconciliation. verification signs the
+// effect receipts a person's resolution or a compensation appends.
+func registerM7(rs *connect.Server, pool *db.Pool, verification *txapp.Service) {
+	explorer := &txapp.Explorer{Pool: pool}
+	pantherclawv1connect.RegisterTransactionServiceHandler(rs, transactionsrpc.New(explorer))
+	reconciler := &txapp.Reconciler{Store: &pgtransactions.Store{Pool: pool}, Effects: verification}
+	pantherclawv1connect.RegisterReconciliationServiceHandler(rs, transactionsrpc.NewReconciliations(explorer, reconciler))
 }
 
 // newVerification builds the server side of verification (G0 M7 track A):

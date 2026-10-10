@@ -16,6 +16,61 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
+const compensated = `-- name: Compensated :many
+SELECT to_transaction_id FROM pc.transaction_links
+WHERE org_id = $1 AND from_transaction_id = $2 AND kind = 'compensates'
+`
+
+// Compensated are the earlier transactions a transaction compensates.
+func (q *Queries) Compensated(ctx context.Context, orgID ids.OrgID, fromTransactionID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, compensated, orgID, fromTransactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var to_transaction_id ids.UUID
+		if err := rows.Scan(&to_transaction_id); err != nil {
+			return nil, err
+		}
+		items = append(items, to_transaction_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const compensatedBy = `-- name: CompensatedBy :many
+SELECT l.from_transaction_id FROM pc.transaction_links l
+JOIN pc.transactions f ON f.org_id = l.org_id AND f.id = l.from_transaction_id
+WHERE l.org_id = $1 AND l.to_transaction_id = $2 AND l.kind = 'compensates'
+  AND f.effect_state = 'CONFIRMED'
+`
+
+// CompensatedBy are the confirmed transactions that compensate a
+// transaction: an original confirmed after its compensation.
+func (q *Queries) CompensatedBy(ctx context.Context, orgID ids.OrgID, toTransactionID ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, compensatedBy, orgID, toTransactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var from_transaction_id ids.UUID
+		if err := rows.Scan(&from_transaction_id); err != nil {
+			return nil, err
+		}
+		items = append(items, from_transaction_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const decisionReceiptsOf = `-- name: DecisionReceiptsOf :many
 SELECT d.evaluation, d.receipt_jws, d.ledger_entry_id, d.created_at, c.seq AS chain_seq
 FROM pc.decision_receipts d
@@ -154,6 +209,106 @@ func (q *Queries) ExecutionOf(ctx context.Context, orgID ids.OrgID, transactionI
 	return i, err
 }
 
+const insertTransactionLink = `-- name: InsertTransactionLink :execrows
+INSERT INTO pc.transaction_links (org_id, from_transaction_id, to_transaction_id, kind, created_by)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT DO NOTHING
+`
+
+type InsertTransactionLinkParams struct {
+	OrgID             ids.OrgID
+	FromTransactionID ids.UUID
+	ToTransactionID   ids.UUID
+	Kind              string
+	CreatedBy         string
+}
+
+func (q *Queries) InsertTransactionLink(ctx context.Context, arg InsertTransactionLinkParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertTransactionLink,
+		arg.OrgID,
+		arg.FromTransactionID,
+		arg.ToTransactionID,
+		arg.Kind,
+		arg.CreatedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const latestVerification = `-- name: LatestVerification :one
+SELECT id, purpose, state, connection_id, operation, request,
+       extract(epoch FROM deadline_at - created_at)::float8 AS window_seconds
+FROM pc.verifications
+WHERE org_id = $1 AND transaction_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type LatestVerificationRow struct {
+	ID            ids.UUID
+	Purpose       string
+	State         string
+	ConnectionID  ids.UUID
+	Operation     string
+	Request       []byte
+	WindowSeconds float64
+}
+
+// LatestVerification is the transaction's newest verification task: what
+// a requested verification reads again.
+func (q *Queries) LatestVerification(ctx context.Context, orgID ids.OrgID, transactionID *ids.UUID) (LatestVerificationRow, error) {
+	row := q.db.QueryRow(ctx, latestVerification, orgID, transactionID)
+	var i LatestVerificationRow
+	err := row.Scan(
+		&i.ID,
+		&i.Purpose,
+		&i.State,
+		&i.ConnectionID,
+		&i.Operation,
+		&i.Request,
+		&i.WindowSeconds,
+	)
+	return i, err
+}
+
+const linkEnd = `-- name: LinkEnd :one
+SELECT t.created_at, t.effect_state, t.effect_level_required, t.effect_level_achieved, r.agent_id, p.dispatching_at,
+       p.definition_digest
+FROM pc.transactions t
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+LEFT JOIN pc.permits p ON p.org_id = t.org_id AND p.transaction_id = t.id
+WHERE t.org_id = $1 AND t.id = $2
+FOR UPDATE OF t
+`
+
+type LinkEndRow struct {
+	CreatedAt           time.Time
+	EffectState         *string
+	EffectLevelRequired *string
+	EffectLevelAchieved *string
+	AgentID             ids.UUID
+	DispatchingAt       *time.Time
+	DefinitionDigest    *string
+}
+
+// LinkEnd is one end of a link, locked.
+func (q *Queries) LinkEnd(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (LinkEndRow, error) {
+	row := q.db.QueryRow(ctx, linkEnd, orgID, iD)
+	var i LinkEndRow
+	err := row.Scan(
+		&i.CreatedAt,
+		&i.EffectState,
+		&i.EffectLevelRequired,
+		&i.EffectLevelAchieved,
+		&i.AgentID,
+		&i.DispatchingAt,
+		&i.DefinitionDigest,
+	)
+	return i, err
+}
+
 const linksOf = `-- name: LinksOf :many
 SELECT from_transaction_id, to_transaction_id, kind, created_by, created_at
 FROM pc.transaction_links
@@ -185,6 +340,90 @@ func (q *Queries) LinksOf(ctx context.Context, orgID ids.OrgID, transactionID id
 			&i.Kind,
 			&i.CreatedBy,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReconciliations = `-- name: ListReconciliations :many
+
+SELECT k.id, k.transaction_id, k.kind, k.state, k.resolved_via, k.observation_id, k.user_id, k.basis, k.evidence,
+       k.waitlist_entry_id, k.opened_at, k.resolved_at, r.agent_id
+FROM pc.reconciliation_tasks k
+JOIN pc.transactions t ON t.org_id = k.org_id AND t.id = k.transaction_id
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+WHERE k.org_id = $1
+  AND (coalesce($2::uuid, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
+       OR k.id < $2::uuid)
+  AND (cardinality($3::text[]) = 0 OR k.state = ANY ($3::text[]))
+  AND (cardinality($4::text[]) = 0 OR k.kind = ANY ($4::text[]))
+  AND ($5::uuid IS NULL OR k.transaction_id = $5::uuid)
+ORDER BY k.id DESC
+LIMIT $6
+`
+
+type ListReconciliationsParams struct {
+	OrgID         ids.OrgID
+	Before        ids.UUID
+	States        []string
+	Kinds         []string
+	TransactionID *ids.UUID
+	PageLimit     int32
+}
+
+type ListReconciliationsRow struct {
+	ID              ids.UUID
+	TransactionID   ids.UUID
+	Kind            string
+	State           string
+	ResolvedVia     *string
+	ObservationID   *ids.UUID
+	UserID          *ids.UUID
+	Basis           *string
+	Evidence        []ids.UUID
+	WaitlistEntryID *ids.UUID
+	OpenedAt        time.Time
+	ResolvedAt      *time.Time
+	AgentID         ids.UUID
+}
+
+// Reconciliation (G0 M7 design decisions 3 and 4, HR-192, HR-193).
+func (q *Queries) ListReconciliations(ctx context.Context, arg ListReconciliationsParams) ([]ListReconciliationsRow, error) {
+	rows, err := q.db.Query(ctx, listReconciliations,
+		arg.OrgID,
+		arg.Before,
+		arg.States,
+		arg.Kinds,
+		arg.TransactionID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReconciliationsRow{}
+	for rows.Next() {
+		var i ListReconciliationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TransactionID,
+			&i.Kind,
+			&i.State,
+			&i.ResolvedVia,
+			&i.ObservationID,
+			&i.UserID,
+			&i.Basis,
+			&i.Evidence,
+			&i.WaitlistEntryID,
+			&i.OpenedAt,
+			&i.ResolvedAt,
+			&i.AgentID,
 		); err != nil {
 			return nil, err
 		}
@@ -386,6 +625,123 @@ func (q *Queries) ObservationsOf(ctx context.Context, orgID ids.OrgID, transacti
 	return items, nil
 }
 
+const openVerifications = `-- name: OpenVerifications :many
+SELECT id FROM pc.verifications
+WHERE org_id = $1 AND transaction_id = $2 AND state IN ('PENDING', 'LEASED')
+`
+
+func (q *Queries) OpenVerifications(ctx context.Context, orgID ids.OrgID, transactionID *ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, openVerifications, orgID, transactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reconciliationByID = `-- name: ReconciliationByID :one
+SELECT k.id, k.transaction_id, k.kind, k.state, k.resolved_via, k.observation_id, k.user_id, k.basis, k.evidence,
+       k.waitlist_entry_id, k.opened_at, k.resolved_at, r.agent_id, p.id AS permit_id
+FROM pc.reconciliation_tasks k
+JOIN pc.transactions t ON t.org_id = k.org_id AND t.id = k.transaction_id
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+LEFT JOIN pc.permits p ON p.org_id = t.org_id AND p.transaction_id = t.id
+WHERE k.org_id = $1 AND k.id = $2
+FOR UPDATE OF k
+`
+
+type ReconciliationByIDRow struct {
+	ID              ids.UUID
+	TransactionID   ids.UUID
+	Kind            string
+	State           string
+	ResolvedVia     *string
+	ObservationID   *ids.UUID
+	UserID          *ids.UUID
+	Basis           *string
+	Evidence        []ids.UUID
+	WaitlistEntryID *ids.UUID
+	OpenedAt        time.Time
+	ResolvedAt      *time.Time
+	AgentID         ids.UUID
+	PermitID        *ids.UUID
+}
+
+func (q *Queries) ReconciliationByID(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (ReconciliationByIDRow, error) {
+	row := q.db.QueryRow(ctx, reconciliationByID, orgID, iD)
+	var i ReconciliationByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.TransactionID,
+		&i.Kind,
+		&i.State,
+		&i.ResolvedVia,
+		&i.ObservationID,
+		&i.UserID,
+		&i.Basis,
+		&i.Evidence,
+		&i.WaitlistEntryID,
+		&i.OpenedAt,
+		&i.ResolvedAt,
+		&i.AgentID,
+		&i.PermitID,
+	)
+	return i, err
+}
+
+const reconciliationOf = `-- name: ReconciliationOf :one
+SELECT id, transaction_id, kind, state, resolved_via, observation_id, user_id, basis, evidence, waitlist_entry_id,
+       opened_at, resolved_at
+FROM pc.reconciliation_tasks
+WHERE org_id = $1 AND id = $2
+`
+
+type ReconciliationOfRow struct {
+	ID              ids.UUID
+	TransactionID   ids.UUID
+	Kind            string
+	State           string
+	ResolvedVia     *string
+	ObservationID   *ids.UUID
+	UserID          *ids.UUID
+	Basis           *string
+	Evidence        []ids.UUID
+	WaitlistEntryID *ids.UUID
+	OpenedAt        time.Time
+	ResolvedAt      *time.Time
+}
+
+func (q *Queries) ReconciliationOf(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (ReconciliationOfRow, error) {
+	row := q.db.QueryRow(ctx, reconciliationOf, orgID, iD)
+	var i ReconciliationOfRow
+	err := row.Scan(
+		&i.ID,
+		&i.TransactionID,
+		&i.Kind,
+		&i.State,
+		&i.ResolvedVia,
+		&i.ObservationID,
+		&i.UserID,
+		&i.Basis,
+		&i.Evidence,
+		&i.WaitlistEntryID,
+		&i.OpenedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const reconciliationsOf = `-- name: ReconciliationsOf :many
 SELECT id, transaction_id, kind, state, resolved_via, observation_id, user_id, basis, evidence, waitlist_entry_id,
        opened_at, resolved_at
@@ -442,6 +798,39 @@ func (q *Queries) ReconciliationsOf(ctx context.Context, orgID ids.OrgID, transa
 	return items, nil
 }
 
+const resolveReconciliationByPerson = `-- name: ResolveReconciliationByPerson :execrows
+UPDATE pc.reconciliation_tasks
+SET state = 'OCCURRED', resolved_via = 'person', user_id = $1, basis = $2,
+    evidence = $3::uuid[], observation_id = $4, resolved_at = now()
+WHERE org_id = $5 AND id = $6 AND state = 'OPEN'
+`
+
+type ResolveReconciliationByPersonParams struct {
+	UserID        *ids.UUID
+	Basis         *string
+	Evidence      []ids.UUID
+	ObservationID *ids.UUID
+	OrgID         ids.OrgID
+	ID            ids.UUID
+}
+
+// ResolveReconciliationByPerson records a person's "occurred" with their
+// basis; only an open task changes.
+func (q *Queries) ResolveReconciliationByPerson(ctx context.Context, arg ResolveReconciliationByPersonParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveReconciliationByPerson,
+		arg.UserID,
+		arg.Basis,
+		arg.Evidence,
+		arg.ObservationID,
+		arg.OrgID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const transactionSummary = `-- name: TransactionSummary :one
 SELECT t.id, t.run_id, r.agent_id, t.operation, t.connection_id, t.decision, t.reason_code, t.effect_state,
        t.effect_level_required, t.effect_level_achieved, t.mode, t.evaluations, t.created_at,
@@ -492,4 +881,30 @@ func (q *Queries) TransactionSummary(ctx context.Context, orgID ids.OrgID, iD id
 		&i.Outcome,
 	)
 	return i, err
+}
+
+const verifyNow = `-- name: VerifyNow :many
+UPDATE pc.verifications SET next_at = now()
+WHERE org_id = $1 AND transaction_id = $2 AND state = 'PENDING'
+RETURNING id
+`
+
+func (q *Queries) VerifyNow(ctx context.Context, orgID ids.OrgID, transactionID *ids.UUID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, verifyNow, orgID, transactionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

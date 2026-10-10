@@ -316,7 +316,13 @@ func appendEffect(ctx context.Context, tx db.TenantTx, q *dbq.Queries, e app.Eff
 		return err
 	}
 	state := string(e.State)
-	return q.SetEffectState(ctx, dbq.SetEffectStateParams{State: &state, Achieved: achieved, OrgID: e.Org, ID: e.Transaction})
+	if err := q.SetEffectState(ctx, dbq.SetEffectStateParams{State: &state, Achieved: achieved, OrgID: e.Org, ID: e.Transaction}); err != nil {
+		return err
+	}
+	if e.State != domain.Confirmed {
+		return nil
+	}
+	return compensations(ctx, tx, q, e.Org, e.Transaction, sign) // HR-193
 }
 
 // observe records what the gateway reported (HR-190).

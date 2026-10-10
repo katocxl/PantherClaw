@@ -65,6 +65,19 @@ func TestEveryStateHasItsProtoValue(t *testing.T) {
 			}
 		}
 	}
+	for _, k := range []domain.LinkKind{domain.LinkCompensates, domain.LinkRecovers} {
+		if linkKind(k) == pantherclawv1.LinkKind_LINK_KIND_UNSPECIFIED {
+			t.Errorf("link kind %s", k)
+		}
+		if linkKindOf(linkKind(k)) != k {
+			t.Errorf("link kind %s does not round-trip", k)
+		}
+	}
+	for _, k := range []domain.TaskKind{domain.KindUnknownOutcome, domain.KindConflictingEffect} {
+		if taskKindOf(ReconciliationProto(app.Reconciliation{Kind: k}).GetKind()) != k {
+			t.Errorf("reconciliation kind %s does not round-trip", k)
+		}
+	}
 	if s := integrity(app.Integrity{}).GetStatus(); s != pantherclawv1.IntegrityStatus_INTEGRITY_STATUS_PENDING {
 		t.Errorf("an entry not yet chained: %v", s)
 	}

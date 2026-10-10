@@ -291,6 +291,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			web:          web,
 			m5:           m5,
 			m6:           m6,
+			verification: verification,
 		})
 		if err != nil {
 			return err
@@ -428,6 +429,8 @@ type apiDeps struct {
 	m5  *m5Services
 	// M6: gateway identity.
 	m6 *m6Services
+	// M7: verification signs the effect receipts people's actions append.
+	verification *txapp.Service
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -475,7 +478,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		pantherclawv1connect.RegisterNotificationServiceHandler(rs, notificationsrpc.New(d.m5.notifications))
 	}
 	d.m6.registerPublic(rs)
-	registerM7(rs, pool)
+	registerM7(rs, pool, d.verification)
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.oauth.Mount(mux)
