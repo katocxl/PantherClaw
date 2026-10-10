@@ -72,14 +72,16 @@ type Field struct {
 	Requested string `json:"requested,omitzero"`
 }
 
-// FactLine is one fact the decision used, with its provider and age.
+// FactLine is one fact the decision used, with its provider and when it
+// was observed. Its age is shown from ObservedAt when the page renders: the
+// stored display holds nothing that changes with time, so a resubmission
+// recomputes the same binding.
 type FactLine struct {
 	Name       string `json:"name"`
 	Subject    string `json:"subject"`
 	Value      string `json:"value"`
 	Provider   string `json:"provider"`
 	ObservedAt string `json:"observed_at"`
-	AgeSeconds int64  `json:"age_seconds"`
 }
 
 // RunLine names the run by ids (readable names come from a directory
@@ -145,7 +147,6 @@ type ActionInput struct {
 	// Attributes are UNTRUSTED reported attributes (for example a gateway's
 	// observations), shown only in the untrusted block.
 	Attributes map[string]string
-	Now        time.Time
 }
 
 // RenderAction renders an action's display from its template. It fails on
@@ -193,7 +194,7 @@ func RenderAction(in ActionInput) (Display, error) {
 	if d.Verifier != nil {
 		out.Consequence.Verifier = d.Verifier.Operation + " establishes " + d.Verifier.Establishes
 	}
-	out.Facts = factLines(in.Facts, in.Now)
+	out.Facts = factLines(in.Facts)
 	out.finish(in.Requirements, in.Variants, in.Context)
 	var untrusted []Untrusted
 	if in.TaskLabel != "" {
@@ -220,7 +221,6 @@ type RestorationInput struct {
 	Reason        string
 	Requirements  []Requirement
 	Deadline      time.Time
-	Now           time.Time
 }
 
 // RenderRestoration renders a restoration's display (decision 11). The
@@ -274,13 +274,13 @@ func untrustedBlock(items []Untrusted) UntrustedBlock {
 	return UntrustedBlock{Label: UntrustedLabel, Items: items}
 }
 
-func factLines(facts []fdomain.Fact, now time.Time) []FactLine {
+func factLines(facts []fdomain.Fact) []FactLine {
 	out := make([]FactLine, 0, len(facts))
 	for _, f := range facts {
 		out = append(out, FactLine{
 			Name: f.Name, Subject: f.SubjectType + ":" + Clean("", f.SubjectID, 512).Text,
 			Value: Clean("", f.Value.String(), 256).Text, Provider: f.ProviderID.String(),
-			ObservedAt: f.ObservedAt.UTC().Format(time.RFC3339), AgeSeconds: int64(now.Sub(f.ObservedAt) / time.Second),
+			ObservedAt: f.ObservedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	slices.SortFunc(out, func(a, b FactLine) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Subject, b.Subject)) })

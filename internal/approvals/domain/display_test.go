@@ -65,7 +65,6 @@ func refundInput(t testing.TB, taskLabel string) domain.ActionInput {
 		Variants: []domain.VariantLine{{
 			Request: "0192f3a0-0000-7000-8000-000000000008", Created: "2026-10-10T11:30:00Z", State: "SUPERSEDED",
 		}},
-		Now: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
 	}
 }
 
