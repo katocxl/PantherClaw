@@ -99,7 +99,7 @@ func TestHR191_EffectReceiptsStateLevelBasisAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := c.Pap
-	effects, _ := json.Marshal(p["effects"])
+	effects, _ := json.Marshal(p["effects"], json.Deterministic(true))
 	if !strings.HasSuffix(c.Jti, "/2") || p["state"] != "CONFIRMED" || p["achieved"] != "follow_up" || p["required"] != "acceptance" ||
 		p["limits"] == nil || p["expected_sha256"] == nil || p["observed_sha256"] == nil || p["simulated"] != false ||
 		string(effects) != `[{"kind":"funds.transfer","state":"CONFIRMED"},{"kind":"notification.send","state":"UNVERIFIABLE"}]` {
