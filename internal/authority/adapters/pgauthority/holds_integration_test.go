@@ -35,8 +35,9 @@ func TestIntHoldReadsTheTransactionsLatestRequest(t *testing.T) {
 	key := sha256.Sum256([]byte("variant"))
 	const request = `INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id,
 		grant_id, grant_revision, variant_key, operation, binding, binding_input, requirements, display, display_hash,
-		deadline_at, created_at) VALUES ($1, $2, 'ACTION', $3, $4, 1, $5, $6, 1, $7, 'payments.refund.create', $8, '\x7b7d',
-		'[{"kind":"approval","role":"approver","count":1}]', $9, $7, date_trunc('second', now()) + interval '1 hour', $10)`
+		action_ir, deadline_at, created_at) VALUES ($1, $2, 'ACTION', $3, $4, 1, $5, $6, 1, $7, 'payments.refund.create', $8,
+		'\x7b7d', '[{"kind":"approval","role":"approver","count":1}]', $9, $7, '\x7b7d',
+		date_trunc('second', now()) + interval '1 hour', $10)`
 	older, newer := ids.NewV7(), ids.NewV7()
 	b1, b2 := sha256.Sum256([]byte("b1")), sha256.Sum256([]byte("b2"))
 	exec(t, w.pool, w.org, request, w.org, older, w.agent, txn, run, g.ID.UUID(), key[:], b1[:], `{}`, time.Now().Add(-time.Minute))

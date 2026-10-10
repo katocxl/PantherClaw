@@ -150,6 +150,7 @@ type PcApprovalRequest struct {
 	ConsumedAt         *time.Time
 	PermitID           *ids.UUID
 	EndedAt            *time.Time
+	ActionIr           []byte
 }
 
 type PcApprovalResponse struct {

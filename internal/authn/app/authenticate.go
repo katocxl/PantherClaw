@@ -197,6 +197,9 @@ func (a *Authenticator) accessToken(ctx context.Context, bearer string) (tapp.Ca
 			Subject:    td.Subject{Org: v.Org, Principal: v.Principal, Bindings: bs},
 			Credential: tapp.CredAccessToken,
 		}
+		if v.Principal.Kind == td.KindUser {
+			c.Session = v.Session
+		}
 		return nil
 	})
 	return c, err

@@ -132,6 +132,12 @@ type Usage struct {
 	CounterRows map[bdomain.Ref]int
 }
 
+// Rows are the ids of existing budget account and counter rows, by ref.
+type Rows struct {
+	Accounts map[bdomain.Ref]ids.UUID
+	Counters map[bdomain.Ref]ids.UUID
+}
+
 // ClaimState is the state of an earlier attempt on a dedupe key.
 type ClaimState string
 

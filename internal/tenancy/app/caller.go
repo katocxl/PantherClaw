@@ -14,6 +14,7 @@ import (
 
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	pcerr "github.com/katocxl/pantherclaw/internal/platform/errors"
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
 
@@ -30,6 +31,10 @@ const (
 type Caller struct {
 	domain.Subject
 	Credential Credential
+	// Session is the CLI session a user's access token belongs to (zero for
+	// API keys and service accounts): the human session an approval
+	// response records (G0 M5 part 2, HR-172).
+	Session ids.UUID
 }
 
 // Actor returns the audit actor for the caller.
