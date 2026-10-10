@@ -199,12 +199,19 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
-	reg := keys.NewRegistry()
-	if err := keystore.LoadSigningKeys(ctx, pool, kp, reg); err != nil {
-		return err
-	}
 	bill, err := applyLicence(ctx, cfg, pool, log)
 	if err != nil {
+		return err
+	}
+	ents, err := bill.Current(ctx)
+	if err != nil {
+		return err
+	}
+	if err := cfg.checkEvidenceEdition(ents); err != nil {
+		return err
+	}
+	reg := keys.NewRegistry()
+	if err := keystore.LoadSigningKeys(ctx, pool, kp, reg, cfg.evidenceKeyPurposes()...); err != nil {
 		return err
 	}
 
@@ -281,6 +288,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 				cfg.Auth.PublicURL, limiter),
 			device:    device,
 			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters, subjects: subjects,
+			logOrigin:    cfg.logOrigin(),
 			packageRoots: roots,
 			web:          web,
 			m5:           m5,
@@ -406,6 +414,8 @@ type apiDeps struct {
 	device    *devicehttp.Handler
 	// publicURL is the server's external base URL (PAP/1 htu and token iss).
 	publicURL string
+	// logOrigin names the evidence log (evidence.log_origin).
+	logOrigin string
 	// clientIP resolves client addresses behind trusted proxies.
 	clientIP httpx.ClientIPFunc
 	// clusters are the configured Kubernetes clusters (identity.kubernetes_clusters).
@@ -501,6 +511,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		_, _ = w.Write(b)
 	})
+	mountEvidenceKeys(mux, d)
 	return workloadrpc.RawBody(mux, d.clientIP), nil
 }
 

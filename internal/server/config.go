@@ -49,6 +49,8 @@ type Config struct {
 	Notifications NotificationsConfig `json:"notifications"`
 	// GatewayAPI is M6 (config_m6.go).
 	GatewayAPI GatewayAPIConfig `json:"gateway_api"`
+	// Evidence is M7 track B (config_evidence.go).
+	Evidence EvidenceConfig `json:"evidence"`
 	// Dev holds development-only settings (config_dev.go).
 	Dev DevConfig `json:"dev"`
 }
@@ -153,6 +155,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateOIDC()...)
 	errs = append(errs, c.validateM5()...)
 	errs = append(errs, c.validateM6()...)
+	errs = append(errs, c.validateEvidence()...)
 	errs = append(errs, c.validateDev()...)
 	if _, err := c.trustedProxies(); err != nil {
 		errs = append(errs, err)

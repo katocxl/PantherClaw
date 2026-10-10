@@ -191,3 +191,8 @@ func (e Entitlements) BusinessUnits() bool { return e.Edition == Business || e.E
 // package-signing keys and import packages signed with them (F361, HR-162:
 // Team and above). Packages already active keep deciding without it.
 func (e Entitlements) OrgPackageKeys() bool { return e.Edition.Paid() }
+
+// MLDSACosign reports whether the edition includes ML-DSA-65 co-signatures
+// on checkpoints and pack manifests (G0 M7 decision 6, PN-007.5:
+// Enterprise).
+func (e Entitlements) MLDSACosign() bool { return e.Edition == Enterprise }
