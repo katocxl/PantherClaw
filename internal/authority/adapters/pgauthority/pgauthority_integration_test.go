@@ -52,7 +52,7 @@ type allow struct{}
 func (allow) Require(tapp.Caller, tdomain.Permission, tdomain.Path) error { return nil }
 
 type world struct {
-	t        *testing.T
+	t        testing.TB
 	db       *dbtest.DB
 	pool     *db.Pool
 	org      ids.OrgID
@@ -72,7 +72,7 @@ type world struct {
 	gwID, conn ids.UUID
 }
 
-func exec(t *testing.T, p *db.Pool, org ids.OrgID, sql string, args ...any) {
+func exec(t testing.TB, p *db.Pool, org ids.OrgID, sql string, args ...any) {
 	t.Helper()
 	if err := p.InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
 		_, err := tx.Exec(ctx, sql, args...)
@@ -85,7 +85,7 @@ func exec(t *testing.T, p *db.Pool, org ids.OrgID, sql string, args ...any) {
 // newWorld builds an org with the mock-payments package imported and
 // active, a fact provider, an agent with an admitted instance, and an
 // Authority over PostgreSQL.
-func newWorld(t *testing.T) *world {
+func newWorld(t testing.TB) *world {
 	t.Helper()
 	d := dbtest.New(t)
 	p := d.AppPool(t)
