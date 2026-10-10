@@ -105,6 +105,9 @@ func TestE2E_M7_AnEffectWithoutAReceiptIsReported(t *testing.T) {
 	if got := s.row(t, "SELECT count(*)::text FROM pc.ledger_entries WHERE kind = 'audit.security.effect_without_receipt'"); got != "1" {
 		t.Fatalf("%s security events", got)
 	}
+	if got := s.row(t, "SELECT count(*)::text FROM pc.notifications WHERE type = 'security.effect_without_receipt'"); got != "1" {
+		t.Fatalf("%s notifications to admins", got)
+	}
 }
 
 // TestE2E_M7_AnUnknownRefundIsFoundByItsVerifier: S07 with a lost answer.

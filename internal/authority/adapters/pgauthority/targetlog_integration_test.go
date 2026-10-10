@@ -7,26 +7,46 @@ package pgauthority_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/authority/finalize"
+	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
+	ndomain "github.com/katocxl/pantherclaw/internal/notifications/domain"
+	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/transactions/adapters/pgtransactions"
 	tapp "github.com/katocxl/pantherclaw/internal/transactions/app"
 	tdomain "github.com/katocxl/pantherclaw/internal/transactions/domain"
 )
+
+// notes records the notifications a store enqueues, rendered from their
+// templates.
+type notes struct{ got []ndomain.Rendered }
+
+func (n *notes) Enqueue(_ context.Context, _ db.TenantTx, m napp.Message) (napp.Enqueued, error) {
+	r, err := ndomain.Render(m.Type, m.Params)
+	if err != nil {
+		return napp.Enqueued{}, err
+	}
+	n.got = append(n.got, r)
+	return napp.Enqueued{Notification: ids.NewV7()}, nil
+}
 
 // TestHR112_TargetLogsFindEffectsWithoutReceipts: the target log of the
 // connection lists what the target created. An object naming an unknown
 // refund resolves it as occurred; one naming a refund the target refused
 // makes its effect CONFLICTING; an object no receipt accounts for is an
-// effect without a receipt, reported once with a security audit event.
+// effect without a receipt, reported once with a security audit event and
+// told to admins once per run.
 func TestHR112_TargetLogsFindEffectsWithoutReceipts(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 	w.auth.PermitTTL = time.Hour
 	w.refundable("ch_1", "ch_2")
-	s := w.verifier()
+	told := &notes{}
+	s := &tapp.Service{Store: &pgtransactions.Store{Pool: w.pool, Notify: told}, Receipts: w.auth.Receipts}
 	run := w.run(w.grant("500").ID, ids.UUID{})
 	unknown := w.recorded(run, "ch_1", "30.00", finalize.Unknown, "")
 	failed := w.dispatched(run, "ch_2", "20.00")
@@ -73,6 +93,9 @@ func TestHR112_TargetLogsFindEffectsWithoutReceipts(t *testing.T) {
 	if n := w.count("SELECT count(*) FROM pc.ledger_entries WHERE kind = 'audit.security.effect_without_receipt'"); n != 2 {
 		t.Fatalf("%d security events", n)
 	}
+	if len(told.got) != 1 || told.got[0].Type != "security.effect_without_receipt" || !strings.Contains(told.got[0].Body, " 2 new effects") {
+		t.Fatalf("notifications %+v, want one for the run naming both", told.got)
+	}
 	if got := w.str("SELECT items_seen || '/' || matched || '/' || unmatched || '/' || complete FROM pc.target_log_runs"); got != "4/2/2/true" {
 		t.Fatalf("run %s", got)
 	}
@@ -101,5 +124,8 @@ func TestHR112_TargetLogsFindEffectsWithoutReceipts(t *testing.T) {
 	}
 	if n := w.count("SELECT count(*) FROM pc.unreceipted_effects"); n != 2 {
 		t.Fatalf("%d unreceipted effects after seeing one again", n)
+	}
+	if len(told.got) != 1 {
+		t.Fatalf("%d notifications after seeing one again", len(told.got))
 	}
 }

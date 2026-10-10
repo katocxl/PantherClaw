@@ -22,6 +22,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/transactions/app"
@@ -85,8 +86,9 @@ func (s *Store) ScheduleTargetLogs(ctx context.Context, org ids.OrgID, overlap t
 	return scheduled, err
 }
 
-// targetLog applies a target-log report.
-func targetLog(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, gateway ids.UUID, task dbq.LeasedTargetLogRow,
+// targetLog applies a target-log report. New effects without a receipt are
+// told to admins once per run.
+func (s *Store) targetLog(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, gateway ids.UUID, task dbq.LeasedTargetLogRow,
 	r app.Report, sign app.Sign,
 ) (app.Applied, error) {
 	var req targetLogRequest
@@ -115,7 +117,7 @@ func targetLog(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgI
 	if err != nil {
 		return app.Applied{}, err
 	}
-	matched, unmatched := 0, 0
+	matched, unmatched, found := 0, 0, 0
 	for _, it := range r.Items {
 		ok, err := matchItem(ctx, tx, q, org, task.ConnectionID, it, obs, sign, now)
 		if err != nil {
@@ -126,7 +128,21 @@ func targetLog(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgI
 			continue
 		}
 		unmatched++
-		if err := unreceipted(ctx, tx, q, org, task, req.EffectOf, it); err != nil {
+		added, err := unreceipted(ctx, tx, q, org, task, req.EffectOf, it)
+		if err != nil {
+			return app.Applied{}, err
+		}
+		if added {
+			found++
+		}
+	}
+	if found > 0 && s.Notify != nil {
+		if _, err := s.Notify.Enqueue(ctx, tx, napp.Message{
+			Org: org, Type: "security.effect_without_receipt",
+			Params:    map[string]string{"connection": task.ConnectionID.String(), "count": strconv.Itoa(found)},
+			Subject:   &napp.Subject{Type: "connection", ID: task.ConnectionID},
+			DedupeKey: "effect_without_receipt:" + task.ID.String(),
+		}); err != nil {
 			return app.Applied{}, err
 		}
 	}
@@ -190,10 +206,10 @@ func matchItem(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgI
 }
 
 // unreceipted records an object no receipt accounts for, once, with a
-// security audit event (HR-112).
+// security audit event (HR-112), and reports whether it was new.
 func unreceipted(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgID, task dbq.LeasedTargetLogRow, effectOf string,
 	it app.TargetLogItem,
-) error {
+) (bool, error) {
 	p := dbq.InsertUnreceiptedEffectParams{
 		OrgID: org, ID: ids.NewV7(), ConnectionID: task.ConnectionID, Operation: effectOf, ObjectRef: it.ObjectRef,
 		VerificationID: task.ID,
@@ -208,12 +224,12 @@ func unreceipted(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.Or
 	}
 	n, err := q.InsertUnreceiptedEffect(ctx, p)
 	if err != nil || n != 1 {
-		return err
+		return false, err
 	}
 	_, err = audit.Record(ctx, tx, audit.Event{
 		Name: "security.effect_without_receipt", Actor: evdomain.Actor{Type: "system", ID: "target_log"}, Outcome: audit.Failure,
 		ReasonCode: "EFFECT_WITHOUT_RECEIPT", Object: &audit.Object{Type: "connection", ID: task.ConnectionID.String()},
 		Details: map[string]string{"operation": effectOf, "object_ref": it.ObjectRef},
 	})
-	return err
+	return err == nil, err
 }

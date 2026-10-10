@@ -23,6 +23,7 @@ import (
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
 	"github.com/katocxl/pantherclaw/internal/evidence/ledger"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
+	napp "github.com/katocxl/pantherclaw/internal/notifications/app"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/transactions/app"
@@ -36,9 +37,17 @@ const receiptKindEffect = "receipt.effect"
 // (pipeline.ClaimSucceeded).
 const claimSucceeded = "SUCCEEDED"
 
+// Notifier queues a notification in the caller's transaction (M5).
+type Notifier interface {
+	Enqueue(ctx context.Context, tx db.TenantTx, m napp.Message) (napp.Enqueued, error)
+}
+
 // Store implements app.Store.
 type Store struct {
 	Pool *db.Pool
+	// Notify tells admins about effects without a receipt; nil sends
+	// nothing.
+	Notify Notifier
 }
 
 var _ app.Store = (*Store)(nil)
@@ -98,7 +107,7 @@ func (s *Store) Report(ctx context.Context, org ids.OrgID, gateway ids.UUID, r a
 			} else if err != nil {
 				return err
 			}
-			out, err = targetLog(ctx, tx, q, org, gateway, tl, r, sign)
+			out, err = s.targetLog(ctx, tx, q, org, gateway, tl, r, sign)
 			return err
 		} else if err != nil {
 			return err

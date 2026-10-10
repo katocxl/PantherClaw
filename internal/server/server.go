@@ -221,7 +221,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
-	verification, err := newVerification(pool, reg)
+	verification, err := newVerification(pool, reg, m5.notifications)
 	if err != nil {
 		return err
 	}

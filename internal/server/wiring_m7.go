@@ -12,11 +12,12 @@ import (
 
 // newVerification builds the server side of verification (G0 M7 track A):
 // leases, reports and the expiry of leases and windows. Effect receipts are
-// signed with the receipts key, like decision and execution receipts.
-func newVerification(pool *db.Pool, reg *keys.Registry) (*txapp.Service, error) {
+// signed with the receipts key, like decision and execution receipts; notify
+// (M5 notifications) tells admins about effects without a receipt.
+func newVerification(pool *db.Pool, reg *keys.Registry, notify pgtransactions.Notifier) (*txapp.Service, error) {
 	receipts, err := reg.Signer(keys.PurposeReceipts)
 	if err != nil {
 		return nil, err
 	}
-	return &txapp.Service{Store: &pgtransactions.Store{Pool: pool}, Receipts: receipts}, nil
+	return &txapp.Service{Store: &pgtransactions.Store{Pool: pool, Notify: notify}, Receipts: receipts}, nil
 }
