@@ -135,8 +135,7 @@ func Parse(schema jsontext.Value) ([]Param, error) {
 // walk visits one schema node. reachable says whether the node is reached
 // from the root through properties only, and path is how.
 func walk(v jsontext.Value, reachable bool, path []string, out *[]Param) error {
-	switch v.Kind() {
-	case '[':
+	if v.Kind() == '[' {
 		var items []jsontext.Value
 		if err := json.Unmarshal(v, &items); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalid, err)
@@ -147,8 +146,8 @@ func walk(v jsontext.Value, reachable bool, path []string, out *[]Param) error {
 			}
 		}
 		return nil
-	case '{':
-	default:
+	}
+	if v.Kind() != '{' {
 		return nil
 	}
 	var m map[string]jsontext.Value
