@@ -13,13 +13,15 @@ import (
 	"github.com/katocxl/pantherclaw/internal/scan"
 )
 
-// jetBrainsFixture lays out JetBrains AI Assistant configurations: the
-// IDE-level llm.mcpServers.xml of four IDEs and versions in each layout
-// (2025.1 entries in the component, later <commands> and <urls> lists,
-// 2025.3 state-only entries), ~/.ai/mcp/mcp.json, and a project's
-// .ai/mcp/mcp.json, .idea/workspace.xml and Rider workspace.xml. It holds
-// credentials in environment values and headers, and a run configuration
-// whose environment is not an MCP server's.
+// jetBrainsFixture lays out JetBrains AI Assistant configurations in the
+// formats of the plugin's persisted-state classes: the IDE-level
+// llm.mcpServers.xml of four IDEs and versions in each layout (2025.1 and
+// 2025.2 entries in the component, the <commands> and <urls> lists 2026.2
+// migrates from, 2025.3 state-only entries), ~/.ai/mcp/mcp.json, and a
+// project's .ai/mcp/mcp.json (a server map without "mcpServers"),
+// .idea/workspace.xml and Rider workspace.xml. It holds credentials in
+// environment values and headers, and a run configuration whose environment
+// is not an MCP server's.
 func jetBrainsFixture(t *testing.T) scan.Options {
 	t.Helper()
 	root := t.TempDir()
@@ -51,46 +53,54 @@ func jetBrainsFixture(t *testing.T) scan.Options {
     </McpServerCommand>
   </component>
 </application>`)
-	write(t, filepath.Join(ides, "GoLand2025.1", "options", "llm.mcpServers.xml"), `<application>
+	// 2025.2 still keeps the entries in the component, and has no remote
+	// servers.
+	write(t, filepath.Join(ides, "GoLand2025.2", "options", "llm.mcpServers.xml"), `<application>
   <component name="McpApplicationServerCommands" modifiable="true">
     <McpServerCommand sourceId="UserConfigurationSource">
+      <option name="allowedToolsNames" />
+      <option name="enabled" value="true" />
       <option name="name" value="jb-github" />
       <option name="programPath" value="npx" />
+      <option name="arguments" value="" />
+      <option name="workingDirectory" value="" />
       <envs><env name="GITHUB_TOKEN" value="${env:GITHUB_TOKEN}" /><env name="LOG_LEVEL" value="info" /></envs>
     </McpServerCommand>
   </component>
 </application>`)
-	// Later entries: the reader takes options and lists at any depth, so a
-	// nested element or an <option name="env"> map is read too.
-	write(t, filepath.Join(ides, "IntelliJIdea2025.2", "options", "llm.mcpServers.xml"), `<application>
+	// The full definitions in <commands> and <urls> that 2026.2 moves to
+	// mcp.json: XmlSerializer's form of McpServerCommand and McpServerURL.
+	write(t, filepath.Join(ides, "IntelliJIdea2025.3", "options", "llm.mcpServers.xml"), `<application>
   <component name="McpApplicationServerCommands" modifiable="true" autoEnableExternalChanges="false">
     <commands>
-      <McpServerCommand>
+      <McpServerCommand sourceId="UserConfigurationSource">
+        <option name="allowedToolsNames">
+          <list><option value="query" /></list>
+        </option>
         <option name="enabled" value="false" />
         <option name="name" value="jb-db" />
         <option name="programPath" value="uvx" />
         <option name="arguments" value="mcp-server-postgres postgres://admin:PWSECRET@db/app" />
-        <envs><env name="ANTHROPIC_API_KEY" value="${env:ANTHROPIC_API_KEY}" /></envs>
+        <option name="workingDirectory" value="" />
+        <envs>
+          <env name="ANTHROPIC_API_KEY" value="${env:ANTHROPIC_API_KEY}" />
+          <env name="PANTHERCLAW_API_KEY" value="pck_live_`+fake("CMD")+`" />
+        </envs>
       </McpServerCommand>
-      <McpServerConfigurationProperties>
-        <option name="name" value="jb-nested" />
-        <McpLocalServerProperties>
-          <option name="command" value="docker" />
-          <option name="env">
-            <map><entry key="PANTHERCLAW_API_KEY" value="pck_live_`+fake("MAP")+`" /></map>
-          </option>
-        </McpLocalServerProperties>
-      </McpServerConfigurationProperties>
     </commands>
     <urls>
-      <McpServerConfigurationProperties>
+      <McpServerURL sourceId="UserConfigurationSource">
+        <option name="allowedToolsNames" />
+        <option name="enabled" value="true" />
         <option name="name" value="jb-remote" />
         <option name="url" value="https://jb.example.com/mcp?key=QUERYSECRET" />
-        <headers>
-          <entry key="Authorization" value="Bearer ghp_`+fake("HEADER")+`" />
-          <entry key="X-Trace" value="on" />
-        </headers>
-      </McpServerConfigurationProperties>
+        <option name="headers">
+          <map>
+            <entry key="Authorization" value="Bearer ghp_`+fake("HEADER")+`" />
+            <entry key="X-Trace" value="on" />
+          </map>
+        </option>
+      </McpServerURL>
     </urls>
   </component>
 </application>`)
@@ -113,7 +123,8 @@ func jetBrainsFixture(t *testing.T) scan.Options {
 	write(t, filepath.Join(home, ".ai", "mcp", "mcp.json"), `{"mcpServers": {
 		"jb-user": {"command": "npx", "args": ["-y", "server-x"], "env": {"OPENAI_API_KEY": "sk-proj-`+fake("JSON")+`"}},
 		"jb-figma": {"type": "http", "url": "http://127.0.0.1:3845/mcp"}}}`)
-	write(t, filepath.Join(proj, ".ai", "mcp", "mcp.json"), `{"mcpServers": {"jb-proj": {"command": "uvx", "args": ["jcodemunch-mcp"]}}}`)
+	write(t, filepath.Join(proj, ".ai", "mcp", "mcp.json"), `{"jb-proj": {"command": "uvx", "args": ["jcodemunch-mcp"],
+		"env": {"GITHUB_TOKEN": "ghp_`+fake("BARE")+`"}}}`)
 	write(t, filepath.Join(proj, ".idea", "workspace.xml"), `<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="RunManager">
@@ -168,12 +179,11 @@ func TestF015_ScanReadsJetBrainsAIAssistant(t *testing.T) {
 	}
 	want := map[string]map[string]string{
 		"jb-github":  {"transport": "stdio", "command": "npx", "env_names": "GITHUB_TOKEN,LOG_LEVEL"},
-		"jb-db":      {"transport": "stdio", "command": "uvx", "env_names": "ANTHROPIC_API_KEY"},
-		"jb-nested":  {"transport": "stdio", "command": "docker", "env_names": "PANTHERCLAW_API_KEY"},
+		"jb-db":      {"transport": "stdio", "command": "uvx", "env_names": "ANTHROPIC_API_KEY,PANTHERCLAW_API_KEY"},
 		"jb-remote":  {"transport": "http", "url_host": "jb.example.com", "header_names": "Authorization,X-Trace"},
 		"jb-user":    {"transport": "stdio", "command": "npx", "env_names": "OPENAI_API_KEY"},
 		"jb-figma":   {"transport": "http", "url_host": "127.0.0.1:3845"},
-		"jb-proj":    {"transport": "stdio", "command": "uvx"},
+		"jb-proj":    {"transport": "stdio", "command": "uvx", "env_names": "GITHUB_TOKEN"},
 		"nx-mcp":     {"transport": "stdio", "command": "npx.cmd"},
 		"rider-proj": {"transport": "stdio", "command": "dotnet"},
 	}
@@ -183,7 +193,7 @@ func TestF015_ScanReadsJetBrainsAIAssistant(t *testing.T) {
 	for name, attrs := range want {
 		count := 1
 		if name == "jb-github" {
-			count = 2 // PyCharm 2025.1 and GoLand 2025.1
+			count = 2 // PyCharm 2025.1 and GoLand 2025.2
 		}
 		if len(servers[name]) != count {
 			t.Errorf("server %q found %d times, want %d", name, len(servers[name]), count)
@@ -201,7 +211,7 @@ func TestF015_ScanReadsJetBrainsAIAssistant(t *testing.T) {
 	}
 	for name, in := range map[string]string{
 		"jb-user":    filepath.Join("home", ".ai", "mcp", "mcp.json"), // not from WebStorm's state-only entry
-		"jb-remote":  filepath.Join("IntelliJIdea2025.2", "options", "llm.mcpServers.xml"),
+		"jb-remote":  filepath.Join("IntelliJIdea2025.3", "options", "llm.mcpServers.xml"),
 		"nx-mcp":     filepath.Join("proj", ".idea", "workspace.xml"),
 		"rider-proj": filepath.Join(".idea.Shop", ".idea", "workspace.xml"),
 		"jb-proj":    filepath.Join("proj", ".ai", "mcp", "mcp.json"),
@@ -212,9 +222,10 @@ func TestF015_ScanReadsJetBrainsAIAssistant(t *testing.T) {
 	}
 	wantCreds := map[string][2]string{ // where name → kind, redacted
 		"jetbrains_ai jb-github GITHUB_TOKEN":          {"github_token", "ghp_…"},
-		"jetbrains_ai jb-nested PANTHERCLAW_API_KEY":   {"pantherclaw_api_key", "pck_…"},
+		"jetbrains_ai jb-db PANTHERCLAW_API_KEY":       {"pantherclaw_api_key", "pck_…"},
 		"jetbrains_ai jb-remote headers Authorization": {"github_token", "Bearer ghp_…"},
 		"jetbrains_ai jb-user OPENAI_API_KEY":          {"openai_api_key", "sk-proj-…"},
+		"jetbrains_ai jb-proj GITHUB_TOKEN":            {"github_token", "ghp_…"},
 	}
 	if len(creds) != len(wantCreds) {
 		t.Errorf("credentials %v, want %d (placeholders and run configurations are not MCP credentials)", creds, len(wantCreds))
@@ -223,6 +234,36 @@ func TestF015_ScanReadsJetBrainsAIAssistant(t *testing.T) {
 		if c := creds[at]; c["secret_kind"] != w[0] || c["redacted"] != w[1] {
 			t.Errorf("credential %q: %v, want %v", at, c, w)
 		}
+	}
+}
+
+// TestF015_JetBrainsMcpJsonForms (PN-001.1): AI Assistant reads an mcp.json
+// without "mcpServers" as the server map itself, fails a file whose members
+// are not all objects, and ignores what is beside "mcpServers"; so does the
+// scan.
+func TestF015_JetBrainsMcpJsonForms(t *testing.T) {
+	for _, tc := range []struct {
+		name, json string
+		want       []string
+	}{
+		{"bare map", `{"a": {"command": "npx"}, "b": {"type": "http", "url": "https://mcp.example.com/mcp"}}`, []string{"a", "b"}},
+		{"bare map with a value", `{"a": {"command": "npx"}, "version": 1}`, nil},
+		{"null servers", `{"mcpServers": null, "a": {"command": "npx"}}`, nil},
+		{"wrapped", `{"mcpServers": {"a": {"command": "npx"}}, "b": {"command": "npx"}}`, []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			write(t, filepath.Join(home, ".ai", "mcp", "mcp.json"), tc.json)
+			var names []string
+			for _, f := range scan.Run(scan.Options{Host: "h", Home: home}) {
+				if f.Kind == scan.KindMCPServer {
+					names = append(names, f.Attributes["name"])
+				}
+			}
+			if slices.Sort(names); !slices.Equal(names, tc.want) {
+				t.Errorf("servers %v, want %v", names, tc.want)
+			}
+		})
 	}
 }
 
