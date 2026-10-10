@@ -65,7 +65,7 @@ type evidence struct {
 
 func view(r dbq.PcWaitlistEntry) (Entry, error) {
 	e := Entry{
-		ID: r.ID, Kind: r.Kind, SubjectType: r.SubjectType, SubjectID: r.SubjectID, AgentID: r.AgentID, State: r.State,
+		ID: r.ID, Kind: r.Kind, SubjectType: r.SubjectType, SubjectID: r.SubjectID, AgentID: agentOf(r), State: r.State,
 		DeadlineAt: r.DeadlineAt, DecidedAt: r.DecidedAt, DecisionReason: r.DecisionReason, CreatedAt: r.CreatedAt,
 	}
 	if r.DecidedBy != nil {
@@ -79,8 +79,21 @@ func view(r dbq.PcWaitlistEntry) (Entry, error) {
 	return e, nil
 }
 
-// canRead reports whether the caller may read entries about agent.
+// agentOf returns the entry's agent, or the zero id for an entry about no
+// agent (a tool review).
+func agentOf(r dbq.PcWaitlistEntry) ids.UUID {
+	if r.AgentID == nil {
+		return ids.UUID{}
+	}
+	return *r.AgentID
+}
+
+// canRead reports whether the caller may read entries about agent. Entries
+// about no agent are not readable here.
 func canRead(ctx context.Context, c tenancy.Caller, q *dbq.Queries, agent ids.UUID) (bool, error) {
+	if agent.IsZero() {
+		return false, nil
+	}
 	a, err := q.GetAgent(ctx, c.Org, agent)
 	if err != nil {
 		return false, err
@@ -118,12 +131,12 @@ func (rd *Reader) List(ctx context.Context, pr page.Request, states []string, ag
 		rows, out.Next = page.Finish(pr, rows, func(r dbq.PcWaitlistEntry) ids.UUID { return r.ID })
 		allowed := map[ids.UUID]bool{}
 		for _, r := range rows {
-			ok, seen := allowed[r.AgentID]
+			ok, seen := allowed[agentOf(r)]
 			if !seen {
-				if ok, err = canRead(ctx, c, q, r.AgentID); err != nil {
+				if ok, err = canRead(ctx, c, q, agentOf(r)); err != nil {
 					return err
 				}
-				allowed[r.AgentID] = ok
+				allowed[agentOf(r)] = ok
 			}
 			if !ok {
 				continue
@@ -154,7 +167,7 @@ func (rd *Reader) Get(ctx context.Context, id ids.UUID) (Entry, error) {
 		} else if err != nil {
 			return err
 		}
-		ok, err := canRead(ctx, c, q, r.AgentID)
+		ok, err := canRead(ctx, c, q, agentOf(r))
 		if err != nil {
 			return err
 		}

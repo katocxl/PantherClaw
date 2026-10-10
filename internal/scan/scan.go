@@ -130,6 +130,9 @@ func clientConfigs(o Options) []clientConfig {
 			out = append(out, clientConfig{client: client, path: path, servers: servers})
 		}
 	}
+	// The AI Assistant's mcp.json paths that the IDEs' registries set, read
+	// beside the default ones.
+	var jbGlobal, jbProject []string
 	if o.ConfigDir != "" {
 		add("claude_desktop", filepath.Join(o.ConfigDir, "Claude", "claude_desktop_config.json"), "mcpServers")
 		add("vscode", filepath.Join(o.ConfigDir, "Code", "User", "mcp.json"), "servers")
@@ -137,9 +140,11 @@ func clientConfigs(o Options) []clientConfig {
 		// %APPDATA% on Windows, $XDG_CONFIG_HOME on Linux.
 		add("devin_desktop", filepath.Join(o.ConfigDir, "devin", "mcp_config.json"), "mcpServers")
 		add("zed", filepath.Join(o.ConfigDir, "zed", "settings.json"), "context_servers")
-		for _, p := range jetBrainsConfigs(filepath.Join(o.ConfigDir, "JetBrains")) {
+		jetBrains := filepath.Join(o.ConfigDir, "JetBrains")
+		for _, p := range jetBrainsConfigs(jetBrains) {
 			add("jetbrains_ai", p, "mcpServers")
 		}
+		jbGlobal, jbProject = jetBrainsMCPJSONPaths(jetBrains)
 	}
 	if o.Home != "" {
 		add("claude_desktop", filepath.Join(o.Home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), "mcpServers")
@@ -150,6 +155,9 @@ func clientConfigs(o Options) []clientConfig {
 		add("zed", filepath.Join(o.Home, ".config", "zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(o.Home, ".junie", "mcp", "mcp.json"), "mcpServers")
 		add("jetbrains_ai", filepath.Join(o.Home, ".ai", "mcp", "mcp.json"), "mcpServers")
+		for _, p := range jbGlobal {
+			add("jetbrains_ai", resolvePath(o.Home, p), "mcpServers")
+		}
 		add("codex", filepath.Join(o.Home, ".codex", "config.toml"), "mcp_servers")
 		add("gemini_cli", filepath.Join(o.Home, ".gemini", "settings.json"), "mcpServers")
 	}
@@ -166,6 +174,9 @@ func clientConfigs(o Options) []clientConfig {
 		add("zed", filepath.Join(p, ".zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(p, ".junie", "mcp", "mcp.json"), "mcpServers")
 		add("jetbrains_ai", filepath.Join(p, ".ai", "mcp", "mcp.json"), "mcpServers")
+		for _, j := range jbProject {
+			add("jetbrains_ai", resolvePath(p, j), "mcpServers")
+		}
 		for _, w := range jetBrainsWorkspaces(p) {
 			add("jetbrains_ai", w, "mcpServers")
 		}
@@ -175,15 +186,24 @@ func clientConfigs(o Options) []clientConfig {
 	return out
 }
 
-// readConfig reads a JSON, JSONC, TOML (Codex) or JetBrains XML file into
-// an object; anything else is skipped.
-func readConfig(path string) map[string]any {
+// readFile reads a regular file of at most MaxFileSize bytes, or returns nil.
+func readFile(path string) []byte {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFileSize {
 		return nil
 	}
 	b, err := os.ReadFile(path) //nolint:gosec // G304: scanning the user's own configuration
 	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// readConfig reads a JSON, JSONC, TOML (Codex) or JetBrains XML file into
+// an object; anything else is skipped.
+func readConfig(path string) map[string]any {
+	b := readFile(path)
+	if b == nil {
 		return nil
 	}
 	var v map[string]any
@@ -269,6 +289,9 @@ func mcpFindings(host, client, path string, serversAt []string) []Finding {
 		return nil
 	}
 	groups := []map[string]any{member(doc, serversAt)}
+	if client == "jetbrains_ai" {
+		groups[0] = jetBrainsServers(doc)
+	}
 	if client == "claude_code" {
 		// ~/.claude.json also keeps per-project servers.
 		if projects, ok := doc["projects"].(map[string]any); ok {

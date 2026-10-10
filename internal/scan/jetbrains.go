@@ -5,7 +5,6 @@ package scan
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -15,51 +14,80 @@ import (
 	"strings"
 )
 
-// JetBrains AI Assistant (the AI Assistant plugin, MCP client since 2025.1;
-// Junie is a separate client) keeps its MCP servers in these places:
+// JetBrains AI Assistant (the AI Assistant plugin, com.intellij.ml.llm, MCP
+// client since 2025.1; Junie is a separate client) keeps its MCP servers in
+// the places below. The formats are taken from the plugin's persisted-state
+// classes, package com.intellij.ml.llm.mcp.client.settings, in builds
+// 252.23892.530 (IDE 2025.2.0), 252.28539.116 (the last 2025.2 build) and
+// 262.10968.223 (2026.2), from plugins.jetbrains.com:
 //
 //   - IDE level: options/llm.mcpServers.xml in each IDE's configuration
 //     directory, <config>/JetBrains/<Product><Version>, where <config> is
 //     %APPDATA% on Windows, ~/Library/Application Support on macOS and
-//     $XDG_CONFIG_HOME or ~/.config on Linux, as os.UserConfigDir returns.
-//     Every installed IDE and version has its own. Sources: "Directories used
-//     by the IDE", https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html#config-directory,
-//     which JetBrains named as the store for these servers in
-//     https://youtrack.jetbrains.com/issue/LLM-16145; the file name from
-//     https://youtrack.jetbrains.com/issue/LLM-22682
-//     (PhpStorm2025.3/options/llm.mcpServers.xml) and copies committed to
-//     dotfiles repositories (PyCharm2026.1, CLion2025.3, RustRover2025.3).
-//   - Project level: .idea/workspace.xml (LLM-16145), or
-//     .idea/.idea.<Solution>/.idea/workspace.xml for Rider, as committed
-//     Rider projects show.
-//   - Since 2025.3 the definitions are JSON in the mcpServers form, in
-//     ~/.ai/mcp/mcp.json (LLM-22682, PhpStorm 2025.3) and
-//     <project>/.ai/mcp/mcp.json (https://youtrack.jetbrains.com/issue/LLM-26654,
-//     PhpStorm 2026.1), and the XML keeps only each server's name and state.
+//     $XDG_CONFIG_HOME or ~/.config on Linux, as os.UserConfigDir returns
+//     ("Directories used by the IDE",
+//     https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html#config-directory).
+//     Every installed IDE and version has its own. The component is
+//     McpApplicationServerCommands (@State of McpApplicationServerCommandService
+//     in 2025.2, McpApplicationServerConfigurationService in 2026.2).
+//   - Project level: .idea/workspace.xml ($WORKSPACE_FILE$), component
+//     McpProjectServerCommands, or .idea/.idea.<Solution>/.idea/workspace.xml
+//     for Rider, as committed Rider projects show.
+//   - Since 2025.3 (https://youtrack.jetbrains.com/issue/LLM-22682) the
+//     definitions are JSON in ~/.ai/mcp/mcp.json and <project>/.ai/mcp/mcp.json.
+//     Gson reads the file as
+//     {"mcpServers": {name: {command, args, env, type, url, headers}}} or, when
+//     it has no "mcpServers", as that map itself
+//     (McpServerConfigurationServiceBase.Companion.parseConfigurations); a
+//     server with a command is local, one with only a URL is remote.
+//   - Those paths are the registry keys llm.mcp.client.global.mcp.json.path
+//     (under the user's home) and llm.mcp.client.project.mcp.json.path (under
+//     the project directory), both ".ai/mcp/mcp.json" by default; Java's
+//     Path.resolve keeps an absolute value whole. The IntelliJ platform keeps
+//     a changed registry value in each IDE's options/ide.general.xml, as
+//     <entry key="…" value="…" source="USER" /> in component "Registry"
+//     (RegistryManagerImpl's @State, Registry.getState and fromState in
+//     github.com/JetBrains/intellij-community). A -D system property in the
+//     IDE's .vmoptions sets a key the registry has not stored
+//     (RegistryValue.resolveRequiredValue); the scan does not read it.
+//     early-access-registry.txt holds only keys read through
+//     EarlyAccessRegistryManager, and AI Assistant reads these with
+//     Registry.stringValue.
 //
-// The XML component is McpApplicationServerCommands in llm.mcpServers.xml
-// and McpProjectServerCommands in workspace.xml. Its entries have had two
-// layouts, and each entry is read the same way in both:
+// The XML component's entries have had three layouts:
 //
 //	<component name="McpProjectServerCommands">
-//	  <McpServerCommand>                      2025.1: entries in the component
+//	  <McpServerCommand sourceId="UserConfigurationSource">   2025.1, 2025.2
 //	    <option name="name" value="nx-mcp" />
 //	    <option name="programPath" value="npx.cmd" />
 //	    <option name="arguments" value="-y nx-mcp@latest" />
 //	    <envs><env name="TOKEN" value="…" /></envs>
 //	  </McpServerCommand>
-//	  <commands>…</commands>                  later: local servers
-//	  <urls>…</urls>                          later: remote servers
+//	  <commands><McpServerCommand>…</McpServerCommand></commands>   later
+//	  <urls>
+//	    <McpServerURL sourceId="UserConfigurationSource">
+//	      <option name="name" value="remote" />
+//	      <option name="url" value="https://…" />
+//	      <option name="headers"><map><entry key="Authorization" value="…" /></map></option>
+//	    </McpServerURL>
+//	  </urls>
 //	</component>
 //
-// Sources: committed workspace.xml files of both layouts (the first as Nx
-// Console's AI Assistant setup writes it), and the 10.0.0 notes of the "MCP
-// Servers for AI Assistants" plugin, which writes both. An entry's options
-// and its environment and header lists are read at any depth, so the
-// element names of later versions are not relied on. From 2025.3 the
-// entries are McpServerConfigurationProperties holding only state ("name",
-// "enabled", "allowedToolsNames"); an entry with neither a command nor a
-// URL is skipped, since that server is read from .ai/mcp/mcp.json.
+// 2025.2 writes the first layout, as committed 2025.1 files show it too, and
+// has no remote servers (McpServerCommandServiceBase.getState;
+// McpServerCommandServiceBaseKt serializes each command with XmlSerializer
+// and its environment with EnvironmentVariablesData.writeExternal). 2026.2
+// moves the second layout to mcp.json once
+// (McpServerConfigurationServiceBase.loadOldConfigurations reads each child
+// of <commands> as an McpServerCommand and each child of <urls> as an
+// McpServerURL, whose headers are a map); no build that writes it was
+// examined. From 2025.3, as committed files and 2026.2's getState show,
+// <commands> and <urls> hold McpServerConfigurationProperties entries with
+// state only ("name", "enabled", "source", "userOverride",
+// "allowedToolsNames"); an entry with neither a command nor a URL is
+// skipped, since that server is read from mcp.json. options/McpToolsStoreService.xml is not AI Assistant's (no build
+// has the class) and caches servers' status and tools, not their
+// definitions, so it is not read.
 
 // jetBrainsComponents name the AI Assistant's MCP component in the IDE's
 // llm.mcpServers.xml and in a project's workspace.xml.
@@ -73,6 +101,73 @@ func jetBrainsConfigs(dir string) []string {
 		out = append(out, filepath.Join(ide, "options", "llm.mcpServers.xml"))
 	}
 	return out
+}
+
+// The registry keys that move the AI Assistant's mcp.json under the user's
+// home directory and under a project's.
+const (
+	jetBrainsGlobalMCPJSON  = "llm.mcp.client.global.mcp.json.path"
+	jetBrainsProjectMCPJSON = "llm.mcp.client.project.mcp.json.path"
+)
+
+// jetBrainsMCPJSONPaths returns the mcp.json paths that the registries of
+// the IDEs in dir (<config>/JetBrains) set, for the home directory (global)
+// and for projects, each once. An empty value, which names the directory
+// itself, is left out.
+func jetBrainsMCPJSONPaths(dir string) (global, project []string) {
+	for _, ide := range entries(dir, "") {
+		reg := jetBrainsRegistry(readFile(filepath.Join(ide, "options", "ide.general.xml")))
+		if p := reg[jetBrainsGlobalMCPJSON]; p != "" && !slices.Contains(global, p) {
+			global = append(global, p)
+		}
+		if p := reg[jetBrainsProjectMCPJSON]; p != "" && !slices.Contains(project, p) {
+			project = append(project, p)
+		}
+	}
+	return global, project
+}
+
+// jetBrainsRegistry reads the registry values an IDE keeps in
+// ide.general.xml, the last of each key as Registry.loadState does, or
+// returns nil for a file that is not well formed.
+func jetBrainsRegistry(b []byte) map[string]string {
+	doc := parseXML(b)
+	if doc == nil {
+		return nil
+	}
+	reg := map[string]string{}
+	for _, top := range doc.kids { // <application>
+		for _, c := range top.kids {
+			if v, _ := c.attr("name"); c.name != "component" || v != "Registry" {
+				continue
+			}
+			for _, e := range c.kids {
+				if k, v, ok := e.pair(); ok && e.name == "entry" {
+					reg[k] = v
+				}
+			}
+		}
+	}
+	return reg
+}
+
+// resolvePath resolves p against dir as Java's Path.resolve does: an
+// absolute p is kept, and on Windows a p rooted without a drive (\dir) takes
+// dir's drive, and one relative to dir's drive (C:dir) is joined to dir. A p
+// relative to another drive's working directory gives "".
+func resolvePath(dir, p string) string {
+	vol := filepath.VolumeName(p)
+	switch {
+	case filepath.IsAbs(p):
+		return filepath.Clean(p)
+	case vol != "" && !strings.EqualFold(vol, filepath.VolumeName(dir)):
+		return ""
+	case vol != "":
+		return filepath.Join(dir, p[len(vol):])
+	case p != "" && os.IsPathSeparator(p[0]):
+		return filepath.Join(filepath.VolumeName(dir), p)
+	}
+	return filepath.Join(dir, p)
 }
 
 // jetBrainsWorkspaces lists a project's workspace.xml files: .idea's, and
@@ -135,45 +230,48 @@ func fromJetBrainsXML(b []byte) map[string]any {
 	return map[string]any{"mcpServers": servers}
 }
 
+// jetBrainsServers returns the servers of an AI Assistant configuration: its
+// "mcpServers" object or, for an mcp.json without one, the whole object when
+// every member is an object (Gson fails the file otherwise).
+func jetBrainsServers(doc map[string]any) map[string]any {
+	if _, ok := doc["mcpServers"]; ok {
+		return member(doc, []string{"mcpServers"})
+	}
+	for _, v := range doc {
+		if _, ok := v.(map[string]any); !ok {
+			return nil
+		}
+	}
+	return doc
+}
+
 // jetBrainsServer reads one entry into the JSON form: its options (the first
-// of each name) and the name/value pairs under an environment or header list
-// (<envs><env name value/>, an <option name="env"> map of <entry key value/>,
-// <headers>). It returns nil for an entry with no name, or with neither a
+// of each name), the variables of its <envs> list and the entries of its
+// headers map. It returns nil for an entry with no name, or with neither a
 // command nor a URL. The arguments are not read: tokens are passed there.
 func jetBrainsServer(e *xmlNode) (string, map[string]any) {
 	opts := map[string]string{}
 	env, headers := map[string]any{}, map[string]any{}
-	var walk func(n *xmlNode, list map[string]any)
-	walk = func(n *xmlNode, list map[string]any) {
-		label := n.name
-		if n.name == "option" {
-			label, _ = n.attr("name")
-		}
-		k, v, ok := n.pair()
+	for _, c := range e.kids {
+		label, _ := c.attr("name")
 		switch {
-		case list != nil:
-			if ok {
-				list[k] = v
+		case c.name == "envs": // <env name value/>
+			c.pairs(env)
+		case c.name == "option" && label == "headers": // <map><entry key value/></map>
+			c.pairs(headers)
+		case c.name == "option":
+			if k, v, ok := c.pair(); ok {
+				if _, seen := opts[k]; !seen {
+					opts[k] = v
+				}
 			}
-		case label == "envs" || label == "env" || label == "environment":
-			list = env
-		case label == "headers":
-			list = headers
-		case n.name == "option" && ok:
-			if _, seen := opts[k]; !seen {
-				opts[k] = v
-			}
-		}
-		for _, kid := range n.kids {
-			walk(kid, list)
 		}
 	}
-	walk(e, nil)
 	s := map[string]any{}
-	if cmd := cmp.Or(opts["programPath"], opts["command"]); cmd != "" {
+	if cmd := opts["programPath"]; cmd != "" {
 		s["command"] = cmd
 	}
-	if u := cmp.Or(opts["url"], opts["serverUrl"]); u != "" {
+	if u := opts["url"]; u != "" {
 		s["url"] = u
 	}
 	if opts["name"] == "" || len(s) == 0 {
@@ -212,6 +310,16 @@ func (n *xmlNode) pair() (k, v string, ok bool) {
 	}
 	v, ok = n.attr("value")
 	return k, v, ok && k != ""
+}
+
+// pairs adds the pairs at any depth under n to list.
+func (n *xmlNode) pairs(list map[string]any) {
+	for _, kid := range n.kids {
+		if k, v, ok := kid.pair(); ok {
+			list[k] = v
+		}
+		kid.pairs(list)
+	}
 }
 
 // parseXML reads an XML document into a tree under an unnamed root, or

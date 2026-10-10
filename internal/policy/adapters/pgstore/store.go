@@ -58,17 +58,24 @@ type Version struct {
 func (s *Store) Published(ctx context.Context, org ids.OrgID) (*domain.Bundle, error) {
 	var out *domain.Bundle
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		row, err := dbq.New(tx).GetPublishedPolicy(ctx, org)
-		if db.IsNoRows(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		out, err = decode(row.Bundle)
+		var err error
+		out, err = s.PublishedInTx(ctx, tx, org)
 		return err
 	})
 	return out, err
+}
+
+// PublishedInTx is Published inside the caller's transaction (the
+// Authority's one-snapshot read).
+func (s *Store) PublishedInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID) (*domain.Bundle, error) {
+	row, err := dbq.New(tx).GetPublishedPolicy(ctx, org)
+	if db.IsNoRows(err) {
+		return nil, nil //nolint:nilnil // no published policy
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decode(row.Bundle)
 }
 
 // CreateVersion stores a bundle as the next draft version of its policy
