@@ -109,6 +109,7 @@ type Handler struct {
 	origin    string
 	log       *slog.Logger
 	holds     *store
+	sessions  *sessions
 }
 
 // New returns the MCP face. publicURL is the gateway's base URL: proofs
@@ -117,7 +118,10 @@ func New(engine *dispatch.Engine, config Configuration, publicURL string, log *s
 	if log == nil {
 		log = pclog.Discard()
 	}
-	h := &Handler{engine: engine, config: config, publicURL: strings.TrimSuffix(publicURL, "/"), log: log, holds: newStore(time.Now)}
+	h := &Handler{
+		engine: engine, config: config, publicURL: strings.TrimSuffix(publicURL, "/"), log: log,
+		holds: newStore(time.Now), sessions: newSessions(time.Now),
+	}
 	if u, err := url.Parse(publicURL); err == nil {
 		h.origin = u.Scheme + "://" + u.Host
 	}
@@ -145,6 +149,8 @@ type params struct {
 	URI       string                    `json:"uri,omitzero"`
 	Arguments jsontext.Value            `json:"arguments,omitzero"`
 	TaskID    string                    `json:"taskId,omitzero"`
+	// Task marks a 2025-11-25 task-augmented tools/call.
+	Task jsontext.Value `json:"task,omitzero"`
 }
 
 type rpcError struct {
@@ -174,8 +180,10 @@ func fail(w http.ResponseWriter, status int, id jsontext.Value, code int, msg st
 
 // ServeHTTP serves one request.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		// No GET stream and no sessions in 2026-07-28.
+	ending := r.Method == http.MethodDelete && len(r.Header.Values(HeaderSessionID)) > 0
+	if r.Method != http.MethodPost && !ending {
+		// No GET stream in either version: the gateway has nothing to
+		// push. DELETE only ends a 2025-11-25 session.
 		w.Header().Set("Allow", http.MethodPost)
 		fail(w, http.StatusMethodNotAllowed, nil, codeInvalidRequest, "the MCP endpoint takes POST only", nil)
 		return
@@ -198,6 +206,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusRequestEntityTooLarge, nil, codeInvalidRequest, "request too large", nil)
 		return
 	}
+	if ending {
+		h.endSession(w, r, conn, body)
+		return
+	}
 	if t := bytes.TrimLeft(body, " \t\r\n"); len(t) > 0 && t[0] == '[' {
 		fail(w, http.StatusBadRequest, nil, codeInvalidRequest, "batches are not accepted: send one request per POST", nil)
 		return
@@ -211,13 +223,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, req.ID, code, err.Error(), nil)
 		return
 	}
+	if req.Method == "initialize" || (protocolVersion(p.Meta) == "" && r.Header.Get(HeaderProtocolVersion) == LegacyVersion) {
+		// 2025-11-25: initialize, or a request in a session (legacy.go).
+		h.legacy(w, r, conn, body, req, p)
+		return
+	}
 	if msg := headerMismatch(r.Header, req, p); msg != "" {
 		fail(w, http.StatusBadRequest, req.ID, codeHeaderMismatch, "Header mismatch: "+msg, nil)
 		return
 	}
 	if v := protocolVersion(p.Meta); v != ProtocolVersion {
 		fail(w, http.StatusBadRequest, req.ID, codeUnsupportedVersion, "Unsupported protocol version",
-			map[string]any{"supported": []string{ProtocolVersion}, "requested": v})
+			map[string]any{"supported": []string{ProtocolVersion, LegacyVersion}, "requested": v})
 		return
 	}
 	if len(req.ID) == 0 {
@@ -226,21 +243,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	in := dispatch.ReadInbound(r, body, h.publicURL+r.URL.Path)
-	switch {
-	case in.Creds.GetProof() == "":
-		h.refusePAP(w, r, req.ID, pap.CodeUseNonce, "")
-		return
-	case !in.HasToken:
-		route := ""
-		if req.Method == "tools/call" {
-			route = toolRoute(conn, p.Name)
-		}
-		code, nonce := h.engine.ReportUnknown(r.Context(), in.Creds, r.UserAgent(), route)
-		h.refusePAP(w, r, req.ID, code, nonce)
-		return
-	case !in.SubjectOK:
-		h.refusePAP(w, r, req.ID, pap.CodeInvalidToken, "")
+	in, ok := h.inbound(w, r, conn, body, req.ID, req.Method, p.Name)
+	if !ok {
 		return
 	}
 	switch req.Method {
@@ -399,6 +403,32 @@ func DecodeHeader(v string) (string, bool) {
 	return string(b), true
 }
 
+// inbound reads a request's PAP/1 credentials (hashing the raw body) and
+// refuses a request that cannot be a verified workload's: no proof, a
+// key-only proof (reported as an unknown workload, HR-148) or a token that
+// names no instance. tool is the tool a tools/call names.
+func (h *Handler) inbound(w http.ResponseWriter, r *http.Request, conn *control.Connection, body []byte, id jsontext.Value,
+	method, tool string,
+) (dispatch.Inbound, bool) {
+	in := dispatch.ReadInbound(r, body, h.publicURL+r.URL.Path)
+	switch {
+	case in.Creds.GetProof() == "":
+		h.refusePAP(w, r, id, pap.CodeUseNonce, "")
+	case !in.HasToken:
+		route := ""
+		if method == "tools/call" {
+			route = toolRoute(conn, tool)
+		}
+		code, nonce := h.engine.ReportUnknown(r.Context(), in.Creds, r.UserAgent(), route)
+		h.refusePAP(w, r, id, code, nonce)
+	case !in.SubjectOK:
+		h.refusePAP(w, r, id, pap.CodeInvalidToken, "")
+	default:
+		return in, true
+	}
+	return in, false
+}
+
 // refusePAP answers 401 with a PAP-Error code and a nonce (PAP-1 §12).
 func (h *Handler) refusePAP(w http.ResponseWriter, r *http.Request, id jsontext.Value, code pap.Code, nonce string) {
 	if nonce == "" {
@@ -415,14 +445,22 @@ func (h *Handler) refusePAP(w http.ResponseWriter, r *http.Request, id jsontext.
 // verify asks the Authority to verify the workload of a request that
 // decides nothing, and answers when it does not verify.
 func (h *Handler) verify(w http.ResponseWriter, r *http.Request, id jsontext.Value, in dispatch.Inbound) (dispatch.Verified, bool) {
-	v, err := h.engine.Verify(r.Context(), in.Creds)
+	return h.verifyRun(w, r, id, in, "")
+}
+
+// verifyRun is verify for a request in run. A run the instance may not use
+// is left for the caller to answer (v.Code is run_mismatch).
+func (h *Handler) verifyRun(w http.ResponseWriter, r *http.Request, id jsontext.Value, in dispatch.Inbound, run string) (dispatch.Verified, bool) {
+	v, err := h.engine.Verify(r.Context(), in.Creds, run)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "gateway.authority_unavailable", pclog.Err(err))
 		fail(w, http.StatusServiceUnavailable, id, codeUnavailable, "the Authority is unavailable", nil)
-		return v, false
+		return dispatch.Verified{}, false
 	}
 	if !v.OK {
-		h.refusePAP(w, r, id, v.Code, v.Nonce)
+		if v.Code != pap.CodeRunMismatch || run == "" {
+			h.refusePAP(w, r, id, v.Code, v.Nonce)
+		}
 		return v, false
 	}
 	if v.Nonce != "" {
@@ -456,6 +494,8 @@ type tool struct {
 	Title       string         `json:"title,omitzero"`
 	Description string         `json:"description"`
 	InputSchema *domain.Schema `json:"inputSchema"`
+	// Execution says, in 2025-11-25, that a call may be task-augmented.
+	Execution map[string]string `json:"execution,omitzero"`
 }
 
 // dispatches reports whether a connection of this kind can run a
@@ -509,19 +549,48 @@ func listResult(conn *control.Connection) map[string]any {
 	return map[string]any{"resultType": "complete", "tools": ts, "ttlMs": listTTL, "cacheScope": "private", "_meta": serverInfo()}
 }
 
-// call maps a tools/call through the connection's package and sends it
-// down the dispatch path. An unknown tool is a protocol error; everything
-// PantherClaw refuses is a tool error, so the model sees why.
+// call serves a 2026-07-28 tools/call: a held call becomes a task when the
+// client declares the tasks extension.
 func (h *Handler) call(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, p params, in dispatch.Inbound) {
+	c, ok := h.callTool(w, r, conn, req, p, in)
+	if !ok {
+		return
+	}
+	if c.res.Class == dispatch.Held && supportsTasks(p.Meta) {
+		if t := h.holds.newTask(c.b, c.action, c.key, c.res, c.result); t != nil {
+			write(w, http.StatusOK, response{ID: req.ID, Result: t.view("task", c.res.TransactionID)})
+			return
+		}
+	}
+	write(w, http.StatusOK, response{ID: req.ID, Result: c.result})
+}
+
+// called is a tools/call after the dispatch path: the answer, the tool
+// result for it and, when the arguments mapped, the action decided.
+type called struct {
+	res    dispatch.Result
+	result toolResult
+	action actionir.Parsed
+	key    key
+	b      binding
+}
+
+// callTool maps a tools/call through the connection's package and sends it
+// down the dispatch path. An unknown tool is a protocol error; everything
+// PantherClaw refuses is a tool error, so the model sees why. ok is false
+// when it already answered: an unknown tool, no run, or a workload that
+// did not verify.
+func (h *Handler) callTool(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, p params, in dispatch.Inbound) (called, bool) {
 	ctx := r.Context()
 	if !slices.ContainsFunc(tools(conn), func(t tool) bool { return t.Name == p.Name }) {
 		fail(w, http.StatusOK, req.ID, codeInvalidParams, "Unknown tool: "+p.Name, nil)
-		return
+		return called{}, false
 	}
 	if in.Run == "" {
 		fail(w, http.StatusOK, req.ID, codeInvalidParams, "the "+dispatch.HeaderRunID+" header is required", nil)
-		return
+		return called{}, false
 	}
+	c := called{b: binding{conn: conn.GetId(), run: in.Run, instance: in.Instance}}
 	// The action id is the client's (PC-Action-Id), or the held one for an
 	// identical call (HR-185), or new.
 	action := in.Action
@@ -544,28 +613,21 @@ func (h *Handler) call(w http.ResponseWriter, r *http.Request, conn *control.Con
 		}
 	}
 	if err != nil {
-		write(w, http.StatusOK, response{ID: req.ID, Result: errorResult(dispatch.Result{
-			Class: dispatch.CannotAuthorize, Code: "invalid_arguments",
-		}, "The arguments do not match the tool's reviewed input schema.")})
-		return
+		c.res = dispatch.Result{Class: dispatch.CannotAuthorize, Code: "invalid_arguments"}
+		c.result = errorResult(c.res, "The arguments do not match the tool's reviewed input schema.")
+		return c, true
 	}
 	res := h.engine.Dispatch(ctx, dispatch.Call{Connection: conn, Action: parsed, Workload: in.Creds})
 	if res.Class == dispatch.AuthenticationFailed {
 		h.refusePAP(w, r, req.ID, res.PAPError, res.Nonce)
-		return
+		return called{}, false
 	}
-	b := binding{conn: conn.GetId(), run: in.Run, instance: in.Instance}
-	h.holds.settle(k, b, action, res)
+	h.holds.settle(k, c.b, action, res)
 	if res.Nonce != "" {
 		w.Header().Set(dispatch.HeaderNonce, res.Nonce)
 	}
-	if res.Class == dispatch.Held && supportsTasks(p.Meta) {
-		if t := h.holds.newTask(b, parsed, k); t != nil {
-			write(w, http.StatusOK, response{ID: req.ID, Result: t.view("task", res.TransactionID)})
-			return
-		}
-	}
-	write(w, http.StatusOK, response{ID: req.ID, Result: callResult(res)})
+	c.res, c.result, c.action, c.key = res, callResult(res), parsed, k
+	return c, true
 }
 
 // task serves tasks/get, tasks/cancel and tasks/update (the tasks
@@ -582,7 +644,9 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, conn *control.Con
 	b := binding{conn: conn.GetId(), run: in.Run, instance: in.Instance}
 	if req.Method == "tasks/get" {
 		if t, claimed, _ := h.holds.lookup(p.TaskID, b, true); claimed {
-			h.resubmit(w, r, conn, req, t, in)
+			if done, res, ok := h.resubmit(w, r, conn, req, t, in); ok {
+				write(w, http.StatusOK, response{ID: req.ID, Result: done.view("complete", res.TransactionID)})
+			}
 			return
 		}
 	}
@@ -624,20 +688,23 @@ func (h *Handler) task(w http.ResponseWriter, r *http.Request, conn *control.Con
 // resubmit sends a working task's action down the dispatch path again
 // with the poll's own credentials, as the workload's resubmission (PAP-1
 // §8): the Authority runs the whole pipeline, and the task completes with
-// the tool's result once the action is no longer held.
-func (h *Handler) resubmit(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, t task, in dispatch.Inbound) {
+// the tool's result once the action is no longer held. It returns the task
+// after the answer; ok is false when it already answered (the workload did
+// not verify).
+func (h *Handler) resubmit(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, t task,
+	in dispatch.Inbound,
+) (task, dispatch.Result, bool) {
 	defer h.holds.release(t.id)
 	res := h.engine.Dispatch(r.Context(), dispatch.Call{Connection: conn, Action: t.action, Workload: in.Creds})
 	if res.Class == dispatch.AuthenticationFailed {
 		h.refusePAP(w, r, req.ID, res.PAPError, res.Nonce)
-		return
+		return task{}, res, false
 	}
 	h.holds.settle(t.key, t.binding, t.action.Action.ActionID, res)
 	if res.Nonce != "" {
 		w.Header().Set(dispatch.HeaderNonce, res.Nonce)
 	}
-	done := h.holds.finish(t, res, callResult(res))
-	write(w, http.StatusOK, response{ID: req.ID, Result: done.view("complete", res.TransactionID)})
+	return h.holds.finish(t, res, callResult(res)), res, true
 }
 
 type content struct {
@@ -645,8 +712,10 @@ type content struct {
 	Text string `json:"text"`
 }
 
+// toolResult is a CallToolResult; resultType is 2026-07-28's and is left
+// out in 2025-11-25.
 type toolResult struct {
-	ResultType        string         `json:"resultType"`
+	ResultType        string         `json:"resultType,omitzero"`
 	Content           []content      `json:"content"`
 	StructuredContent jsontext.Value `json:"structuredContent,omitzero"`
 	IsError           bool           `json:"isError"`

@@ -323,6 +323,13 @@ message ReportUnknownWorkloadResponse {
 message VerifyWorkloadRequest {
   // The request's credentials, as for Authorize.
   WorkloadCredentials workload = 1 [(buf.validate.field).required = true];
+  // Optional run (PAP-Run-Id) the request is made in: the instance must be
+  // allowed to use it, as for an action (HR-022), and the response says
+  // when it expires. An MCP session lives on a run.
+  string run_id = 2 [
+    (buf.validate.field).string.uuid = true,
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE
+  ];
 }
 
 // VerifyWorkloadResponse says whether the workload is an admitted instance
@@ -330,12 +337,17 @@ message VerifyWorkloadRequest {
 message VerifyWorkloadResponse {
   // Whether the credentials verified and the agent is usable.
   bool verified = 1;
-  // When not verified: the PAP-Error code (PAP-1 §12), or `agent_unusable`
-  // for a suspended or retired agent.
+  // When not verified: the PAP-Error code (PAP-1 §12, `run_mismatch` for a
+  // run the instance may not use), or `agent_unusable` for a suspended or
+  // retired agent.
   string error_code = 2;
   // The verified instance and its environment.
   string instance_id = 3;
   string environment_id = 4;
   // Current nonce, for the PAP-Nonce response header.
   string nonce = 5;
+  // RFC 7638 thumbprint of the key that signed the request.
+  string jkt = 6;
+  // When the requested run expires; unset when no run was named.
+  google.protobuf.Timestamp run_expires_at = 7;
 }

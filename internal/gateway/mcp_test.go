@@ -46,11 +46,21 @@ type mcpReply struct {
 			} `json:"content"`
 			StructuredContent jsontext.Value `json:"structuredContent"`
 			Tools             []struct {
-				Name        string         `json:"name"`
-				Title       string         `json:"title"`
-				Description string         `json:"description"`
-				InputSchema jsontext.Value `json:"inputSchema"`
+				Name        string            `json:"name"`
+				Title       string            `json:"title"`
+				Description string            `json:"description"`
+				InputSchema jsontext.Value    `json:"inputSchema"`
+				Execution   map[string]string `json:"execution"`
 			} `json:"tools"`
+			// 2025-11-25: initialize, CreateTaskResult and Task.
+			ProtocolVersion string `json:"protocolVersion"`
+			Task            *struct {
+				TaskID       string `json:"taskId"`
+				Status       string `json:"status"`
+				TTL          int    `json:"ttl"`
+				PollInterval int    `json:"pollInterval"`
+			} `json:"task"`
+			TTL               int            `json:"ttl"`
 			SupportedVersions []string       `json:"supportedVersions"`
 			Capabilities      jsontext.Value `json:"capabilities"`
 			TaskID            string         `json:"taskId"`

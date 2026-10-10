@@ -30,6 +30,8 @@ type Identified struct {
 	Instance    pap.Instance
 	Environment ids.UUID
 	Level       int
+	// JKT is the RFC 7638 thumbprint of the key that signed the proof.
+	JKT string
 	// AgentState is the agent's state after this request.
 	AgentState string
 }
@@ -60,7 +62,7 @@ func (s *Service) Identify(ctx context.Context, org ids.OrgID, in IdentifyInput)
 	if err := s.Consume(ctx, org, c); err != nil {
 		return Identified{}, err
 	}
-	out := Identified{Instance: tok.Instance, Environment: tok.Environment, Level: tok.Level}
+	out := Identified{Instance: tok.Instance, Environment: tok.Environment, Level: tok.Level, JKT: c.JKT()}
 	err = s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		r, err := q.GetInstance(ctx, org, tok.Instance.Instance)

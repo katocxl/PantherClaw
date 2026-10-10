@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+
 	aapp "github.com/katocxl/pantherclaw/internal/agents/app"
 	adomain "github.com/katocxl/pantherclaw/internal/agents/domain"
 	"github.com/katocxl/pantherclaw/internal/authority"
@@ -296,7 +298,7 @@ func TestHR022_FirstUseBindingIsRaceSafe(t *testing.T) {
 			wl = b
 		}
 		wg.Go(func() {
-			if err := f.runs.Bind(context.Background(), f.gw.Org, run, agent, wl.inst.Instance); err == nil {
+			if _, err := f.runs.Bind(context.Background(), f.gw.Org, run, agent, wl.inst.Instance); err == nil {
 				mu.Lock()
 				won[wl.inst.Instance]++
 				mu.Unlock()
@@ -392,5 +394,54 @@ func TestHR021_VerifyWorkloadChecksCredentialsAndDecidesNothing(t *testing.T) {
 	}
 	if n := f.count(t, "SELECT count(*) FROM pc.transactions WHERE org_id = $1"); n != 0 {
 		t.Errorf("verifying recorded %d transactions", n)
+	}
+}
+
+// TestHR022_VerifyWorkloadChecksTheRun: a request naming a run (an MCP
+// session's initialize) verifies only for a run the instance may use, as
+// an action would, and returns the key's thumbprint and the run's expiry;
+// an unknown run, another agent's run, a run bound to another instance and
+// an ended run are run_mismatch; a malformed run id is refused.
+func TestHR022_VerifyWorkloadChecksTheRun(t *testing.T) {
+	f := setupIdentity(t)
+	agent, otherAgent := f.agent(t), f.agent(t)
+	first, second := f.admitted(t, agent), f.admitted(t, agent)
+	h := authority.NewHandler(f.svc)
+	ctx := authority.WithGateway(context.Background(), f.gw)
+	verify := func(wl workload, run string) (*pantherclawv1.VerifyWorkloadResponse, error) {
+		t.Helper()
+		c := f.creds(t, wl, wl.token)
+		w := &pantherclawv1.WorkloadCredentials{WorkloadToken: c.Token, Proof: c.Proof, BodySha256: c.BodySHA256[:], Htm: c.Method, Htu: c.URL}
+		return h.VerifyWorkload(ctx, &pantherclawv1.VerifyWorkloadRequest{Workload: w, RunId: run})
+	}
+	run := f.startRun(t, agent, nil)
+	r, err := verify(first, run.String())
+	jkt := jws.Thumbprint(first.key.Public().(ed25519.PublicKey))
+	if err != nil || !r.GetVerified() || r.GetJkt() != jkt || r.GetRunExpiresAt() == nil || !r.GetRunExpiresAt().AsTime().After(time.Now()) {
+		t.Fatalf("own run: %+v %v", r, err)
+	}
+	if r, err := verify(first, ""); err != nil || !r.GetVerified() || r.GetRunExpiresAt() != nil {
+		t.Fatalf("no run: %+v %v", r, err)
+	}
+	ended := f.startRun(t, agent, &first.inst.Instance)
+	if _, err := f.runs.EndRun(f.ownerCtx(), ended, "done"); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		wl  workload
+		run ids.UUID
+	}{
+		"run bound to another instance": {second, run},
+		"unknown run":                   {first, ids.NewV7()},
+		"another agent's run":           {first, f.startRun(t, otherAgent, nil)},
+		"ended run":                     {first, ended},
+	} {
+		if r, err := verify(tc.wl, tc.run.String()); err != nil || r.GetVerified() || r.GetErrorCode() != string(pap.CodeRunMismatch) ||
+			r.GetJkt() != "" || r.GetRunExpiresAt() != nil {
+			t.Errorf("%s: %+v %v", name, r, err)
+		}
+	}
+	if _, err := verify(first, "not-a-run"); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("malformed run id: %v", err)
 	}
 }

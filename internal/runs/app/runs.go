@@ -620,9 +620,12 @@ func recordEnd(ctx context.Context, tx db.TenantTx, actor evdomain.Actor, r Run,
 // Bind checks that a request from instance of agent may use run (HR-022):
 // the run is active, of that agent, and bound to that instance, or unbound
 // and then bound to it by a conditional update, so concurrent first uses
-// bind exactly one instance. Anything else is run_mismatch.
-func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) error {
-	return s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+// bind exactly one instance. Anything else is run_mismatch. It returns
+// when the run expires, which bounds anything that lives on the run, such
+// as an MCP session (G0 M6 design decision 13).
+func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance ids.UUID) (time.Time, error) {
+	var expires time.Time
+	err := s.pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		r, err := q.GetRun(ctx, org, run)
 		if db.IsNoRows(err) {
@@ -633,6 +636,7 @@ func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance 
 		if r.EffectiveState != "ACTIVE" || r.PcRun.AgentID != agent {
 			return pap.Err(pap.CodeRunMismatch)
 		}
+		expires = r.PcRun.ExpiresAt
 		if r.PcRun.InstanceID == nil {
 			n, err := q.BindRunInstance(ctx, &instance, org, run)
 			if err != nil {
@@ -650,6 +654,10 @@ func (s *Service) Bind(ctx context.Context, org ids.OrgID, run, agent, instance 
 		}
 		return nil
 	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return expires, nil
 }
 
 // Grants loads grants inside a caller's transaction (the grants store).
