@@ -92,7 +92,7 @@ age() {
   fi
 }
 
-lander_alive() { [ "$(age "$BEAT")" -lt "$STALE" ]; }
+lander_alive() { [ -d "$LOCK" ] && [ "$(age "$BEAT")" -lt "$STALE" ]; }
 
 # cluster_up reports whether the test cluster answers on 127.0.0.1:5433.
 cluster_up() { (exec 3<>/dev/tcp/127.0.0.1/5433) 2>/dev/null; }
