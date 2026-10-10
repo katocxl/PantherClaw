@@ -6,212 +6,32 @@ package anchor
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
-	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/katocxl/pantherclaw/internal/evidence/anchor/anchortest"
 	"github.com/katocxl/pantherclaw/internal/evidence/merkle"
 	"github.com/katocxl/pantherclaw/internal/evidence/note"
 )
 
-const fakeOrigin = "rekor.test/log2026"
-
-// fakeRekor is a local Rekor v2 made from the merkle and note packages and a
-// test log key. It checks the request as Rekor does (shape, key details,
-// signature over the digest), logs the canonicalized body, signs a
-// checkpoint and answers with a TransparencyLogEntry in protojson form.
-type fakeRekor struct {
-	t       testing.TB
-	signer  note.Signer
-	tiles   *merkle.MemoryTiles
-	mutate  func(f *fakeRekor, resp map[string]any)
-	status  int
-	raw     []byte // replaces the response body when set
-	calls   int
-	request []byte
-}
-
-func newFakeRekor(t testing.TB, keyType string) (*fakeRekor, Log) {
+// newFakeRekor returns a local Rekor v2 log (anchortest) and its Log.
+func newFakeRekor(t testing.TB, keyType string) (*anchortest.Rekor, Log) {
 	t.Helper()
-	var (
-		signer note.Signer
-		der    []byte
-		err    error
-	)
-	switch keyType {
-	case "ed25519":
-		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-		signer, err = note.NewEd25519Signer(fakeOrigin, priv)
-		if err == nil {
-			der, err = x509.MarshalPKIXPublicKey(pub)
-		}
-	case "ecdsa":
-		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		signer, err = note.NewECDSASigner(fakeOrigin, k)
-		if err == nil {
-			der, err = x509.MarshalPKIXPublicKey(&k.PublicKey)
-		}
-	}
+	r := anchortest.NewRekor(t, keyType)
+	log, err := NewLog(anchortest.RekorOrigin, r.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	log, err := NewLog(fakeOrigin, der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &fakeRekor{t: t, signer: signer, tiles: merkle.NewMemoryTiles(), status: http.StatusCreated}
-	// Other entries first, so the anchor's proof crosses a tile boundary.
-	for i := range 300 {
-		if err := f.tiles.Append(context.Background(), merkle.LeafHash([]byte{byte(i), byte(i >> 8)})); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return f, log
+	return r, log
 }
 
-func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
-
-// fakeRequest is the request shape the fake accepts, and nothing else.
-type fakeRequest struct {
-	Req *struct {
-		Digest    []byte `json:"digest"`
-		Signature struct {
-			Content  []byte `json:"content"`
-			Verifier struct {
-				PublicKey struct {
-					RawBytes []byte `json:"rawBytes"`
-				} `json:"publicKey"`
-				KeyDetails string `json:"keyDetails"`
-			} `json:"verifier"`
-		} `json:"signature"`
-	} `json:"hashedRekordRequestV002"`
-}
-
-// acceptRequest checks a request as Rekor does: the exact shape, the key
-// details, and the signature over the digest.
-func acceptRequest(body []byte) (fakeRequest, bool) {
-	var r fakeRequest
-	if json.Unmarshal(body, &r, json.RejectUnknownMembers(true)) != nil || r.Req == nil {
-		return r, false
-	}
-	sig := r.Req.Signature
-	pub, err := x509.ParsePKIXPublicKey(sig.Verifier.PublicKey.RawBytes)
-	ec, ok := pub.(*ecdsa.PublicKey)
-	return r, err == nil && ok && sig.Verifier.KeyDetails == "PKIX_ECDSA_P256_SHA_256" && len(r.Req.Digest) == sha256.Size &&
-		ecdsa.VerifyASN1(ec, r.Req.Digest, sig.Content)
-}
-
-func reply(status int, body []byte) *http.Response {
-	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}
-}
-
-func (f *fakeRekor) Do(req *http.Request) (*http.Response, error) {
-	f.calls++
-	if req.Method != http.MethodPost || req.URL.Path != EntriesPath || req.URL.Host != "rekor.test" ||
-		req.Header.Get("Content-Type") != "application/json" {
-		return reply(http.StatusBadRequest, nil), nil
-	}
-	body, _ := io.ReadAll(req.Body)
-	f.request = body
-	r, ok := acceptRequest(body)
-	if !ok {
-		return reply(http.StatusBadRequest, nil), nil
-	}
-	sig := r.Req.Signature
-	// The entry as rekor-tiles builds it: protojson, then RFC 8785.
-	entry, _ := json.Marshal(map[string]any{
-		"apiVersion": "0.0.2", "kind": "hashedrekord",
-		"spec": map[string]any{"hashedRekordV002": map[string]any{
-			"data": map[string]any{"algorithm": "SHA2_256", "digest": b64(r.Req.Digest)},
-			"signature": map[string]any{"content": b64(sig.Content), "verifier": map[string]any{
-				"keyDetails": sig.Verifier.KeyDetails, "publicKey": map[string]any{"rawBytes": b64(sig.Verifier.PublicKey.RawBytes)},
-			}},
-		}},
-	})
-	canon := jsontext.Value(entry)
-	if err := canon.Canonicalize(); err != nil {
-		f.t.Fatal(err)
-	}
-	ctx := context.Background()
-	index := f.tiles.Size()
-	if err := f.tiles.Append(ctx, merkle.LeafHash(canon)); err != nil {
-		f.t.Fatal(err)
-	}
-	size := f.tiles.Size()
-	root, _ := merkle.Root(ctx, f.tiles, size)
-	cp, err := note.SignCheckpoint(note.Checkpoint{Origin: fakeOrigin, Size: size, Root: root}, f.signer)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	proof, _ := merkle.InclusionProof(ctx, f.tiles, index, size)
-	hashes := []any{}
-	for _, h := range proof {
-		hashes = append(hashes, b64(h[:]))
-	}
-	logID := make([]byte, 32)
-	binary.BigEndian.PutUint32(logID, f.signer.KeyID())
-	resp := map[string]any{
-		"logIndex":         strconv.FormatUint(index, 10),
-		"logId":            map[string]any{"keyId": b64(logID)},
-		"kindVersion":      map[string]any{"kind": "hashedrekord", "version": "0.0.2"},
-		"integratedTime":   "0",
-		"inclusionPromise": nil,
-		"inclusionProof": map[string]any{
-			"logIndex": strconv.FormatUint(index, 10), "rootHash": b64(root[:]), "treeSize": strconv.FormatUint(size, 10),
-			"hashes": hashes, "checkpoint": map[string]any{"envelope": string(cp)},
-		},
-		"canonicalizedBody": b64(canon),
-	}
-	if f.mutate != nil {
-		f.mutate(f, resp)
-	}
-	out, _ := json.Marshal(resp)
-	if f.raw != nil {
-		out = f.raw
-	}
-	return reply(f.status, out), nil
-}
-
-// proofOf returns the response's inclusion proof member.
-func proofOf(resp map[string]any) map[string]any { return resp["inclusionProof"].(map[string]any) }
-
-// resign replaces the response's checkpoint with one for c, signed by s.
-func resign(t testing.TB, resp map[string]any, c note.Checkpoint, s note.Signer) {
-	t.Helper()
-	cp, err := note.SignCheckpoint(c, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proofOf(resp)["checkpoint"] = map[string]any{"envelope": string(cp)}
-}
-
-// checkpointOf parses the response's checkpoint.
-func checkpointOf(t testing.TB, resp map[string]any) note.Checkpoint {
-	t.Helper()
-	env := proofOf(resp)["checkpoint"].(map[string]any)["envelope"].(string)
-	n, err := note.Parse([]byte(env))
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := note.ParseCheckpoint(n.Text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
+func b64(b []byte) string { return anchortest.B64(b) }
 
 func signedAnchor(t testing.TB) HashedRekord {
 	t.Helper()
@@ -228,17 +48,17 @@ func TestHR195_RekorRequestIsWellFormedAndEntryVerifies(t *testing.T) {
 		t.Run(keyType, func(t *testing.T) {
 			fake, log := newFakeRekor(t, keyType)
 			h := signedAnchor(t)
-			c := &RekorClient{URL: "https://rekor.test/", HTTP: fake, Log: log}
+			c := &RekorClient{URL: anchortest.RekorURL + "/", HTTP: fake, Log: log}
 			e, raw, err := c.Submit(context.Background(), h)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if e.LogIndex != 300 || fake.calls != 1 {
-				t.Fatalf("log index %d, %d calls", e.LogIndex, fake.calls)
+			if e.LogIndex != 300 || fake.Calls != 1 {
+				t.Fatalf("log index %d, %d calls", e.LogIndex, fake.Calls)
 			}
 			want, _ := h.RequestJSON()
-			if !bytes.Equal(fake.request, want) {
-				t.Fatalf("request = %s", fake.request)
+			if !bytes.Equal(fake.Request, want) {
+				t.Fatalf("request = %s", fake.Request)
 			}
 			// The kept entry verifies again offline.
 			again, err := ParseEntry(raw)
@@ -247,7 +67,7 @@ func TestHR195_RekorRequestIsWellFormedAndEntryVerifies(t *testing.T) {
 			}
 			body, _ := h.CanonicalBody()
 			cp, err := VerifyEntry(again, log, body)
-			if err != nil || cp.Size != 301 || cp.Origin != fakeOrigin {
+			if err != nil || cp.Size != 301 || cp.Origin != anchortest.RekorOrigin {
 				t.Fatalf("offline: %+v %v", cp, err)
 			}
 			// The entry proves only this anchor.
@@ -264,69 +84,73 @@ func TestHR195_RekorRequestIsWellFormedAndEntryVerifies(t *testing.T) {
 // index, size, kind or log id does not verify never counts.
 func TestHR195_BadRekorEntryIsRejected(t *testing.T) {
 	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-	otherKey, _ := note.NewEd25519Signer(fakeOrigin, otherPriv)
-	for name, mutate := range map[string]func(*testing.T, *fakeRekor, map[string]any){
-		"proof hash": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
-			hs := proofOf(r)["hashes"].([]any)
+	otherKey, _ := note.NewEd25519Signer(anchortest.RekorOrigin, otherPriv)
+	for name, mutate := range map[string]func(*testing.T, *anchortest.Rekor, map[string]any){
+		"proof hash": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			hs := anchortest.ProofOf(r)["hashes"].([]any)
 			b, _ := base64.StdEncoding.DecodeString(hs[0].(string))
 			b[0] ^= 1
 			hs[0] = b64(b)
 		},
-		"proof hash dropped": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
-			p := proofOf(r)
+		"proof hash dropped": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			p := anchortest.ProofOf(r)
 			p["hashes"] = p["hashes"].([]any)[1:]
 		},
-		"checkpoint by another key": func(t *testing.T, _ *fakeRekor, r map[string]any) {
-			resign(t, r, checkpointOf(t, r), otherKey)
+		"checkpoint by another key": func(t *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			anchortest.Resign(t, r, anchortest.CheckpointOf(t, r), otherKey)
 		},
-		"checkpoint of another origin": func(t *testing.T, f *fakeRekor, r map[string]any) {
-			c := checkpointOf(t, r)
+		"checkpoint of another origin": func(t *testing.T, f *anchortest.Rekor, r map[string]any) {
+			c := anchortest.CheckpointOf(t, r)
 			c.Origin = "rekor.test/other"
-			resign(t, r, c, f.signer)
+			anchortest.Resign(t, r, c, f.Signer)
 		},
-		"checkpoint of another tree": func(t *testing.T, f *fakeRekor, r map[string]any) {
-			c := checkpointOf(t, r)
+		"checkpoint of another tree": func(t *testing.T, f *anchortest.Rekor, r map[string]any) {
+			c := anchortest.CheckpointOf(t, r)
 			c.Root[0] ^= 1
-			resign(t, r, c, f.signer)
-			delete(proofOf(r), "rootHash")
+			anchortest.Resign(t, r, c, f.Signer)
+			delete(anchortest.ProofOf(r), "rootHash")
 		},
-		"checkpoint signature altered": func(t *testing.T, _ *fakeRekor, r map[string]any) {
-			cp := proofOf(r)["checkpoint"].(map[string]any)
+		"checkpoint signature altered": func(t *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			cp := anchortest.ProofOf(r)["checkpoint"].(map[string]any)
 			cp["envelope"] = strings.Replace(cp["envelope"].(string), "\n301\n", "\n302\n", 1)
 		},
-		"no checkpoint": func(_ *testing.T, _ *fakeRekor, r map[string]any) { delete(proofOf(r), "checkpoint") },
-		"another body": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
+		"no checkpoint": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { delete(anchortest.ProofOf(r), "checkpoint") },
+		"another body": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
 			r["canonicalizedBody"] = b64([]byte(`{"apiVersion":"0.0.2","kind":"hashedrekord"}`))
 		},
-		"another index": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
-			r["logIndex"], proofOf(r)["logIndex"] = "299", "299"
+		"another index": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			r["logIndex"], anchortest.ProofOf(r)["logIndex"] = "299", "299"
 		},
-		"proof index differs": func(_ *testing.T, _ *fakeRekor, r map[string]any) { proofOf(r)["logIndex"] = "299" },
-		"proof tree size":     func(_ *testing.T, _ *fakeRekor, r map[string]any) { proofOf(r)["treeSize"] = "302" },
-		"proof root":          func(_ *testing.T, _ *fakeRekor, r map[string]any) { proofOf(r)["rootHash"] = b64(make([]byte, 32)) },
-		"kind version": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
+		"proof index differs": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { anchortest.ProofOf(r)["logIndex"] = "299" },
+		"proof tree size":     func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { anchortest.ProofOf(r)["treeSize"] = "302" },
+		"proof root": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			anchortest.ProofOf(r)["rootHash"] = b64(make([]byte, 32))
+		},
+		"kind version": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
 			r["kindVersion"] = map[string]any{"kind": "hashedrekord", "version": "0.0.1"}
 		},
-		"log id": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
+		"log id": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
 			r["logId"] = map[string]any{"keyId": b64([]byte{1, 2, 3, 4})}
 		},
-		"negative index": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
-			r["logIndex"], proofOf(r)["logIndex"] = "-1", "-1"
+		"negative index": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			r["logIndex"], anchortest.ProofOf(r)["logIndex"] = "-1", "-1"
 		},
-		"short proof hash": func(_ *testing.T, _ *fakeRekor, r map[string]any) {
-			proofOf(r)["hashes"].([]any)[0] = b64([]byte{1})
+		"short proof hash": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) {
+			anchortest.ProofOf(r)["hashes"].([]any)[0] = b64([]byte{1})
 		},
-		"server error":  func(_ *testing.T, f *fakeRekor, _ map[string]any) { f.status = http.StatusInternalServerError },
-		"not json":      func(_ *testing.T, f *fakeRekor, _ map[string]any) { f.raw = []byte("<html>") },
-		"too large":     func(_ *testing.T, f *fakeRekor, _ map[string]any) { f.raw = bytes.Repeat([]byte(" "), MaxEntryBytes+1) },
-		"no proof":      func(_ *testing.T, _ *fakeRekor, r map[string]any) { delete(r, "inclusionProof") },
-		"no kind":       func(_ *testing.T, _ *fakeRekor, r map[string]any) { delete(r, "kindVersion") },
-		"string number": func(_ *testing.T, _ *fakeRekor, r map[string]any) { r["logIndex"] = "3e2" },
+		"server error": func(_ *testing.T, f *anchortest.Rekor, _ map[string]any) { f.Status = http.StatusInternalServerError },
+		"not json":     func(_ *testing.T, f *anchortest.Rekor, _ map[string]any) { f.Raw = []byte("<html>") },
+		"too large": func(_ *testing.T, f *anchortest.Rekor, _ map[string]any) {
+			f.Raw = bytes.Repeat([]byte(" "), MaxEntryBytes+1)
+		},
+		"no proof":      func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { delete(r, "inclusionProof") },
+		"no kind":       func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { delete(r, "kindVersion") },
+		"string number": func(_ *testing.T, _ *anchortest.Rekor, r map[string]any) { r["logIndex"] = "3e2" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake, log := newFakeRekor(t, "ed25519")
-			fake.mutate = func(f *fakeRekor, r map[string]any) { mutate(t, f, r) }
-			c := &RekorClient{URL: "https://rekor.test", HTTP: fake, Log: log}
+			fake.Mutate = func(f *anchortest.Rekor, r map[string]any) { mutate(t, f, r) }
+			c := &RekorClient{URL: anchortest.RekorURL, HTTP: fake, Log: log}
 			_, _, err := c.Submit(context.Background(), signedAnchor(t))
 			if err == nil {
 				t.Fatal("a bad entry was accepted")
@@ -351,12 +175,12 @@ func TestRekorClientRefusesBadInput(t *testing.T) {
 	}
 	bad := h
 	bad.Digest[0] ^= 1 // the signature no longer matches
-	c := &RekorClient{URL: "https://rekor.test", HTTP: fake, Log: log}
+	c := &RekorClient{URL: anchortest.RekorURL, HTTP: fake, Log: log}
 	if _, _, err := c.Submit(context.Background(), bad); !errors.Is(err, ErrInvalidStatement) {
 		t.Fatalf("mismatched signature: %v", err)
 	}
-	if fake.calls != 0 {
-		t.Fatalf("%d calls for refused input", fake.calls)
+	if fake.Calls != 0 {
+		t.Fatalf("%d calls for refused input", fake.Calls)
 	}
 }
 
@@ -426,7 +250,7 @@ func FuzzRekorEntry(f *testing.F) {
 	b := recordedBundleFor(f, recordedCases[0])
 	f.Add([]byte(b.VerificationMaterial.TlogEntries[0]))
 	fake, log := newFakeRekor(f, "ed25519")
-	c := &RekorClient{URL: "https://rekor.test", HTTP: fake, Log: log}
+	c := &RekorClient{URL: anchortest.RekorURL, HTTP: fake, Log: log}
 	h := signedAnchor(f)
 	if _, raw, err := c.Submit(context.Background(), h); err == nil {
 		f.Add(raw)
@@ -445,7 +269,7 @@ func FuzzRekorEntry(f *testing.F) {
 		for _, l := range []Log{log, recorded} {
 			if _, err := VerifyEntry(e, l, body); err == nil {
 				// Only an entry the fake log really signed for this body can pass.
-				if l.Origin != fakeOrigin {
+				if l.Origin != anchortest.RekorOrigin {
 					t.Fatal("the recorded log verified a fabricated entry")
 				}
 			} else if !errors.Is(err, ErrInvalidEntry) {
