@@ -51,21 +51,23 @@ func approvalSubject(kind string) bool { return kind == subjectAction || kind ==
 // bound to the agent's recorded changes and the state it returns to, with
 // its RESTORATION waitlist entry, due within 24 hours (or the org's shorter
 // setting). A person holding agent.restore, other than the requester,
-// approves it on the approval page with a security key. An agent with a
-// live restoration returns that one.
-func (s *Service) RequestRestoration(ctx context.Context, agent ids.UUID, reason string) (Request, error) {
+// approves it on the approval page with a security key. It returns the
+// request and its entry; an agent with a live restoration returns that
+// one.
+func (s *Service) RequestRestoration(ctx context.Context, agent ids.UUID, reason string) (Request, ids.UUID, error) {
 	c, err := tenancy.CallerFrom(ctx)
 	if err != nil {
-		return Request{}, err
+		return Request{}, ids.UUID{}, err
 	}
 	if !c.Human() {
-		return Request{}, ErrHumanSession
+		return Request{}, ids.UUID{}, ErrHumanSession
 	}
 	if n := len([]rune(reason)); n == 0 || n > maxRestoreReason {
-		return Request{}, ErrBadReason
+		return Request{}, ids.UUID{}, ErrBadReason
 	}
 	user := c.Principal.ID
 	var out Request
+	var entry ids.UUID
 	err = s.Pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
 		a, err := q.GetAgent(ctx, c.Org, agent)
@@ -88,7 +90,10 @@ func (s *Service) RequestRestoration(ctx context.Context, agent ids.UUID, reason
 			return ErrNotSuspended
 		}
 		if live, err := q.LiveRestoration(ctx, c.Org, agent); err == nil {
-			out, err = q.GetApprovalRequest(ctx, c.Org, live)
+			if out, err = q.GetApprovalRequest(ctx, c.Org, live); err != nil {
+				return err
+			}
+			entry, err = q.OpenEntryOf(ctx, c.Org, "approval_request", live)
 			return err
 		} else if !db.IsNoRows(err) {
 			return err
@@ -105,10 +110,10 @@ func (s *Service) RequestRestoration(ctx context.Context, agent ids.UUID, reason
 		if err != nil {
 			return err
 		}
-		_, err = pgwaitlist.OpenRestoration(ctx, tx, c.Org, id, agent, user, out.DeadlineAt)
+		entry, err = pgwaitlist.OpenRestoration(ctx, tx, c.Org, id, agent, user, out.DeadlineAt)
 		return err
 	})
-	return out, err
+	return out, entry, err
 }
 
 // insertRestoration renders, binds and inserts a restoration request.

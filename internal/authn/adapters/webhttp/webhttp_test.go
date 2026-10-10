@@ -206,6 +206,8 @@ func TestHR151_RouteTable(t *testing.T) {
 		// The approval page (G0 M5 part 2).
 		{Method: http.MethodGet, Path: "/approvals", Session: true},
 		{Method: http.MethodGet, Path: "/approvals/{id}", Session: true},
+		{Method: http.MethodPost, Path: "/approvals/batch-options", Session: true, CSRF: true},
+		{Method: http.MethodPost, Path: "/approvals/batch", Session: true, CSRF: true},
 		{Method: http.MethodPost, Path: "/approvals/{id}/approve-options", Session: true, CSRF: true},
 		{Method: http.MethodPost, Path: "/approvals/{id}/approve", Session: true, CSRF: true},
 		{Method: http.MethodPost, Path: "/approvals/{id}/decline", Session: true, CSRF: true},

@@ -340,3 +340,49 @@ func TestHR039_AFailedDeliveryMarksTheEntryAndDecidesNothing(t *testing.T) {
 		t.Fatalf("%s %s", health, state)
 	}
 }
+
+// variant opens a hold of a new transaction of the run with variant key k.
+func (f *rfx) variant(k []byte) ids.UUID {
+	f.t.Helper()
+	txn, request, entry := ids.NewV7(), ids.NewV7(), ids.NewV7()
+	f.exec(`INSERT INTO pc.transactions (org_id, id, run_id, action_id, action_hash, operation, decision, reason_code, gateway_id, state)
+		VALUES ($1, $2, $3, $4, $5, 'payments.refund.create', 'REQUIRE_APPROVAL', 'R', 'gw', 'OPEN')`, f.org, txn, f.run, ids.NewV7(), make([]byte, 32))
+	binding := append(append([]byte{}, request[:]...), request[:]...)
+	f.exec(`INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id,
+		grant_revision, variant_key, operation, binding, binding_input, requirements, display, display_hash, action_ir, deadline_at)
+		SELECT $1, $2, 'ACTION', r.agent_id, $3, 1, r.id, $4, 1, $5, 'payments.refund.create', $6, '\x7b7d',
+		'[{"kind":"approval","role":"approver","count":1,"sources":[]}]', '{}', $6, '\x7b7d', date_trunc('second', now()) + interval '1 hour'
+		FROM pc.runs r WHERE r.id = $7`, f.org, request, txn, f.grant, k, binding, f.run)
+	f.exec(`INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, deadline_at)
+		SELECT $1, $2, 'ACTION_HOLD', 'approval_request', $3, agent_id, run_id, transaction_id, deadline_at
+		FROM pc.approval_requests WHERE id = $3`, f.org, entry, request)
+	return request
+}
+
+// TestHR037_TheThirdVariantTellsTheSecurityAdmins (decision 7): routing the
+// third hold of one grant, operation and target within 24 hours tells the
+// Security Admins, once per request.
+func TestHR037_TheThirdVariantTellsTheSecurityAdmins(t *testing.T) {
+	f := newRFx(t)
+	sec := f.person("security_admin", "ORG")
+	f.person("approver", "TEAM")
+	k := make([]byte, 32)
+	k[0] = 7
+	f.variant(k)
+	f.variant(k)
+	f.route()
+	if len(f.sentTo(sec)) != 0 {
+		t.Fatalf("two variants: %v", f.sentTo(sec))
+	}
+	third := f.variant(k)
+	f.route()
+	got := f.sentTo(sec)
+	if !slices.Equal(got, []string{"security.variant_suspected"}) {
+		t.Fatalf("the third variant: %v", got)
+	}
+	for _, m := range f.n.sent {
+		if m.Type == "security.variant_suspected" && (m.Params["count"] != "3" || m.Params["request"] != third.String()) {
+			t.Fatalf("notice %+v", m)
+		}
+	}
+}
