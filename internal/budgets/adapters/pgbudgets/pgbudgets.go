@@ -326,38 +326,27 @@ func Apply(ctx context.Context, q *dbq.Queries, org ids.OrgID, maxRows int) (int
 	return len(batch), nil
 }
 
-// Pending is what an account's settled but not yet applied reservations
-// still count as reserved: N of them for Amount, of which SpentN committed
-// for Spent.
-type Pending struct {
-	Amount, Spent money.Decimal
-	N, SpentN     int64
-}
-
-// Settled returns a as it is once p is applied.
-func (p Pending) Settled(a bdomain.Account) (bdomain.Account, error) {
-	var err error
-	if a.Reserved, err = a.Reserved.Sub(p.Amount); err != nil {
-		return a, err
-	}
-	if a.Spent, err = a.Spent.Add(p.Spent); err != nil {
-		return a, err
-	}
-	a.ReservedCount -= p.N
-	a.SpentCount += p.SpentN
-	return a, nil
-}
-
-// PendingAccounts returns the pending settlements of accounts, by id; an
-// account without any is absent.
-func PendingAccounts(ctx context.Context, q *dbq.Queries, org ids.OrgID, accounts []ids.UUID) (map[ids.UUID]Pending, error) {
-	rows, err := q.PendingAccountSettlements(ctx, org, accounts)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[ids.UUID]Pending, len(rows))
-	for _, r := range rows {
-		out[r.AccountID] = Pending{Amount: r.Amount, Spent: r.Spent, N: int64(r.N), SpentN: int64(r.SpentN)}
+// Settled reads the budget accounts of a plan as they are once their
+// settled reservations are applied (ADR-0015), for views that show a
+// budget; decisions use Usage, which reads the rows alone. Accounts that do
+// not exist yet are absent.
+func Settled(ctx context.Context, q *dbq.Queries, org ids.OrgID, budgets []bdomain.Debit) (map[bdomain.Ref]bdomain.Account, error) {
+	out := map[bdomain.Ref]bdomain.Account{}
+	for _, d := range budgets {
+		_, owner := ownerKey(d.Ref)
+		row, err := q.GetSettledBudgetAccount(ctx, dbq.GetSettledBudgetAccountParams{
+			OrgID: org, OwnerID: owner, Rule: d.Ref.Rule, KeyHash: d.Ref.Key[:], PeriodStart: d.Ref.Start,
+		})
+		if db.IsNoRows(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[d.Ref] = bdomain.Account{
+			ID: row.ID, Reserved: row.Reserved, Spent: row.Spent,
+			ReservedCount: int64(row.ReservedCount), SpentCount: int64(row.SpentCount),
+		}
 	}
 	return out, nil
 }

@@ -388,30 +388,15 @@ func budgetStates(ctx context.Context, q *dbq.Queries, org ids.OrgID, ev *pipeli
 	if len(ev.Plan.Budgets) == 0 {
 		return nil, nil
 	}
-	acc, _, _, err := pgbudgets.Usage(ctx, q, org, ev.Plan.Budgets, nil)
-	if err != nil {
-		return nil, err
-	}
 	// The receipt shows each budget as settled: an outcome recorded but
 	// not yet applied to its row counts as spent or released (ADR-0015).
-	found := make([]ids.UUID, 0, len(acc))
-	for _, a := range acc {
-		found = append(found, a.ID)
-	}
-	pending := map[ids.UUID]pgbudgets.Pending{}
-	if len(found) > 0 {
-		if pending, err = pgbudgets.PendingAccounts(ctx, q, org, found); err != nil {
-			return nil, err
-		}
+	acc, err := pgbudgets.Settled(ctx, q, org, ev.Plan.Budgets)
+	if err != nil {
+		return nil, err
 	}
 	var out []finalize.BudgetState
 	for _, d := range ev.Plan.Budgets {
 		a := acc[d.Ref]
-		if p, ok := pending[a.ID]; ok {
-			if a, err = p.Settled(a); err != nil {
-				return nil, err
-			}
-		}
 		a.Limit, a.MaxCount = d.Limit, d.MaxCount
 		if ev.Permits() {
 			a.Reserved, _ = a.Reserved.Add(d.Amount)

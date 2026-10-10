@@ -97,15 +97,24 @@ FOR UPDATE OF r SKIP LOCKED;
 UPDATE pc.reservations SET pending = false
 WHERE org_id = sqlc.arg(org_id) AND id = ANY(sqlc.arg(ids)::uuid[]) AND pending;
 
--- PendingAccountSettlements sums the pending reservations of accounts, for
--- views that show a budget as settled.
--- name: PendingAccountSettlements :many
-SELECT account_id::uuid AS account_id, sum(amount)::numeric(26,8) AS amount, count(*)::integer AS n,
-       coalesce(sum(amount) FILTER (WHERE state = 'COMMITTED'), 0)::numeric(26,8) AS spent,
-       (count(*) FILTER (WHERE state = 'COMMITTED'))::integer AS spent_n
-FROM pc.reservations
-WHERE org_id = sqlc.arg(org_id) AND pending AND account_id = ANY(sqlc.arg(account_ids)::uuid[])
-GROUP BY account_id;
+-- GetSettledBudgetAccount is GetBudgetAccount with the account's pending
+-- reservations applied, for views that show a budget (ADR-0015).
+-- name: GetSettledBudgetAccount :one
+SELECT a.id,
+       (a.reserved - coalesce(p.amount, 0))::numeric(26,8) AS reserved,
+       (a.spent + coalesce(p.spent, 0))::numeric(26,8) AS spent,
+       (a.reserved_count - coalesce(p.n, 0))::integer AS reserved_count,
+       (a.spent_count + coalesce(p.spent_n, 0))::integer AS spent_count
+FROM pc.budget_accounts a
+LEFT JOIN LATERAL (
+    SELECT sum(r.amount) AS amount, count(*) AS n,
+           sum(r.amount) FILTER (WHERE r.state = 'COMMITTED') AS spent,
+           count(*) FILTER (WHERE r.state = 'COMMITTED') AS spent_n
+    FROM pc.reservations r
+    WHERE r.org_id = a.org_id AND r.account_id = a.id AND r.pending
+) p ON true
+WHERE a.org_id = sqlc.arg(org_id) AND a.owner_id = sqlc.arg(owner_id) AND a.rule = sqlc.arg(rule)
+  AND a.key_hash = sqlc.arg(key_hash) AND a.period_start = sqlc.arg(period_start);
 
 -- ListOwnerBudgetAccounts returns the latest period of every budget
 -- account the given grants and guardrails own, with its pending

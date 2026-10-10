@@ -262,6 +262,61 @@ func (q *Queries) GetCounter(ctx context.Context, arg GetCounterParams) (GetCoun
 	return i, err
 }
 
+const getSettledBudgetAccount = `-- name: GetSettledBudgetAccount :one
+SELECT a.id,
+       (a.reserved - coalesce(p.amount, 0))::numeric(26,8) AS reserved,
+       (a.spent + coalesce(p.spent, 0))::numeric(26,8) AS spent,
+       (a.reserved_count - coalesce(p.n, 0))::integer AS reserved_count,
+       (a.spent_count + coalesce(p.spent_n, 0))::integer AS spent_count
+FROM pc.budget_accounts a
+LEFT JOIN LATERAL (
+    SELECT sum(r.amount) AS amount, count(*) AS n,
+           sum(r.amount) FILTER (WHERE r.state = 'COMMITTED') AS spent,
+           count(*) FILTER (WHERE r.state = 'COMMITTED') AS spent_n
+    FROM pc.reservations r
+    WHERE r.org_id = a.org_id AND r.account_id = a.id AND r.pending
+) p ON true
+WHERE a.org_id = $1 AND a.owner_id = $2 AND a.rule = $3
+  AND a.key_hash = $4 AND a.period_start = $5
+`
+
+type GetSettledBudgetAccountParams struct {
+	OrgID       ids.OrgID
+	OwnerID     ids.UUID
+	Rule        string
+	KeyHash     []byte
+	PeriodStart time.Time
+}
+
+type GetSettledBudgetAccountRow struct {
+	ID            ids.UUID
+	Reserved      money.Decimal
+	Spent         money.Decimal
+	ReservedCount int32
+	SpentCount    int32
+}
+
+// GetSettledBudgetAccount is GetBudgetAccount with the account's pending
+// reservations applied, for views that show a budget (ADR-0015).
+func (q *Queries) GetSettledBudgetAccount(ctx context.Context, arg GetSettledBudgetAccountParams) (GetSettledBudgetAccountRow, error) {
+	row := q.db.QueryRow(ctx, getSettledBudgetAccount,
+		arg.OrgID,
+		arg.OwnerID,
+		arg.Rule,
+		arg.KeyHash,
+		arg.PeriodStart,
+	)
+	var i GetSettledBudgetAccountRow
+	err := row.Scan(
+		&i.ID,
+		&i.Reserved,
+		&i.Spent,
+		&i.ReservedCount,
+		&i.SpentCount,
+	)
+	return i, err
+}
+
 const insertReservation = `-- name: InsertReservation :exec
 INSERT INTO pc.reservations (org_id, id, transaction_id, permit_id, account_id, counter_id, amount)
 VALUES ($1, $2, $3, $4, $5,
@@ -398,51 +453,6 @@ func (q *Queries) LockPendingReservations(ctx context.Context, orgID ids.OrgID, 
 			&i.Amount,
 			&i.State,
 			&i.Rank,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const pendingAccountSettlements = `-- name: PendingAccountSettlements :many
-SELECT account_id::uuid AS account_id, sum(amount)::numeric(26,8) AS amount, count(*)::integer AS n,
-       coalesce(sum(amount) FILTER (WHERE state = 'COMMITTED'), 0)::numeric(26,8) AS spent,
-       (count(*) FILTER (WHERE state = 'COMMITTED'))::integer AS spent_n
-FROM pc.reservations
-WHERE org_id = $1 AND pending AND account_id = ANY($2::uuid[])
-GROUP BY account_id
-`
-
-type PendingAccountSettlementsRow struct {
-	AccountID ids.UUID
-	Amount    money.Decimal
-	N         int32
-	Spent     money.Decimal
-	SpentN    int32
-}
-
-// PendingAccountSettlements sums the pending reservations of accounts, for
-// views that show a budget as settled.
-func (q *Queries) PendingAccountSettlements(ctx context.Context, orgID ids.OrgID, accountIds []ids.UUID) ([]PendingAccountSettlementsRow, error) {
-	rows, err := q.db.Query(ctx, pendingAccountSettlements, orgID, accountIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []PendingAccountSettlementsRow{}
-	for rows.Next() {
-		var i PendingAccountSettlementsRow
-		if err := rows.Scan(
-			&i.AccountID,
-			&i.Amount,
-			&i.N,
-			&i.Spent,
-			&i.SpentN,
 		); err != nil {
 			return nil, err
 		}
