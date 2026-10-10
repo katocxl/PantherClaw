@@ -303,3 +303,32 @@ func (s *Waitlist) UpdateWaitlistSettings(ctx context.Context, req *pantherclawv
 	}
 	return &pantherclawv1.UpdateWaitlistSettingsResponse{Settings: settingsProto(st)}, nil
 }
+
+func metricProto(m app.Metric) *pantherclawv1.WaitlistMetric {
+	return &pantherclawv1.WaitlistMetric{
+		Kind: pantherclawv1.WaitlistKind(pantherclawv1.WaitlistKind_value["WAITLIST_KIND_"+m.Kind]), DeciderUserId: idOrEmpty(m.Decider),
+		Count: m.Entries, Decided: m.Decided, FirstResponseP50Seconds: m.FirstResponseP50, FirstResponseP90Seconds: m.FirstResponseP90,
+		DecisionP50Seconds: m.DecisionP50, DecisionP90Seconds: m.DecisionP90, ExpiryRate: m.ExpiryRate, EscalationRate: m.EscalationRate,
+		RoutingFailures: m.RoutingFailures,
+	}
+}
+
+// GetWaitlistMetrics implements WaitlistServiceHandler (Team).
+func (s *Waitlist) GetWaitlistMetrics(ctx context.Context, req *pantherclawv1.GetWaitlistMetricsRequest) (*pantherclawv1.GetWaitlistMetricsResponse, error) {
+	var kinds []string
+	for _, k := range req.GetKinds() {
+		kinds = append(kinds, strings.TrimPrefix(k.String(), "WAITLIST_KIND_"))
+	}
+	m, err := s.r.Metrics(ctx, int(req.GetWindowDays()), kinds)
+	if err != nil {
+		return nil, err
+	}
+	out := &pantherclawv1.GetWaitlistMetricsResponse{StartTime: ts(&m.Start), EndTime: ts(&m.End)}
+	for _, x := range m.ByKind {
+		out.ByKind = append(out.ByKind, metricProto(x))
+	}
+	for _, x := range m.ByDecider {
+		out.ByDecider = append(out.ByDecider, metricProto(x))
+	}
+	return out, nil
+}

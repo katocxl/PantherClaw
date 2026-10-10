@@ -906,6 +906,11 @@ func (q *Queries) InsertApprovalRequest(ctx context.Context, arg InsertApprovalR
 }
 
 const insertApprovalResponse = `-- name: InsertApprovalResponse :exec
+WITH first_response AS (
+    UPDATE pc.waitlist_entries SET first_response_at = now()
+    WHERE org_id = $1 AND subject_type = 'approval_request' AND subject_id = $3
+      AND first_response_at IS NULL
+)
 INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
     credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
     batch_id)
@@ -935,6 +940,8 @@ type InsertApprovalResponseParams struct {
 	BatchID           *ids.UUID
 }
 
+// The first response to a request is its waitlist entry's first response
+// (SLA metrics, slice 214c).
 func (q *Queries) InsertApprovalResponse(ctx context.Context, arg InsertApprovalResponseParams) error {
 	_, err := q.db.Exec(ctx, insertApprovalResponse,
 		arg.OrgID,

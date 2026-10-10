@@ -217,7 +217,14 @@ WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id)
   AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
 FOR UPDATE;
 
+-- The first response to a request is its waitlist entry's first response
+-- (SLA metrics, slice 214c).
 -- name: InsertApprovalResponse :exec
+WITH first_response AS (
+    UPDATE pc.waitlist_entries SET first_response_at = now()
+    WHERE org_id = sqlc.arg(org_id) AND subject_type = 'approval_request' AND subject_id = sqlc.arg(request_id)
+      AND first_response_at IS NULL
+)
 INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
     credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
     batch_id)
