@@ -296,7 +296,7 @@ func End(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.UUID, e
 
 // Invalidate ends a live request made moot by a change (decision 6): it
 // becomes INVALIDATED with the change as its reason, its slots are freed
-// and its entry is cancelled. The next evaluation of the action decides
+// and its entry is closed. The next evaluation of the action decides
 // again; correctness never depends on this, because the change already
 // gives a different binding.
 func Invalidate(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.UUID, reason string) error {
