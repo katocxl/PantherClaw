@@ -549,7 +549,7 @@ func (q *Queries) RevokeGateway(ctx context.Context, arg RevokeGatewayParams) (P
 }
 
 const revokeGatewayCert = `-- name: RevokeGatewayCert :execrows
-UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = $1::text
+UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = $1::text, superseded_at = NULL
 WHERE org_id = $2 AND gateway_id = $3 AND id = $4 AND state <> 'REVOKED'
 `
 
@@ -560,6 +560,8 @@ type RevokeGatewayCertParams struct {
 	ID        ids.UUID
 }
 
+// Revoking also covers a SUPERSEDED certificate, which authenticates for a
+// grace period after a renewal; superseded_at belongs to that state only.
 func (q *Queries) RevokeGatewayCert(ctx context.Context, arg RevokeGatewayCertParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeGatewayCert,
 		arg.Reason,
@@ -574,7 +576,7 @@ func (q *Queries) RevokeGatewayCert(ctx context.Context, arg RevokeGatewayCertPa
 }
 
 const revokeGatewayCerts = `-- name: RevokeGatewayCerts :execrows
-UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = $1::text
+UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = $1::text, superseded_at = NULL
 WHERE org_id = $2 AND gateway_id = $3 AND state <> 'REVOKED'
 `
 

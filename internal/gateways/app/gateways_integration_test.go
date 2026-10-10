@@ -257,6 +257,44 @@ func TestHR181_EveryCallChecksTheCertificateRow(t *testing.T) {
 	}
 }
 
+// TestHR181_RevokingCoversASupersededCertificate: after a renewal the old
+// certificate still authenticates for its grace period, so revoking it, or
+// its gateway, must cover it too.
+func TestHR181_RevokingCoversASupersededCertificate(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	renew := func(name string) (app.Identity, app.Identity) {
+		_, id := e.enroll(t, name)
+		renewed, err := e.svc.Renew(ctx, id, csr(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id, identityOf(t, renewed.Certificate)
+	}
+
+	old, _ := renew("edge")
+	if err := e.svc.RevokeCertificate(e.admin, old.Gateway, old.Cert); err != nil {
+		t.Fatalf("revoking a superseded certificate: %v", err)
+	}
+	if err := app.New(e.pool, e.svc.CA(), "", nil).Authenticate(ctx, old); !errors.Is(err, app.ErrGatewayCredentials) {
+		t.Fatalf("a revoked superseded certificate authenticates within its grace: %v", err)
+	}
+
+	old, next := renew("edge-2")
+	if _, err := e.svc.RevokeGateway(e.admin, old.Gateway, "lost"); err != nil {
+		t.Fatalf("revoking a gateway that renewed: %v", err)
+	}
+	fresh := app.New(e.pool, e.svc.CA(), "", nil) // no cache
+	for _, id := range []app.Identity{old, next} {
+		if err := fresh.Authenticate(ctx, id); !errors.Is(err, app.ErrGatewayCredentials) {
+			t.Fatalf("certificate %s of a revoked gateway authenticates: %v", id.Cert, err)
+		}
+	}
+	if n := e.count(t, "SELECT count(*) FROM pc.gateway_certs WHERE gateway_id = $1 AND state <> 'REVOKED'", old.Gateway); n != 0 {
+		t.Fatalf("%d certificates of the revoked gateway are not revoked", n)
+	}
+}
+
 // TestHR002_RevokingAGatewayRaisesTheEpoch: its outstanding permits then
 // fail BeginDispatch.
 func TestHR002_RevokingAGatewayRaisesTheEpoch(t *testing.T) {
