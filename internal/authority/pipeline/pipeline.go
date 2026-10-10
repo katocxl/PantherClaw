@@ -97,6 +97,9 @@ type Evaluation struct {
 	RepeatWindow time.Duration
 	Epoch        int64
 	Now          time.Time
+	// Rows are the rows of Plan that step 7 found (a row that does not
+	// exist yet has none), so the finalization need not ensure them first.
+	Rows Rows
 	// Mode is the route's mode on the action's connection: ModeMonitor only
 	// when step 1 resolved a connection whose route runs in monitor mode;
 	// ModeEnforce otherwise (G0 M6 decision 7, HR-184).
@@ -692,8 +695,12 @@ func (p *Pipeline) budgets(ctx context.Context, s *state) {
 	book := bdomain.NewBook()
 	var lines []bdomain.Line
 	labels := map[ids.UUID]string{}
+	s.ev.Rows = Rows{Accounts: map[bdomain.Ref]ids.UUID{}, Counters: map[bdomain.Ref]ids.UUID{}}
 	for _, d := range plan.Budgets {
 		acc := usage.Accounts[d.Ref]
+		if !acc.ID.IsZero() {
+			s.ev.Rows.Accounts[d.Ref] = acc.ID
+		}
 		acc.ID, acc.Rank, acc.Currency, acc.Limit, acc.MaxCount = ids.NewV7(), d.Ref.Owner.Rank, d.Currency, d.Limit, d.MaxCount
 		book.Accounts[acc.ID] = &acc
 		lines = append(lines, bdomain.Line{Kind: bdomain.KindBudget, ID: acc.ID, Rank: acc.Rank, Amount: d.Amount})
@@ -706,6 +713,9 @@ func (p *Pipeline) budgets(ctx context.Context, s *state) {
 		if !exists && usage.CounterRows[capRef] >= bdomain.MaxCounterRows {
 			s.cl.add(StepBoundaries, adomain.CannotAuthorize, gdomain.ReasonCounterCapacityExceed, "counter "+d.Ref.Rule+" tracks too many keys in this window", levelOf(s.chain, d.Ref.Owner))
 			return
+		}
+		if !c.ID.IsZero() {
+			s.ev.Rows.Counters[d.Ref] = c.ID
 		}
 		c.ID, c.Rank, c.Max, c.MaxOutstanding = ids.NewV7(), d.Ref.Owner.Rank, d.Max, d.MaxOutstanding
 		book.Counters[c.ID] = &c

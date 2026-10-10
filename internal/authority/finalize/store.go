@@ -169,7 +169,8 @@ type Store interface {
 	Lookup(ctx context.Context, org ids.OrgID, run, action ids.UUID) (*Stored, error)
 	// Prepare makes sure the rows of a reservation plan exist, in its own
 	// short transaction (never inside Finalize, so Finalize only updates
-	// rows and its lock order cannot deadlock), and resolves their ids.
+	// rows and its lock order cannot deadlock), and resolves their ids. The
+	// Authority skips it when the evaluation found every row of the plan.
 	Prepare(ctx context.Context, org ids.OrgID, plan gdomain.Plan) ([]Row, error)
 	// Finalize records w in one transaction (see Write).
 	Finalize(ctx context.Context, org ids.OrgID, w Write) error

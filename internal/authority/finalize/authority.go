@@ -242,7 +242,7 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 		w.Permit = p
 		res.Permit, res.PermitID, res.Epoch = p.JWS, p.ID, p.Epoch
 	} else if ev.Permits() {
-		rows, err := a.Store.Prepare(ctx, gw.Org, ev.Plan)
+		rows, err := a.rows(ctx, gw.Org, ev)
 		if err != nil {
 			return Result{}, err
 		}
@@ -268,6 +268,32 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 		return Result{}, err
 	}
 	return res, nil
+}
+
+// rows resolves the rows of ev's plan. When the evaluation found every one,
+// it reserves on those: a row is never deleted and its ref never changes,
+// so they are the rows Prepare would resolve, and Prepare's insert does not
+// wait on a hot row's updaters before Finalize does. A row gone anyway
+// fails Finalize's conditional update (ErrExhausted), and the next
+// evaluation, not finding it, prepares it. A row not found yet (a new
+// period or window) is created by Prepare.
+func (a *Authority) rows(ctx context.Context, org ids.OrgID, ev *pipeline.Evaluation) ([]Row, error) {
+	out := make([]Row, 0, len(ev.Plan.Budgets)+len(ev.Plan.Counters))
+	for _, d := range ev.Plan.Budgets {
+		id := ev.Rows.Accounts[d.Ref]
+		if id.IsZero() {
+			return a.Store.Prepare(ctx, org, ev.Plan)
+		}
+		out = append(out, Row{Ref: d.Ref, Kind: bdomain.KindBudget, ID: id})
+	}
+	for _, d := range ev.Plan.Counters {
+		id := ev.Rows.Counters[d.Ref]
+		if id.IsZero() {
+			return a.Store.Prepare(ctx, org, ev.Plan)
+		}
+		out = append(out, Row{Ref: d.Ref, Kind: bdomain.KindCounter, ID: id})
+	}
+	return out, nil
 }
 
 // lines turns a plan into reservation lines on resolved rows.
