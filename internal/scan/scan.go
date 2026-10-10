@@ -269,6 +269,9 @@ func mcpFindings(host, client, path string, serversAt []string) []Finding {
 		return nil
 	}
 	groups := []map[string]any{member(doc, serversAt)}
+	if client == "jetbrains_ai" {
+		groups[0] = jetBrainsServers(doc)
+	}
 	if client == "claude_code" {
 		// ~/.claude.json also keeps per-project servers.
 		if projects, ok := doc["projects"].(map[string]any); ok {

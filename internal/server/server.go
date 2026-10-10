@@ -97,13 +97,14 @@ Usage:
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
                                                      issue a new one-time admin token (recovery)
   pantherclaw-server dev seed [--config FILE] [--org-name N] [--budget-limit X] [--max-count N] [--gateway-out FILE
-                             [--target-url URL] [--shell]] [--workload-out FILE [--facts-key-out FILE]]
+                             [--target-url URL [--access-mode M]] [--shell]] [--workload-out FILE [--facts-key-out FILE]]
                                                      DEVELOPMENT ONLY: demo org with the reference package; a gateway
                                                      enrollment file and a payments connection; a workload with a grant,
                                                      a run and a fact provider
   pantherclaw-server dev gateway --org ID --out FILE [--config FILE] [--name NAME]
                                                      DEVELOPMENT ONLY: a gateway enrollment file for an existing org
   pantherclaw-server dev connection --org ID --target-url URL [--config FILE] [--gateway NAME] [--name N] [--mode M]
+                             [--access-mode M]
                                                      DEVELOPMENT ONLY: a payments connection for an existing gateway
   pantherclaw-server version
 

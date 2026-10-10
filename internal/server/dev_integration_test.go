@@ -440,3 +440,49 @@ func TestPN014_DevSeedSeedsTheHookConnection(t *testing.T) {
 		t.Fatalf("seeded connection %q, package %q, grant %q: %v", conn, pkg, grant, err)
 	}
 }
+
+// TestHR061_DevSeedSeedsACustodyConnection: dev seed --access-mode
+// pantherclaw_held creates the payments connection with the credential
+// placed as "Authorization: Bearer" and no credential yet (a person seals
+// one); an unknown mode, or a mode without --target-url, is refused.
+func TestHR061_DevSeedSeedsACustodyConnection(t *testing.T) {
+	d := dbtest.New(t)
+	cfgPath := testConfig(t, d, RoleAPI, gatewayAt("127.0.0.1:8443"))
+	dir := t.TempDir()
+	gw := func(n string) string { return filepath.Join(dir, n+".json") }
+	var out, errb bytes.Buffer
+	for name, args := range map[string][]string{
+		"unknown mode":  {"--gateway-out", gw("a"), "--target-url", "http://127.0.0.1:9", "--access-mode", "agent_held"},
+		"no target URL": {"--gateway-out", gw("b"), "--access-mode", "pantherclaw_held"},
+	} {
+		if code := Run(context.Background(), append([]string{"dev", "seed", "--config", cfgPath}, args...), &out, &errb, noEnv); code == 0 ||
+			!strings.Contains(errb.String(), "--access-mode is") {
+			t.Errorf("%s = %d %s", name, code, errb.String())
+		}
+		errb.Reset()
+	}
+	args := []string{"dev", "seed", "--config", cfgPath, "--gateway-out", gw("c"), "--target-url", "http://127.0.0.1:9", "--access-mode", "pantherclaw_held"}
+	if code := Run(context.Background(), args, &out, &errb, noEnv); code != 0 || !strings.Contains(out.String(), "access pantherclaw_held") {
+		t.Fatalf("dev seed --access-mode = %d %s %s", code, out.String(), errb.String())
+	}
+	m := seededOrg.FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("dev seed output %q", out.String())
+	}
+	org, err := ids.Parse[ids.Org](m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conn string
+	var sealed int
+	err = d.AppPool(t).InTenantTx(context.Background(), org, func(ctx context.Context, tx db.TenantTx) error {
+		if err := tx.QueryRow(ctx, `SELECT access_mode || ' ' || credential_header || ' ' || credential_scheme
+			FROM pc.connections WHERE name = 'payments'`).Scan(&conn); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, "SELECT count(*) FROM pc.credentials").Scan(&sealed)
+	})
+	if err != nil || conn != "pantherclaw_held Authorization Bearer" || sealed != 0 {
+		t.Fatalf("seeded connection %q with %d credentials: %v", conn, sealed, err)
+	}
+}
