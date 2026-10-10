@@ -377,6 +377,14 @@ func (d *Definition) canonicalField(f string) bool {
 	return ok && declared && p.Material
 }
 
+// prerequisiteField reports whether f is facts.<name> of a prerequisite
+// fact: an approval may show its value (a readable name beside a stable id,
+// G0 M5 part 2 decision 9), but a dedupe key may not use it.
+func (d *Definition) prerequisiteField(f string) bool {
+	name, ok := strings.CutPrefix(f, "facts.")
+	return ok && slices.ContainsFunc(d.Prerequisites, func(p Prerequisite) bool { return p.Fact == name })
+}
+
 func (d *Definition) validateApproval() error {
 	a := d.Approval
 	if a == nil {
@@ -396,8 +404,8 @@ func (d *Definition) validateApproval() error {
 		refs = append(refs, m[1])
 	}
 	for _, f := range refs {
-		if !d.canonicalField(f) {
-			return invalid("%s: approval may show only canonical material fields, not %q (HR-034)", d.Operation, f)
+		if !d.canonicalField(f) && !d.prerequisiteField(f) {
+			return invalid("%s: approval may show only canonical material fields and prerequisite facts, not %q (HR-034)", d.Operation, f)
 		}
 	}
 	return nil
