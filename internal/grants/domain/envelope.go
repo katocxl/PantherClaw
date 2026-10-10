@@ -59,6 +59,14 @@ const (
 	MaxDelegatedLifetime   = 24 * time.Hour
 	DefaultMaxRootLifetime = 7 * 24 * time.Hour
 	HardMaxRootLifetime    = 90 * 24 * time.Hour
+	// IssueSkew backdates the start of a grant that takes effect when it is
+	// issued. Issuance reads the server's clock, while runs and decisions
+	// check validity against the database clock (BUILD_GUIDE §3.1). Without
+	// it, a database clock slightly behind the server's would find a grant
+	// just issued "not yet valid". Lifetimes are measured from the issue
+	// time, so this widens nothing that matters: the grant did not exist
+	// before it was issued.
+	IssueSkew = time.Minute
 )
 
 // Repeat-protection window for irreversible actions (decision 6, HR-007).
