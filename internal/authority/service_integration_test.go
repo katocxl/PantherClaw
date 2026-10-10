@@ -297,6 +297,17 @@ func (f fixture) budgetRow(t *testing.T) budgetState {
 	return b
 }
 
+// settle runs the sweep, which applies the recorded outcomes to the budget
+// rows (ADR-0015), and returns how many reservations it applied.
+func (f fixture) settle(t *testing.T) int {
+	t.Helper()
+	r, err := f.svc.SweepOrg(context.Background(), f.gw.Org, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.Applied
+}
+
 func (f fixture) authorize(t *testing.T, amount string) authority.Result {
 	t.Helper()
 	res, err := f.svc.Authorize(context.Background(), f.gw, f.action(t, amount, f.run, ids.NewV7()), f.creds(t, f.wl, f.wl.token))
@@ -359,6 +370,14 @@ func TestIntAllowDispatchCommit(t *testing.T) {
 	ev, _ := f.reg.Verifier(keys.PurposeReceipts, authority.TypeExecutionReceipt)
 	if body, _, err := ev.Verify(receipt); err != nil || !jsontext.Value(body).IsValid() {
 		t.Fatalf("execution receipt: %v", err)
+	}
+	// The commit reaches the budget row with the settlement (ADR-0015);
+	// until then the row still counts it reserved.
+	if b := f.budgetRow(t); b.Reserved.String() != "30" || b.Spent.String() != "0" {
+		t.Fatalf("before the settlement: reserved %s spent %s", b.Reserved, b.Spent)
+	}
+	if n := f.settle(t); n != 1 {
+		t.Fatalf("settled %d reservations, want 1", n)
 	}
 	if b := f.budgetRow(t); b.Reserved.String() != "0" || b.Spent.String() != "30" || b.SpentCount != 1 {
 		t.Fatalf("after commit: reserved %s spent %s count %d", b.Reserved, b.Spent, b.SpentCount)
@@ -543,7 +562,7 @@ func TestHR003_SweeperReleasesOnlyExpiredIssued(t *testing.T) {
 		f.authorize(t, amount)
 	}
 	r, err := f.svc.SweepOrg(ctx, f.gw.Org, time.Hour)
-	if err != nil || r.Released != 3 || r.Unknown != 0 {
+	if err != nil || r.Released != 3 || r.Unknown != 0 || r.Applied != 3 {
 		t.Fatalf("sweep = %+v, %v", r, err)
 	}
 	if b := f.budgetRow(t); !b.Reserved.IsZero() || b.ReservedCount != 0 {
@@ -563,6 +582,9 @@ func TestIntFailedDispatchReleases(t *testing.T) {
 	}
 	if _, err := f.svc.RecordExecution(ctx, f.gw, authority.Execution{Permit: res.PermitID, Outcome: authority.Failed, TargetStatus: 402}); err != nil {
 		t.Fatal(err)
+	}
+	if n := f.settle(t); n != 1 {
+		t.Fatalf("settled %d reservations, want 1", n)
 	}
 	if b := f.budgetRow(t); !b.Reserved.IsZero() || !b.Spent.IsZero() {
 		t.Fatalf("after failure: reserved %s spent %s", b.Reserved, b.Spent)
