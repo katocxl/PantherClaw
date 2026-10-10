@@ -466,7 +466,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	expiring := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
 	w.auth.PermitTTL = long
 	w.waitExpired(expiring.PermitID)
-	released, unknown, err := w.auth.Store.Sweep(ctx, w.org, time.Nanosecond)
+	released, unknown, err := w.auth.Sweep(ctx, w.org, time.Nanosecond)
 	if err != nil || released != 1 || unknown != 1 {
 		t.Fatalf("sweep: released %d unknown %d: %v", released, unknown, err)
 	}
