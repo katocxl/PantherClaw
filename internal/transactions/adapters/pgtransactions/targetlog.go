@@ -6,6 +6,7 @@ package pgtransactions
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -89,8 +90,11 @@ func targetLog(ctx context.Context, tx db.TenantTx, q *dbq.Queries, org ids.OrgI
 	r app.Report, sign app.Sign,
 ) (app.Applied, error) {
 	var req targetLogRequest
-	if err := json.Unmarshal(task.Request, &req); err != nil || task.WindowStart == nil || task.WindowEnd == nil {
-		return app.Applied{}, fmt.Errorf("pgtransactions: target-log task: %v", err)
+	if err := json.Unmarshal(task.Request, &req); err != nil {
+		return app.Applied{}, fmt.Errorf("pgtransactions: target-log task: %w", err)
+	}
+	if task.WindowStart == nil || task.WindowEnd == nil {
+		return app.Applied{}, errors.New("pgtransactions: target-log task without a window")
 	}
 	obs, id := ids.NewV7(), task.ID
 	o := dbq.InsertObservationParams{
