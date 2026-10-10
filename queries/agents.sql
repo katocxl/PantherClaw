@@ -125,7 +125,7 @@ WHERE runs.org_id = sqlc.arg(org_id) AND runs.id IN (SELECT id FROM tree) AND ru
 UPDATE pc.waitlist_entries
 SET state = sqlc.arg(state), decided_by = sqlc.arg(decided_by), decided_at = now(),
     decision_reason = sqlc.arg(reason)
-WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND state = 'OPEN'
+WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id)::uuid AND kind = 'ADMISSION' AND state = 'OPEN'
   AND (sqlc.narg(subject_type)::text IS NULL OR subject_type = sqlc.narg(subject_type)::text);
 
 -- name: GetAgentDiscovery :one

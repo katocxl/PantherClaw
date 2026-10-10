@@ -70,7 +70,7 @@ RETURNING *;
 
 -- name: InsertWaitlistEntry :one
 INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
-VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ADMISSION', sqlc.arg(subject_type), sqlc.arg(subject_id), sqlc.arg(agent_id),
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'ADMISSION', sqlc.arg(subject_type), sqlc.arg(subject_id), sqlc.arg(agent_id)::uuid,
     sqlc.arg(evidence), now() + interval '7 days')
 RETURNING *;
 

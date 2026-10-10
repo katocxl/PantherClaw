@@ -369,7 +369,7 @@ const insertAgentAdmissionEntry = `-- name: InsertAgentAdmissionEntry :one
 INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
 VALUES ($1, $2, 'ADMISSION', 'agent', $3, $3, $4,
     now() + interval '7 days')
-RETURNING org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at
+RETURNING org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at
 `
 
 type InsertAgentAdmissionEntryParams struct {
@@ -401,6 +401,16 @@ func (q *Queries) InsertAgentAdmissionEntry(ctx context.Context, arg InsertAgent
 		&i.DecidedAt,
 		&i.DecisionReason,
 		&i.CreatedAt,
+		&i.Priority,
+		&i.RunID,
+		&i.TransactionID,
+		&i.RequestedBy,
+		&i.RoutingHealth,
+		&i.EscalationStep,
+		&i.NextStepAt,
+		&i.AssigneeUserID,
+		&i.AssignedAt,
+		&i.FirstResponseAt,
 	)
 	return i, err
 }
@@ -729,9 +739,9 @@ func (q *Queries) InsertProofJTI(ctx context.Context, arg InsertProofJTIParams) 
 
 const insertWaitlistEntry = `-- name: InsertWaitlistEntry :one
 INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, evidence, deadline_at)
-VALUES ($1, $2, 'ADMISSION', $3, $4, $5,
+VALUES ($1, $2, 'ADMISSION', $3, $4, $5::uuid,
     $6, now() + interval '7 days')
-RETURNING org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at
+RETURNING org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at
 `
 
 type InsertWaitlistEntryParams struct {
@@ -767,6 +777,16 @@ func (q *Queries) InsertWaitlistEntry(ctx context.Context, arg InsertWaitlistEnt
 		&i.DecidedAt,
 		&i.DecisionReason,
 		&i.CreatedAt,
+		&i.Priority,
+		&i.RunID,
+		&i.TransactionID,
+		&i.RequestedBy,
+		&i.RoutingHealth,
+		&i.EscalationStep,
+		&i.NextStepAt,
+		&i.AssigneeUserID,
+		&i.AssignedAt,
+		&i.FirstResponseAt,
 	)
 	return i, err
 }
