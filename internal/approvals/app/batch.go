@@ -4,7 +4,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"slices"
 	"strconv"
@@ -54,10 +53,9 @@ func (s *Service) DeclineBatch(ctx context.Context, requests []ids.UUID, reason,
 	if err := s.teamWaitlist(ctx); err != nil {
 		return ids.UUID{}, nil, err
 	}
-	sorted := slices.Clone(requests)
-	slices.SortFunc(sorted, func(a, b ids.UUID) int { return bytes.Compare(a[:], b[:]) })
-	if len(sorted) == 0 || len(sorted) > apdomain.MaxBatch || len(slices.Compact(slices.Clone(sorted))) != len(sorted) {
-		return ids.UUID{}, nil, ErrBatchInvalid
+	sorted, err := sortedBatch(requests)
+	if err != nil {
+		return ids.UUID{}, nil, err
 	}
 	if !slices.Contains(apdomain.DeclineReasons, reason) || len([]rune(note)) > apdomain.MaxNote {
 		return ids.UUID{}, nil, ErrInvalidCode
