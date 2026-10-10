@@ -216,20 +216,23 @@ func (q *Queries) InsertEvaluationReceipt(ctx context.Context, arg InsertEvaluat
 }
 
 const insertPermitForTransaction = `-- name: InsertPermitForTransaction :exec
-INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at, mode, connection_id)
+INSERT INTO pc.permits (org_id, id, transaction_id, gateway_id, epoch, expires_at, mode, connection_id, definition_digest,
+                        verify_expect)
 VALUES ($1, $2, $3, $4, $5, $6,
-        $7, $8)
+        $7, $8, $9, $10)
 `
 
 type InsertPermitForTransactionParams struct {
-	OrgID         ids.OrgID
-	ID            ids.UUID
-	TransactionID ids.UUID
-	GatewayID     string
-	Epoch         int64
-	ExpiresAt     time.Time
-	Mode          string
-	ConnectionID  *ids.UUID
+	OrgID            ids.OrgID
+	ID               ids.UUID
+	TransactionID    ids.UUID
+	GatewayID        string
+	Epoch            int64
+	ExpiresAt        time.Time
+	Mode             string
+	ConnectionID     *ids.UUID
+	DefinitionDigest *string
+	VerifyExpect     []byte
 }
 
 func (q *Queries) InsertPermitForTransaction(ctx context.Context, arg InsertPermitForTransactionParams) error {
@@ -242,6 +245,8 @@ func (q *Queries) InsertPermitForTransaction(ctx context.Context, arg InsertPerm
 		arg.ExpiresAt,
 		arg.Mode,
 		arg.ConnectionID,
+		arg.DefinitionDigest,
+		arg.VerifyExpect,
 	)
 	return err
 }
@@ -271,12 +276,13 @@ UPDATE pc.permits
 SET state = 'UNKNOWN', finished_at = now()
 WHERE org_id = $1 AND state = 'DISPATCHING'
   AND dispatching_at < now() - make_interval(secs => $2::float8) AND budget_id IS NULL
-RETURNING id, transaction_id
+RETURNING id, transaction_id, gateway_id
 `
 
 type MarkStaleDispatchingRow struct {
 	ID            ids.UUID
 	TransactionID ids.UUID
+	GatewayID     string
 }
 
 func (q *Queries) MarkStaleDispatching(ctx context.Context, orgID ids.OrgID, staleSeconds float64) ([]MarkStaleDispatchingRow, error) {
@@ -288,7 +294,7 @@ func (q *Queries) MarkStaleDispatching(ctx context.Context, orgID ids.OrgID, sta
 	items := []MarkStaleDispatchingRow{}
 	for rows.Next() {
 		var i MarkStaleDispatchingRow
-		if err := rows.Scan(&i.ID, &i.TransactionID); err != nil {
+		if err := rows.Scan(&i.ID, &i.TransactionID, &i.GatewayID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

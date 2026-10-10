@@ -954,6 +954,8 @@ type PcPermit struct {
 	OutboundUrl        *string
 	OutboundBodySha256 []byte
 	ActionTokenJti     *ids.UUID
+	DefinitionDigest   *string
+	VerifyExpect       []byte
 }
 
 type PcPolicy struct {

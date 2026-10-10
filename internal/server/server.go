@@ -78,6 +78,7 @@ import (
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	txapp "github.com/katocxl/pantherclaw/internal/transactions/app"
 )
 
 const usage = `pantherclaw-server — PantherClaw control plane
@@ -222,6 +223,11 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 	if err != nil {
 		return err
 	}
+	verification, err := newVerification(pool, reg, m5.notifications)
+	if err != nil {
+		return err
+	}
+	m6.verifications = verification
 
 	g, ctx := errgroup.WithContext(ctx)
 	if cfg.Role == RoleAPI || cfg.Role == RoleAll {
@@ -289,6 +295,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 			m5:           m5,
 			m6:           m6,
 			m5p2:         m5p2,
+			verification: verification,
 		})
 		if err != nil {
 			return err
@@ -344,10 +351,13 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := m5p2.registerWorkers(jreg, log); err != nil {
 			return err
 		}
+		if err := txapp.Register(jreg, pool, verification); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency, napp.Queue: cfg.Notifications.Concurrency},
 			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
-				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs(), m5p2.periodicJobs()),
+				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs(), m5p2.periodicJobs(), txapp.PeriodicJobs()),
 			Logger: log,
 		})
 		if err != nil {
@@ -429,6 +439,8 @@ type apiDeps struct {
 	m6 *m6Services
 	// M5 part 2: approvals, the waitlist and wait handles.
 	m5p2 *m5p2Services
+	// M7: verification signs the effect receipts people's actions append.
+	verification *txapp.Service
 }
 
 // apiHandler mounts the RPC services, health endpoints and the JWKS.
@@ -477,6 +489,7 @@ func apiHandler(d apiDeps) (http.Handler, error) {
 	}
 	d.m6.registerPublic(rs)
 	d.m5p2.registerPublic(rs)
+	registerM7(rs, pool, d.verification)
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	d.m5p2.mount(mux, workload)
