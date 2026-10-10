@@ -423,3 +423,22 @@ SELECT DISTINCT x.user_id::uuid AS user_id FROM (
 ) x
 WHERE x.user_id IS NOT NULL
 LIMIT 100;
+
+-- Wait handles (slice 212, HR-174): the latest request of a transaction
+-- whose run is bound to the waiting instance (and is run_id, when given),
+-- with the open evidence question and a proposed narrower action.
+-- name: WaitRequest :one
+SELECT r.id, r.state, r.end_reason, r.deadline_at, r.evidence_deadline_at, r.consume_by,
+       coalesce((SELECT x.reason_code FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'REQUEST_EVIDENCE'
+         ORDER BY x.created_at DESC LIMIT 1), '')::text AS question,
+       (SELECT x.proposed_params FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'PROPOSE_NARROWER' LIMIT 1)::jsonb AS proposed,
+       now()::timestamptz AS now
+FROM pc.approval_requests r
+JOIN pc.transactions t ON t.org_id = r.org_id AND t.id = r.transaction_id
+JOIN pc.runs run ON run.org_id = t.org_id AND run.id = t.run_id
+WHERE r.org_id = sqlc.arg(org_id) AND r.transaction_id = sqlc.arg(transaction_id) AND run.instance_id = sqlc.arg(instance_id)
+  AND (sqlc.narg(run_id)::uuid IS NULL OR t.run_id = sqlc.narg(run_id)::uuid)
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT 1;

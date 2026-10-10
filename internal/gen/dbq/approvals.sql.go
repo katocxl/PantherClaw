@@ -1646,6 +1646,67 @@ func (q *Queries) VoidResponse(ctx context.Context, reason *string, orgID ids.Or
 	return result.RowsAffected(), nil
 }
 
+const waitRequest = `-- name: WaitRequest :one
+SELECT r.id, r.state, r.end_reason, r.deadline_at, r.evidence_deadline_at, r.consume_by,
+       coalesce((SELECT x.reason_code FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'REQUEST_EVIDENCE'
+         ORDER BY x.created_at DESC LIMIT 1), '')::text AS question,
+       (SELECT x.proposed_params FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'PROPOSE_NARROWER' LIMIT 1)::jsonb AS proposed,
+       now()::timestamptz AS now
+FROM pc.approval_requests r
+JOIN pc.transactions t ON t.org_id = r.org_id AND t.id = r.transaction_id
+JOIN pc.runs run ON run.org_id = t.org_id AND run.id = t.run_id
+WHERE r.org_id = $1 AND r.transaction_id = $2 AND run.instance_id = $3
+  AND ($4::uuid IS NULL OR t.run_id = $4::uuid)
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT 1
+`
+
+type WaitRequestParams struct {
+	OrgID         ids.OrgID
+	TransactionID *ids.UUID
+	InstanceID    *ids.UUID
+	RunID         *ids.UUID
+}
+
+type WaitRequestRow struct {
+	ID                 ids.UUID
+	State              string
+	EndReason          *string
+	DeadlineAt         time.Time
+	EvidenceDeadlineAt *time.Time
+	ConsumeBy          *time.Time
+	Question           string
+	Proposed           []byte
+	Now                time.Time
+}
+
+// Wait handles (slice 212, HR-174): the latest request of a transaction
+// whose run is bound to the waiting instance (and is run_id, when given),
+// with the open evidence question and a proposed narrower action.
+func (q *Queries) WaitRequest(ctx context.Context, arg WaitRequestParams) (WaitRequestRow, error) {
+	row := q.db.QueryRow(ctx, waitRequest,
+		arg.OrgID,
+		arg.TransactionID,
+		arg.InstanceID,
+		arg.RunID,
+	)
+	var i WaitRequestRow
+	err := row.Scan(
+		&i.ID,
+		&i.State,
+		&i.EndReason,
+		&i.DeadlineAt,
+		&i.EvidenceDeadlineAt,
+		&i.ConsumeBy,
+		&i.Question,
+		&i.Proposed,
+		&i.Now,
+	)
+	return i, err
+}
+
 const waitingApprovalRequests = `-- name: WaitingApprovalRequests :many
 SELECT r.org_id, r.id, r.subject_kind, r.agent_id, r.transaction_id, r.evaluation, r.run_id, r.grant_id, r.grant_revision, r.variant_key, r.requested_by, r.operation, r.previous_id, r.binding, r.binding_input, r.requirements, r.display, r.display_hash, r.state, r.end_reason, r.created_at, r.deadline_at, r.evidence_deadline_at, r.approved_at, r.consume_by, r.consumed_at, r.permit_id, r.ended_at, r.action_ir, coalesce(e.priority, 4)::integer AS priority
 FROM pc.approval_requests r

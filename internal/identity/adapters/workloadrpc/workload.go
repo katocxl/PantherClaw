@@ -26,6 +26,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	approvals "github.com/katocxl/pantherclaw/internal/approvals/app"
 	"github.com/katocxl/pantherclaw/internal/authn/credential"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
@@ -87,6 +88,7 @@ type Workload struct {
 	runs      *runsapp.Service
 	grants    *grantsapp.Service
 	publicURL string
+	waits     *approvals.Waits
 	clk       clock.Clock
 }
 
