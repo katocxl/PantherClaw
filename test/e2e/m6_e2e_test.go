@@ -164,6 +164,125 @@ func TestS13_TheKillSwitchStopsDispatchWithinASecond(t *testing.T) {
 	}
 }
 
+// S08: the gateway is lost between BeginDispatch and RecordExecution. To
+// the Authority, a gateway that died and one that can no longer reach it to
+// record look the same; here the Authority goes away while the target is
+// still working. The permit stays DISPATCHING with its reservation held,
+// nothing is retried, and once the dispatch is stale the sweeper marks it
+// UNKNOWN without releasing the money (HR-003); M7 reconciles it.
+func TestS08_AnUnrecordedDispatchIsUnknownAndHeld(t *testing.T) {
+	s := start(t, options{budget: "1000.00", faults: payments.Faults{Latency: 3 * time.Second}})
+	type result struct {
+		code int
+		r    reply
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, r, err := s.tryRefund(ids.NewV7(), "30.00")
+		done <- result{code, r, err}
+	}()
+	txn := s.waitPermit(t, "DISPATCHING")
+	s.stopServer(t)
+	res := <-done
+	if res.err != nil || res.code != http.StatusBadGateway || res.r.Error != "outcome_not_recorded" {
+		t.Fatalf("the agent's answer: %d %+v %v", res.code, res.r, res.err)
+	}
+	if reserved, spent, permit := s.budget(t, txn); reserved != "30" || spent != "0" || permit != "DISPATCHING" {
+		t.Fatalf("while unrecorded: reserved=%s spent=%s permit=%s", reserved, spent, permit)
+	}
+
+	// The Authority returns; the dispatch is made stale instead of waiting
+	// the 30 seconds the sweeper allows.
+	s.serve(t)
+	s.exec(t, "UPDATE pc.permits SET dispatching_at = now() - interval '1 hour' WHERE transaction_id = $1", mustUUID(t, txn))
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		reserved, spent, permit := s.budget(t, txn)
+		if permit == "UNKNOWN" {
+			if reserved != "30" || spent != "0" {
+				t.Fatalf("swept: reserved=%s spent=%s, want held", reserved, spent)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sweeper left the permit %s", permit)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if st := s.sim.Stats(); st.Refunds != 1 || s.simCalls.Load() != 1 {
+		t.Fatalf("target %+v, calls %d, want exactly one", st, s.simCalls.Load())
+	}
+}
+
+// TestE2E_M6_KillSwitch: the whole kill switch (G0 M6 design decision 5).
+// One emergency responder stops the org; the person who proposes a restore
+// cannot also confirm it; a second person with another security key
+// confirms, and within a second the gateway dispatches again (HR-002,
+// HR-113).
+func TestE2E_M6_KillSwitch(t *testing.T) {
+	s := start(t, options{budget: "1000.00"})
+	alice, bob := s.person(t, "alice", td.RoleEmergency), s.person(t, "bob", td.RoleEmergency)
+	ks := rapp.New(s.pool, nil, s.apiURL)
+	now := func(p person) rapp.StepUp { return rapp.StepUp{Credential: p.key, At: time.Now()} }
+	if _, err := ks.Engage(alice.ctx, now(alice), "e2e incident"); err != nil {
+		t.Fatal(err)
+	}
+	s.waitRefund(t, func(code int, r reply) bool { return r.Error == "kill_switch" }, "the gateway refusing on its own")
+
+	proposal, err := ks.ProposeRestore(alice.ctx, now(alice), "resolved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ks.ConfirmRestore(alice.ctx, now(alice), proposal.ID); !errors.Is(err, rapp.ErrSamePerson) {
+		t.Fatalf("the proposer confirming: %v, want SAME_PERSON", err)
+	}
+	if code, r := s.refund(t, ids.NewV7(), "30.00"); r.Error != "kill_switch" {
+		t.Fatalf("after a proposal alone: %d %+v, want still stopped", code, r)
+	}
+	if _, err := ks.ConfirmRestore(bob.ctx, now(bob), proposal.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.waitRefund(t, func(code int, r reply) bool { return code == http.StatusOK && r.Outcome == "ACCEPTED" }, "a refund accepted again")
+	if st := s.sim.Stats(); st.Refunds != 1 {
+		t.Fatalf("target %+v, want only the refund after the restore", st)
+	}
+}
+
+// waitRefund sends refunds until one answers as ok wants, for at most a
+// second (the gateway learns of containment changes within one, HR-010).
+func (s *stack) waitRefund(t *testing.T, ok func(int, reply) bool, what string) {
+	t.Helper()
+	start := time.Now()
+	for {
+		code, r := s.refund(t, ids.NewV7(), "30.00")
+		if ok(code, r) {
+			return
+		}
+		if time.Since(start) > time.Second {
+			t.Fatalf("no %s within a second: last %d %+v", what, code, r)
+		}
+	}
+}
+
+// waitPermit waits for the only permit to reach state and returns its
+// transaction.
+func (s *stack) waitPermit(t *testing.T, state string) string {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var txn *string
+		s.query(t, "SELECT (SELECT transaction_id::text FROM pc.permits WHERE state = $1 LIMIT 1)", []any{state}, &txn)
+		if txn != nil {
+			return *txn
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no permit reached %s", state)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // direct sends a refund straight to the target, as an agent holding no
 // credential and no action token would, and returns the target's status
 // and error.
