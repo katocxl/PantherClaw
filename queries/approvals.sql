@@ -217,7 +217,14 @@ WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id)
   AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
 FOR UPDATE;
 
+-- The first response to a request is its waitlist entry's first response
+-- (SLA metrics, slice 214c).
 -- name: InsertApprovalResponse :exec
+WITH first_response AS (
+    UPDATE pc.waitlist_entries SET first_response_at = now()
+    WHERE org_id = sqlc.arg(org_id) AND subject_type = 'approval_request' AND subject_id = sqlc.arg(request_id)
+      AND first_response_at IS NULL
+)
 INSERT INTO pc.approval_responses (org_id, id, request_id, user_id, session_id, cli_session_id, kind, requirement,
     credential_id, authenticator_data, client_data_json, signature, reason_code, alternative_code, note, proposed_params,
     batch_id)
@@ -350,7 +357,7 @@ ORDER BY p.created_at DESC, p.id
 LIMIT sqlc.arg(lim);
 
 -- name: RequestResponses :many
-SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at, credential_id, batch_id,
        void_reason
 FROM pc.approval_responses
 WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
@@ -361,3 +368,119 @@ SELECT id, author_kind, author_user_id, author_instance_id, note, created_at
 FROM pc.approval_evidence
 WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
 ORDER BY created_at, id;
+
+-- Restorations (G0 M5 part 2 slice 210, decision 11): an approval request
+-- with subject kind RESTORATION, at most one live per agent.
+-- name: InsertRestorationRequest :exec
+INSERT INTO pc.approval_requests (org_id, id, subject_kind, agent_id, requested_by, operation, binding, binding_input,
+    requirements, display, display_hash, deadline_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), 'RESTORATION', sqlc.arg(agent_id), sqlc.arg(requested_by), 'agent.restore',
+    sqlc.arg(binding), sqlc.arg(binding_input), sqlc.arg(requirements), sqlc.arg(display), sqlc.arg(display_hash),
+    sqlc.arg(deadline_at));
+
+-- name: LiveRestoration :one
+SELECT id FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND subject_kind = 'RESTORATION'
+  AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED');
+
+-- An agent's recorded changes: a restoration binds their count, so any
+-- later change to the agent gives a different binding.
+-- name: AgentChangeCount :one
+SELECT count(*)::bigint FROM pc.agent_changes WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id);
+
+-- name: AgentSuspendedAt :one
+SELECT coalesce(max(created_at), now())::timestamptz FROM pc.agent_changes
+WHERE org_id = sqlc.arg(org_id) AND agent_id = sqlc.arg(agent_id) AND kind = 'agent.suspended';
+
+-- An approved restoration is used at once, in its approval's transaction.
+-- name: ConsumeRestoration :execrows
+UPDATE pc.approval_requests SET state = 'CONSUMED', consumed_at = now(), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND subject_kind = 'RESTORATION' AND state = 'APPROVED';
+
+-- Live restorations made moot: the agent left SUSPENDED (it was retired)
+-- or changed since the request was made.
+-- name: MootRestorations :many
+SELECT r.id, (CASE WHEN a.state = 'RETIRED' THEN 'AGENT_RETIRED'
+                   WHEN a.state <> 'SUSPENDED' THEN 'AGENT_NOT_SUSPENDED'
+                   ELSE 'AGENT_CHANGED' END)::text AS reason
+FROM pc.approval_requests r
+JOIN pc.agents a ON a.org_id = r.org_id AND a.id = r.agent_id
+WHERE r.org_id = sqlc.arg(org_id) AND r.subject_kind = 'RESTORATION'
+  AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (a.state <> 'SUSPENDED'
+       OR (convert_from(r.binding_input, 'UTF8')::jsonb ->> 'agent_change_seq')::bigint
+          <> (SELECT count(*) FROM pc.agent_changes c WHERE c.org_id = r.org_id AND c.agent_id = r.agent_id))
+ORDER BY r.created_at
+LIMIT 500;
+
+-- The people told a request's outcome (slice 211): those it was routed to,
+-- and the person who asked for it (the run's launcher, or a restoration's
+-- requester).
+-- name: RequestRecipients :many
+SELECT DISTINCT x.user_id::uuid AS user_id FROM (
+    SELECT r.user_id FROM pc.waitlist_routes r
+    JOIN pc.waitlist_entries e ON e.org_id = r.org_id AND e.id = r.entry_id
+    WHERE e.org_id = sqlc.arg(org_id) AND e.subject_type = 'approval_request' AND e.subject_id = sqlc.arg(request_id)
+    UNION
+    SELECT run.launcher_user_id FROM pc.approval_requests a
+    JOIN pc.runs run ON run.org_id = a.org_id AND run.id = a.run_id
+    WHERE a.org_id = sqlc.arg(org_id) AND a.id = sqlc.arg(request_id)
+    UNION
+    SELECT a.requested_by FROM pc.approval_requests a WHERE a.org_id = sqlc.arg(org_id) AND a.id = sqlc.arg(request_id)
+) x
+WHERE x.user_id IS NOT NULL
+LIMIT 100;
+
+-- Wait handles (slice 212, HR-174): the latest request of a transaction
+-- whose run is bound to the waiting instance (and is run_id, when given),
+-- with the open evidence question and a proposed narrower action.
+-- name: WaitRequest :one
+SELECT r.id, r.state, r.end_reason, r.deadline_at, r.evidence_deadline_at, r.consume_by,
+       coalesce((SELECT x.reason_code FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'REQUEST_EVIDENCE'
+         ORDER BY x.created_at DESC LIMIT 1), '')::text AS question,
+       (SELECT x.proposed_params FROM pc.approval_responses x
+         WHERE x.org_id = r.org_id AND x.request_id = r.id AND x.kind = 'PROPOSE_NARROWER' LIMIT 1)::jsonb AS proposed,
+       now()::timestamptz AS now
+FROM pc.approval_requests r
+JOIN pc.transactions t ON t.org_id = r.org_id AND t.id = r.transaction_id
+JOIN pc.runs run ON run.org_id = t.org_id AND run.id = t.run_id
+WHERE r.org_id = sqlc.arg(org_id) AND r.transaction_id = sqlc.arg(transaction_id) AND run.instance_id = sqlc.arg(instance_id)
+  AND (sqlc.narg(run_id)::uuid IS NULL OR t.run_id = sqlc.narg(run_id)::uuid)
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT 1;
+
+-- The org's approval requests, newest first (slice 213), by state and
+-- optionally agent and run; each is checked for the caller in Go (T-037).
+-- name: ListApprovalRequests :many
+SELECT * FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND state = ANY (sqlc.arg(states)::text[])
+  AND (sqlc.narg(before)::uuid IS NULL OR id < sqlc.narg(before)::uuid)
+  AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id)::uuid)
+  AND (sqlc.narg(run_id)::uuid IS NULL OR run_id = sqlc.narg(run_id)::uuid)
+ORDER BY id DESC
+LIMIT sqlc.arg(lim);
+
+-- Batches (slice 214, HR-175): one decider's batch of up to 25 requests.
+-- name: InsertApprovalBatch :exec
+INSERT INTO pc.approval_batches (org_id, id, kind, user_id, session_id, cli_session_id, batch_hash, request_ids, state,
+    completed_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(kind), sqlc.arg(user_id), sqlc.narg(session_id), sqlc.narg(cli_session_id),
+    sqlc.arg(batch_hash), sqlc.arg(request_ids)::uuid[], sqlc.arg(state),
+    CASE WHEN sqlc.arg(state)::text = 'COMPLETED' THEN now() END);
+
+-- A batch approval's BINDING ceremony, consumed once with its responses.
+-- name: ConsumeBatchCeremony :execrows
+UPDATE pc.webauthn_ceremonies SET consumed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND purpose = 'BINDING'
+  AND batch_id = sqlc.arg(batch_id) AND user_id = sqlc.arg(user_id) AND session_id = sqlc.arg(session_id)
+  AND consumed_at IS NULL AND expires_at > now();
+
+-- name: LockApprovalBatch :one
+SELECT * FROM pc.approval_batches
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND kind = 'APPROVE' AND state = 'PENDING'
+FOR UPDATE;
+
+-- name: CompleteApprovalBatch :execrows
+UPDATE pc.approval_batches SET state = 'COMPLETED', completed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'PENDING';
