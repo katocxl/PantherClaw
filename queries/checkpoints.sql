@@ -56,7 +56,7 @@ WHERE org_id = sqlc.arg(org_id);
 
 -- name: MarkEvidenceIntegrityFailed :execrows
 -- Only the first failure counts; an org stays FAILED until an operator
--- investigates.
+-- investigates and resets it (ResetEvidenceIntegrity).
 INSERT INTO pc.evidence_integrity (org_id, state, failure_code, failed_seq, failed_at, updated_at)
 VALUES (sqlc.arg(org_id), 'FAILED', sqlc.arg(failure_code)::text, sqlc.narg(failed_seq)::bigint, now(), now())
 ON CONFLICT (org_id) DO UPDATE
@@ -70,3 +70,21 @@ VALUES (sqlc.arg(org_id), sqlc.arg(verified_size)::bigint, now(), now())
 ON CONFLICT (org_id) DO UPDATE
 SET verified_size = EXCLUDED.verified_size, verified_at = EXCLUDED.verified_at, updated_at = now()
 WHERE pc.evidence_integrity.state = 'OK';
+
+-- name: ResetEvidenceIntegrity :one
+-- An operator clears a FAILED status after investigating (HR-004: only a
+-- FAILED row changes; no row means it was not FAILED). The last
+-- verification goes too, so the daily job verifies the whole chain again
+-- at its next dispatch. Returns the failure it cleared.
+WITH old AS (
+    SELECT f.org_id, f.failure_code, f.failed_seq, f.failed_at
+    FROM pc.evidence_integrity AS f
+    WHERE f.org_id = sqlc.arg(org_id) AND f.state = 'FAILED'
+    FOR UPDATE
+)
+UPDATE pc.evidence_integrity AS i
+SET state = 'OK', failure_code = NULL, failed_seq = NULL, failed_at = NULL,
+    verified_size = NULL, verified_at = NULL, updated_at = now()
+FROM old
+WHERE i.org_id = old.org_id AND i.state = 'FAILED'
+RETURNING old.failure_code, old.failed_seq, old.failed_at;

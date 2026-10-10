@@ -25,7 +25,9 @@
 // operator investigates), security.evidence_integrity_failed is written to
 // the org's audit ledger, and org and security admins are notified.
 // Authorization never waits for any of this: receipts are still written and
-// chained (design decision 20).
+// chained (design decision 20). After investigating, an operator resumes
+// checkpointing with Reset (`pantherclaw-server evidence integrity reset`),
+// which repairs nothing: the next checks run again.
 package checkpoints
 
 import (
