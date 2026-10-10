@@ -11,6 +11,7 @@ package pgwaitlist
 import (
 	"context"
 	"encoding/json/v2"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/evidence/audit"
 	evdomain "github.com/katocxl/pantherclaw/internal/evidence/domain"
@@ -31,11 +32,18 @@ type entry struct {
 	requestedBy       *string
 	// trusted is what PantherClaw established about the subject.
 	trusted map[string]string
+	// untrusted was written by a person or a workload and is shown only
+	// in the untrusted block.
+	untrusted map[string]string
+	// deadline, when set, is the subject's own deadline (a restoration
+	// request's), which the entry shares.
+	deadline time.Time
 }
 
 // evidence is the stored shape of waitlist_entries.evidence.
 type evidence struct {
-	Trusted map[string]string `json:"trusted,omitzero"`
+	Trusted   map[string]string `json:"trusted,omitzero"`
+	Untrusted map[string]string `json:"untrusted,omitzero"`
 }
 
 // configured is the org's deadline setting for kind, if any.
@@ -64,8 +72,11 @@ func open(ctx context.Context, tx db.TenantTx, org ids.OrgID, e entry, actor evd
 	if err != nil {
 		return ids.UUID{}, err
 	}
-	deadline := now.Add(wdomain.Deadline(e.kind, configured(s, e.kind)))
-	ev, err := json.Marshal(evidence{Trusted: e.trusted})
+	deadline := e.deadline
+	if deadline.IsZero() {
+		deadline = now.Add(wdomain.Deadline(e.kind, configured(s, e.kind)))
+	}
+	ev, err := json.Marshal(evidence{Trusted: e.trusted, Untrusted: e.untrusted})
 	if err != nil {
 		return ids.UUID{}, err
 	}
@@ -158,4 +169,15 @@ func ExpireEntries(ctx context.Context, tx db.TenantTx, org ids.OrgID) (int, err
 		}
 	}
 	return len(rows), nil
+}
+
+// OpenRestoration opens the RESTORATION entry of a restoration request
+// (decision 11). Its subject is the request, it shares the request's
+// deadline, and it ends with the request.
+func OpenRestoration(ctx context.Context, tx db.TenantTx, org ids.OrgID, request, agent, requester ids.UUID, deadline time.Time) (ids.UUID, error) {
+	by := "user:" + requester.String()
+	return open(ctx, tx, org, entry{
+		kind: wdomain.KindRestoration, subjectType: "approval_request", subject: request, agent: &agent, requestedBy: &by,
+		deadline: deadline, trusted: map[string]string{"agent": agent.String()},
+	}, evdomain.Actor{Type: "user", ID: requester.String()})
 }

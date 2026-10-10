@@ -10,9 +10,10 @@
 "use strict";
 
 class APIError extends Error {
-  constructor(code) {
+  constructor(code, reason) {
     super(code);
     this.code = code;
+    this.reason = reason || "";
   }
 }
 
@@ -25,7 +26,7 @@ async function post(path, body) {
   });
   let data = {};
   try { data = await res.json(); } catch (e) { data = {}; }
-  if (!res.ok) { throw new APIError(data.error || ("http_" + res.status)); }
+  if (!res.ok) { throw new APIError(data.error || ("http_" + res.status), data.reason); }
   return data;
 }
 
@@ -49,9 +50,16 @@ const messages = {
   verification_failed: "The security key's answer could not be verified.",
   key_suspended: "That security key is suspended. Use another key or ask an administrator.",
   bad_request: "The request was not understood.",
+  edition_required: "Batch approval needs the Team edition or above.",
+  batch_invalid: "Select 1 to 25 requests for one operation.",
 };
 
-function explain(e) { return messages[e.code] || ("Something went wrong (" + e.message + ")."); }
+function explain(e) {
+  if (e.code === "not_batchable") {
+    return "One of the selected requests must be reviewed on its own page (" + e.reason + ").";
+  }
+  return messages[e.code] || ("Something went wrong (" + e.message + ").");
+}
 
 function fromB64(s) {
   const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
@@ -152,3 +160,26 @@ on("request-evidence", (id) => act(base(id) + "/evidence-request", {
 }, "Evidence requested."));
 on("narrower-check", (id) => narrower(id, true));
 on("narrower-propose", (id) => narrower(id, false));
+
+// approveBatch signs the hash of the selected requests' bindings with one
+// security-key assertion (HR-175, Team edition).
+async function approveBatch() {
+  const list = Array.from(document.querySelectorAll("input.batch:checked")).map((el) => el.value);
+  if (list.length === 0) {
+    say("Select the requests to approve.");
+    return;
+  }
+  try {
+    say("Waiting for your security key…");
+    const c = await post("/approvals/batch-options", { ids: list });
+    const cred = await navigator.credentials.get({ publicKey: requestOptions(c.options.publicKey) });
+    const out = await post("/approvals/batch", { batch: c.batch, ceremony: c.ceremony, response: credentialJSON(cred) });
+    say(out.approved + " requests approved.");
+    window.location.reload();
+  } catch (e) {
+    say(e instanceof APIError ? explain(e) : "The security key did not answer (" + e.message + ").");
+  }
+}
+
+const batchButton = document.getElementById("approve-batch");
+if (batchButton) { batchButton.addEventListener("click", approveBatch); }
