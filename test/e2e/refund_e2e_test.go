@@ -73,10 +73,12 @@ type stack struct {
 	gw            *gateway.Gateway
 	conn          ids.UUID
 
-	// The seeded PAP/1 workload: its key, its workload token and its run.
-	key   ed25519.PrivateKey
-	token string
-	run   string
+	// The seeded PAP/1 workload: its key file and key, its workload token
+	// and its run.
+	keyFile string
+	key     ed25519.PrivateKey
+	token   string
+	run     string
 }
 
 type options struct {
@@ -93,6 +95,9 @@ type options struct {
 	// actionTokens makes the target require an action token for the
 	// payments connection (target_enforced, PAP-1 §10).
 	actionTokens bool
+	// shell also seeds pc.shell and the hook connection "shell" (dev seed
+	// --shell).
+	shell bool
 }
 
 func freeAddr(t *testing.T) string {
@@ -169,6 +174,9 @@ func start(t *testing.T, o options) *stack {
 	if o.access != "" {
 		args = append(args, "--access-mode", o.access)
 	}
+	if o.shell {
+		args = append(args, "--shell")
+	}
 	var out, errb bytes.Buffer
 	if code := server.Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("dev seed: %d %s", code, errb.String())
@@ -204,6 +212,7 @@ func start(t *testing.T, o options) *stack {
 
 	s.serverCfg = write("server.json")
 	s.serve(t)
+	s.keyFile = keyFile
 	s.workload(t, keyFile)
 	refundable(t, "http://"+apiAddr, factsFile, "ch_1")
 
