@@ -78,6 +78,7 @@ import (
 	runsapp "github.com/katocxl/pantherclaw/internal/runs/app"
 	"github.com/katocxl/pantherclaw/internal/tenancy/adapters/tenancyrpc"
 	tapp "github.com/katocxl/pantherclaw/internal/tenancy/app"
+	txapp "github.com/katocxl/pantherclaw/internal/transactions/app"
 	"github.com/katocxl/pantherclaw/internal/waitlist/adapters/waitlistrpc"
 	wapp "github.com/katocxl/pantherclaw/internal/waitlist/app"
 )
@@ -336,10 +337,17 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		if err := m5.registerWorkers(jreg); err != nil {
 			return err
 		}
+		verification, err := newVerification(pool, reg)
+		if err != nil {
+			return err
+		}
+		if err := txapp.Register(jreg, pool, verification); err != nil {
+			return err
+		}
 		client, err := jobs.NewClient(pool, jreg, jobs.Config{
 			Queues: map[string]int{river.QueueDefault: cfg.WorkerConcurrency, napp.Queue: cfg.Notifications.Concurrency},
 			PeriodicJobs: slices.Concat(chainer.PeriodicJobs(), authority.SweeperPeriodicJobs(), authnapp.JanitorPeriodicJobs(),
-				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs()),
+				iapp.JanitorPeriodicJobs(), napp.PeriodicJobs(), txapp.PeriodicJobs()),
 			Logger: log,
 		})
 		if err != nil {
