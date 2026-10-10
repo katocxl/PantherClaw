@@ -210,6 +210,29 @@ func TestHR047_RevocationCascadesInOneStep(t *testing.T) {
 	}
 }
 
+// TestGrantsIssuedForNowTolerateAClockBehind: a grant issued to take
+// effect now, and a grant delegated from it, start IssueSkew before the
+// issuer's clock, so a database clock slightly behind it finds them valid
+// at once; they still expire when asked, and a delegated grant never
+// starts before its parent.
+func TestGrantsIssuedForNowTolerateAClockBehind(t *testing.T) {
+	f := setup(t, allPerms)
+	root := f.issue(t)
+	if !root.NotBefore.Equal(now.Add(-domain.IssueSkew)) || !root.ExpiresAt.Equal(now.Add(48*time.Hour)) {
+		t.Fatalf("root %s .. %s", root.NotBefore, root.ExpiresAt)
+	}
+	if _, ok := root.Usable(now.Add(-time.Second)); !ok {
+		t.Fatal("a clock a second behind finds the grant not yet valid")
+	}
+	child, _, err := f.delegate(t, f.run(root.ID, ids.UUID{}), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !child.NotBefore.Equal(root.NotBefore) {
+		t.Fatalf("child starts %s, parent %s", child.NotBefore, root.NotBefore)
+	}
+}
+
 func TestHR047_ConcurrentDelegationsRespectFanOut(t *testing.T) {
 	f := setup(t, allPerms)
 	root := f.issue(t) // MaxChildren 3

@@ -110,7 +110,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (domain.Grant, er
 		Basis:   fmt.Sprintf("%s on team %s", PermGrantIssue, agent.TeamID),
 	}
 	if g.NotBefore.IsZero() {
-		g.NotBefore = now
+		g.NotBefore = now.Add(-domain.IssueSkew)
 	}
 	envs, err := s.Repo.Envelopes(ctx, c.Org, scopesFor(agent, g.EnvironmentID, g.Principal))
 	if err != nil {
