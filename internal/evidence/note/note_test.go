@@ -28,10 +28,13 @@ func b64(t testing.TB, s string) []byte {
 }
 
 // Known answer from golang.org/x/mod/sumdb/note (the reference
-// implementation of the format): key, text and the exact signed note.
+// implementation of the format): key, text and the exact signed note. The
+// key is the example published in that package's documentation:
+// goSKey is 0x01 ‖ Ed25519 seed (PRIVATE+KEY+PeterNeumann+c74f20a3+…) and
+// goVKey is 0x01 ‖ public key (PeterNeumann+c74f20a3+…).
 const (
-	goSKey = "AYEKFALVFGyNhPJEMzD1QIDr+Y7hfZx09iUvxdXHKDFz" // 0x01 ‖ Ed25519 seed (PRIVATE+KEY+PeterNeumann+c74f20a3+…)
-	goVKey = "ARpc2QcUPDhMQegwxbzhKqiBfsVkmqq/LDE4izWy10TW" // 0x01 ‖ public key (PeterNeumann+c74f20a3+…)
+	goSKey = "AYEKFALVFGyNhPJEMzD1QIDr+Y7hfZx09iUvxdXHKDFz" // gitleaks:allow -- the public golang.org/x/mod/sumdb/note test vector, not a secret
+	goVKey = "ARpc2QcUPDhMQegwxbzhKqiBfsVkmqq/LDE4izWy10TW" // gitleaks:allow -- the public golang.org/x/mod/sumdb/note test vector (a public key)
 	goText = "If you think cryptography is the answer to your problem,\nthen you don't know what your problem is.\n"
 	goSig  = "x08go/ZJkuBS9UG/SffcvIAQxVBtiFupLLr8pAcElZInNIuGUgYN1FFYC2pZSNXgKvqfqdngotpRZb6KE6RyyBwJnAM="
 )
