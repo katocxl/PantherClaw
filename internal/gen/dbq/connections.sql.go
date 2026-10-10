@@ -14,6 +14,20 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
+const closeCircuits = `-- name: CloseCircuits :execrows
+UPDATE pc.circuit_states SET state = 'CLOSED', closed_at = now()
+WHERE org_id = $1 AND connection_id = $2 AND state = 'OPEN'
+`
+
+// Restoring a connection closes its open circuits.
+func (q *Queries) CloseCircuits(ctx context.Context, orgID ids.OrgID, connectionID ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, closeCircuits, orgID, connectionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getConnection = `-- name: GetConnection :one
 SELECT org_id, id, name, kind, gateway_id, package, base_url, allowed_hosts, destination_class, access_mode, credential_header, credential_scheme, default_mode, max_response_bytes, timeout_ms, state, quarantine_reason, revision, created_by, created_at, updated_by, updated_at FROM pc.connections WHERE org_id = $1 AND id = $2
 `
@@ -289,6 +303,35 @@ func (q *Queries) LockConnection(ctx context.Context, orgID ids.OrgID, iD ids.UU
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const openCircuit = `-- name: OpenCircuit :exec
+INSERT INTO pc.circuit_states (org_id, connection_id, gateway_id, state, unknown_count, total_count, opened_at, closed_at, reported_at)
+VALUES ($1, $2, $3, 'OPEN', $4, $5, now(), NULL, now())
+ON CONFLICT (org_id, connection_id, gateway_id) DO UPDATE
+SET state = 'OPEN', unknown_count = EXCLUDED.unknown_count, total_count = EXCLUDED.total_count,
+    opened_at = CASE WHEN pc.circuit_states.state = 'OPEN' THEN pc.circuit_states.opened_at ELSE now() END,
+    closed_at = NULL, reported_at = now()
+`
+
+type OpenCircuitParams struct {
+	OrgID        ids.OrgID
+	ConnectionID ids.UUID
+	GatewayID    ids.UUID
+	UnknownCount int32
+	TotalCount   int32
+}
+
+// A gateway reported its breaker for a connection open (HR-078).
+func (q *Queries) OpenCircuit(ctx context.Context, arg OpenCircuitParams) error {
+	_, err := q.db.Exec(ctx, openCircuit,
+		arg.OrgID,
+		arg.ConnectionID,
+		arg.GatewayID,
+		arg.UnknownCount,
+		arg.TotalCount,
+	)
+	return err
 }
 
 const pinnedPackageRaw = `-- name: PinnedPackageRaw :one

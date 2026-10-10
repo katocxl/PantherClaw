@@ -218,8 +218,9 @@ func (h *AdminHandler) RevokeGatewayCertificate(ctx context.Context, req *panthe
 // (later M6 slices); until then they are unimplemented.
 type GatewayHandler struct {
 	pantherclawv1connect.UnimplementedGatewayServiceHandler
-	s   *gwapp.Service
-	hub *gwapp.Hub
+	s        *gwapp.Service
+	hub      *gwapp.Hub
+	circuits Circuits
 }
 
 // NewGateway returns the GatewayService handler.

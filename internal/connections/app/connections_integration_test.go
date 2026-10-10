@@ -421,3 +421,48 @@ func TestHR077_TheOperatorSeedMakesEveryRegistrationCheck(t *testing.T) {
 		t.Fatalf("operator audit entries: %d", n)
 	}
 }
+
+// TestHR078_AGatewaysCircuitReportQuarantinesItsConnection: a report under
+// the thresholds or from another gateway changes nothing; one at them
+// quarantines the connection at once (epoch +1, audited with the gateway as
+// actor, notified), a repeat changes nothing more, and only a person's
+// restore lifts it, which closes the circuit.
+func TestHR078_AGatewaysCircuitReportQuarantinesItsConnection(t *testing.T) {
+	e := newEnv(t)
+	c := e.payments(t, "payments")
+	ctx := context.Background()
+	for _, n := range [][2]int32{{4, 4}, {5, 11}, {6, 5}} {
+		if _, err := e.svc.OpenCircuit(ctx, e.org, e.gateway, c.ID, n[0], n[1]); !is(err, app.ErrCircuit) {
+			t.Errorf("%d of %d: %v", n[0], n[1], err)
+		}
+	}
+	other := ids.NewV7()
+	e.exec(t, "INSERT INTO pc.gateways (org_id, id, name, created_by) VALUES ($1, $2, 'other', 'test')", e.org, other)
+	if _, err := e.svc.OpenCircuit(ctx, e.org, other, c.ID, 5, 5); !is(err, app.ErrNotFound) {
+		t.Fatalf("another gateway's report: %v", err)
+	}
+	epoch := e.epoch(t)
+	if q, err := e.svc.OpenCircuit(ctx, e.org, e.gateway, c.ID, 5, 8); err != nil || !q {
+		t.Fatalf("report: %v %v", q, err)
+	}
+	got, err := e.svc.Get(e.admin, c.ID)
+	if err != nil || got.State != app.StateQuarantined || deref(got.QuarantineReason) != app.QuarantineCircuitOpen || e.epoch(t) != epoch+1 {
+		t.Fatalf("after the report: %s %q epoch %d (was %d) %v", got.State, deref(got.QuarantineReason), e.epoch(t), epoch, err)
+	}
+	if n := e.int64(t, `SELECT count(*) FROM pc.ledger_entries WHERE kind = 'audit.connection.quarantined' AND actor_type = 'gateway'
+		AND actor_id = $1`, e.gateway.String()); n != 1 || e.notes.count("security.connection_quarantined") != 1 {
+		t.Fatalf("audit entries %d, notifications %d", n, e.notes.count("security.connection_quarantined"))
+	}
+	if n := e.int64(t, "SELECT count(*) FROM pc.circuit_states WHERE state = 'OPEN' AND unknown_count = 5 AND total_count = 8"); n != 1 {
+		t.Fatalf("open circuits %d", n)
+	}
+	if q, err := e.svc.OpenCircuit(ctx, e.org, e.gateway, c.ID, 7, 9); err != nil || !q || e.epoch(t) != epoch+1 {
+		t.Fatalf("a repeat: %v %v epoch %d", q, err, e.epoch(t))
+	}
+	if _, err := e.svc.Restore(e.admin, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.int64(t, "SELECT count(*) FROM pc.circuit_states WHERE state = 'CLOSED' AND closed_at IS NOT NULL"); n != 1 {
+		t.Fatalf("closed circuits after the restore: %d", n)
+	}
+}

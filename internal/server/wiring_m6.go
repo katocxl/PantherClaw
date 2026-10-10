@@ -98,7 +98,7 @@ func (m *m6Services) gatewayHandler(svc *authority.Service, log *slog.Logger) (h
 		return nil, err
 	}
 	pantherclawv1connect.RegisterAuthorityServiceHandler(rs, authority.NewHandler(svc))
-	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways).WithHub(m.hub))
+	pantherclawv1connect.RegisterGatewayServiceHandler(rs, gatewaysrpc.NewGateway(m.gateways).WithHub(m.hub).WithCircuits(m.connections))
 	mux := http.NewServeMux()
 	rpc.Mount(mux, rs)
 	// Gateways verify permits with the JWKS, fetched here over mTLS.
