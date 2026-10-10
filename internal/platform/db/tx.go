@@ -175,6 +175,9 @@ type ListerPurpose string
 const (
 	ListActiveOrgs      ListerPurpose = "orgs"
 	ListLedgerUnchained ListerPurpose = "ledger_unchained" // orgs with entries above their chain watermark
+	// ListVerificationsDue lists orgs with verification tasks past their
+	// deadline or with expired leases (G0 M7, HR-190).
+	ListVerificationsDue ListerPurpose = "verifications_due"
 )
 
 // CrossOrgList calls the single audited cross-org lister (HR-053, HR-054).
