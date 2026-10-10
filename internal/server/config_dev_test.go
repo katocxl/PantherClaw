@@ -73,7 +73,7 @@ func TestHR163_DevPackageKeyOnlyOnLoopback(t *testing.T) {
 	}
 
 	// No environment variable names the key.
-	var loaded Config = DefaultConfig()
+	loaded := DefaultConfig()
 	path := filepath.Join(t.TempDir(), "server.json")
 	if err := os.WriteFile(path, []byte(`{"database": {"app_password_file": "pw"}, "kek_files": ["kek"]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestHR163_DevPackageKeyOnlyOnLoopback(t *testing.T) {
 	}
 
 	// The development example configuration names it, and is local.
-	var example Config = DefaultConfig()
+	example := DefaultConfig()
 	if err := config.Load(&example, filepath.Join("..", "..", "deploy", "dev", "server.example.json"), noEnv); err != nil ||
 		example.Dev.PackageKeyFile != "deploy/dev/secrets/package-dev.pub.json" {
 		t.Fatalf("deploy/dev/server.example.json: %q, %v", example.Dev.PackageKeyFile, err)
