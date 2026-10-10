@@ -40,9 +40,12 @@ type Options struct {
 	OpenBrowser func(context.Context, string) error
 	// HTTPClient overrides the HTTP client (tests).
 	HTTPClient *http.Client
+	// Stdin is the process input (mcp proxy, hook); nil reads nothing.
+	Stdin io.Reader
 }
 
 type app struct {
+	stdin          io.Reader
 	stdout, stderr io.Writer
 	env            Env
 	http           *http.Client
@@ -80,7 +83,10 @@ func usageText() string {
 
 // Run executes pclaw and returns the exit code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env, opts Options) int {
-	a := &app{stdout: stdout, stderr: stderr, env: env, http: opts.HTTPClient, openBrowser: opts.OpenBrowser}
+	a := &app{stdin: opts.Stdin, stdout: stdout, stderr: stderr, env: env, http: opts.HTTPClient, openBrowser: opts.OpenBrowser}
+	if a.stdin == nil {
+		a.stdin = strings.NewReader("")
+	}
 	if a.http == nil {
 		// Only the configured server is contacted; no redirects (HR-070).
 		a.http = httpx.NewControlClient(httpx.ControlConfig{Timeout: 30 * time.Second})
