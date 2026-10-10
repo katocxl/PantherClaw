@@ -28,6 +28,9 @@ type Package struct {
 	Summary      string            `json:"summary"`
 	Definitions  []Definition      `json:"definitions"`
 	Consequences []ConsequenceRule `json:"consequences,omitzero"`
+	// TargetLogs are reviewed reads that list what the target created, for
+	// reconciliation against execution receipts (HR-112, G0 M7).
+	TargetLogs []TargetLog `json:"target_logs,omitzero"`
 }
 
 // Channel is how an agent reaches a tool.
@@ -249,9 +252,28 @@ func (p *Package) Validate() error {
 			routes[key] = d.Operation
 		}
 	}
+	internal := map[string]bool{}
+	for i := range p.Definitions {
+		d := &p.Definitions[i]
+		if err := d.validateVerifierRefs(ops); err != nil {
+			return err
+		}
+		if v := d.Verifier; v != nil {
+			internal[v.Operation] = true
+			if v.Lookup != nil {
+				internal[v.Lookup.Operation] = true
+			}
+		}
+	}
+	if err := p.validateTargetLogs(ops); err != nil {
+		return err
+	}
+	for _, t := range p.TargetLogs {
+		internal[t.Operation] = true
+	}
 	for _, d := range p.Definitions {
-		if v := d.Verifier; v != nil && (ops[v.Operation] == nil || ops[v.Operation].Access != AccessRead) {
-			return invalid("%s: verifier %s must be a read operation in this package", d.Operation, v.Operation)
+		if len(d.Mappings) == 0 && !internal[d.Operation] {
+			return invalid("%s: a read without mappings must be used by a verifier or a target log", d.Operation)
 		}
 	}
 	return p.validateConsequences(ops)

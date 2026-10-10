@@ -63,7 +63,9 @@ func TestHR124_MockPaymentsGolden(t *testing.T) {
 		fmt.Fprintf(&digests, "%s %s\n", d.Operation, d.Digest)
 	}
 	golden(t, "mock-payments.digests", []byte(digests.String()))
-	if p.Name != "pc.mock-payments" || p.Version != "1.0.0" || len(p.Definitions) != 2 {
+	// Two definitions agents call, and two internal reads for the verifier's
+	// lookup and the target log (G0 M7).
+	if p.Name != "pc.mock-payments" || p.Version != "1.0.0" || len(p.Definitions) != 4 || len(p.TargetLogs) != 1 {
 		t.Fatalf("decoded %s %s with %d definitions", p.Name, p.Version, len(p.Definitions))
 	}
 }
