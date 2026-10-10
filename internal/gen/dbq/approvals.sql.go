@@ -1022,6 +1022,84 @@ func (q *Queries) LatestApprovalRequest(ctx context.Context, orgID ids.OrgID, ru
 	return i, err
 }
 
+const listApprovalRequests = `-- name: ListApprovalRequests :many
+SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests
+WHERE org_id = $1 AND state = ANY ($2::text[])
+  AND ($3::uuid IS NULL OR id < $3::uuid)
+  AND ($4::uuid IS NULL OR agent_id = $4::uuid)
+  AND ($5::uuid IS NULL OR run_id = $5::uuid)
+ORDER BY id DESC
+LIMIT $6
+`
+
+type ListApprovalRequestsParams struct {
+	OrgID   ids.OrgID
+	States  []string
+	Before  *ids.UUID
+	AgentID *ids.UUID
+	RunID   *ids.UUID
+	Lim     int32
+}
+
+// The org's approval requests, newest first (slice 213), by state and
+// optionally agent and run; each is checked for the caller in Go (T-037).
+func (q *Queries) ListApprovalRequests(ctx context.Context, arg ListApprovalRequestsParams) ([]PcApprovalRequest, error) {
+	rows, err := q.db.Query(ctx, listApprovalRequests,
+		arg.OrgID,
+		arg.States,
+		arg.Before,
+		arg.AgentID,
+		arg.RunID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PcApprovalRequest{}
+	for rows.Next() {
+		var i PcApprovalRequest
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.SubjectKind,
+			&i.AgentID,
+			&i.TransactionID,
+			&i.Evaluation,
+			&i.RunID,
+			&i.GrantID,
+			&i.GrantRevision,
+			&i.VariantKey,
+			&i.RequestedBy,
+			&i.Operation,
+			&i.PreviousID,
+			&i.Binding,
+			&i.BindingInput,
+			&i.Requirements,
+			&i.Display,
+			&i.DisplayHash,
+			&i.State,
+			&i.EndReason,
+			&i.CreatedAt,
+			&i.DeadlineAt,
+			&i.EvidenceDeadlineAt,
+			&i.ApprovedAt,
+			&i.ConsumeBy,
+			&i.ConsumedAt,
+			&i.PermitID,
+			&i.EndedAt,
+			&i.ActionIr,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const liveRequestOfTransaction = `-- name: LiveRequestOfTransaction :one
 SELECT org_id, id, subject_kind, agent_id, transaction_id, evaluation, run_id, grant_id, grant_revision, variant_key, requested_by, operation, previous_id, binding, binding_input, requirements, display, display_hash, state, end_reason, created_at, deadline_at, evidence_deadline_at, approved_at, consume_by, consumed_at, permit_id, ended_at, action_ir FROM pc.approval_requests
 WHERE org_id = $1 AND transaction_id = $2
@@ -1416,7 +1494,7 @@ func (q *Queries) RequestRecipients(ctx context.Context, orgID ids.OrgID, reques
 }
 
 const requestResponses = `-- name: RequestResponses :many
-SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at, credential_id, batch_id,
        void_reason
 FROM pc.approval_responses
 WHERE org_id = $1 AND request_id = $2
@@ -1434,6 +1512,8 @@ type RequestResponsesRow struct {
 	ProposedParams  []byte
 	CreatedAt       time.Time
 	VoidedAt        *time.Time
+	CredentialID    *ids.UUID
+	BatchID         *ids.UUID
 	VoidReason      *string
 }
 
@@ -1457,6 +1537,8 @@ func (q *Queries) RequestResponses(ctx context.Context, orgID ids.OrgID, request
 			&i.ProposedParams,
 			&i.CreatedAt,
 			&i.VoidedAt,
+			&i.CredentialID,
+			&i.BatchID,
 			&i.VoidReason,
 		); err != nil {
 			return nil, err

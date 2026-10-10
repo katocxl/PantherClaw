@@ -350,7 +350,7 @@ ORDER BY p.created_at DESC, p.id
 LIMIT sqlc.arg(lim);
 
 -- name: RequestResponses :many
-SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at, credential_id, batch_id,
        void_reason
 FROM pc.approval_responses
 WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
@@ -442,3 +442,14 @@ WHERE r.org_id = sqlc.arg(org_id) AND r.transaction_id = sqlc.arg(transaction_id
   AND (sqlc.narg(run_id)::uuid IS NULL OR t.run_id = sqlc.narg(run_id)::uuid)
 ORDER BY r.created_at DESC, r.id DESC
 LIMIT 1;
+
+-- The org's approval requests, newest first (slice 213), by state and
+-- optionally agent and run; each is checked for the caller in Go (T-037).
+-- name: ListApprovalRequests :many
+SELECT * FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND state = ANY (sqlc.arg(states)::text[])
+  AND (sqlc.narg(before)::uuid IS NULL OR id < sqlc.narg(before)::uuid)
+  AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id)::uuid)
+  AND (sqlc.narg(run_id)::uuid IS NULL OR run_id = sqlc.narg(run_id)::uuid)
+ORDER BY id DESC
+LIMIT sqlc.arg(lim);
