@@ -168,3 +168,14 @@ type Reader interface {
 	// Connection returns a connection with its route modes.
 	Connection(ctx context.Context, org ids.OrgID, id ids.UUID) (Connection, error)
 }
+
+// Snapshotter is a Reader that can serve every read of one evaluation from
+// one snapshot of the org: one read-only transaction instead of one per
+// read, and a consistent view. The finalization still re-checks what a
+// decision binds (design decision 8).
+type Snapshotter interface {
+	// Snapshot calls fn with a Reader whose reads all see one snapshot of
+	// org. That Reader is valid only during fn, and fn must make every
+	// database read through it.
+	Snapshot(ctx context.Context, org ids.OrgID, fn func(ctx context.Context, r Reader) error) error
+}

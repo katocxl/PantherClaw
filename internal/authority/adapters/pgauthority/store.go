@@ -46,20 +46,25 @@ var _ finalize.Store = (*Store)(nil)
 func (s *Store) Lookup(ctx context.Context, org ids.OrgID, run, action ids.UUID) (*finalize.Stored, error) {
 	var out *finalize.Stored
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		row, err := dbq.New(tx).GetDecision(ctx, org, run, action)
-		if db.IsNoRows(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		out = &finalize.Stored{
-			TransactionID: row.ID, ActionHash: hex.EncodeToString(row.ActionHash), Decision: decision(row.Decision),
-			Reason: row.ReasonCode, Final: row.State == "FINAL", Evaluations: int(row.Evaluations), Receipt: row.Receipt,
-		}
-		return nil
-	})
+		var err error
+		out, err = lookup(ctx, dbq.New(tx), org, run, action)
+		return err
+	}, db.ReadOnly())
 	return out, err
+}
+
+func lookup(ctx context.Context, q *dbq.Queries, org ids.OrgID, run, action ids.UUID) (*finalize.Stored, error) {
+	row, err := q.GetDecision(ctx, org, run, action)
+	if db.IsNoRows(err) {
+		return nil, nil //nolint:nilnil // no transaction yet
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &finalize.Stored{
+		TransactionID: row.ID, ActionHash: hex.EncodeToString(row.ActionHash), Decision: decision(row.Decision),
+		Reason: row.ReasonCode, Final: row.State == "FINAL", Evaluations: int(row.Evaluations), Receipt: row.Receipt,
+	}, nil
 }
 
 // Prepare implements finalize.Store.
