@@ -4,8 +4,8 @@
 // Package scan is the local shadow-agent scan behind `pclaw scan`
 // (PN-001.1, F015). It reads, and never changes, the MCP configurations of
 // Claude Desktop, Claude Code, Cursor, VS Code, Windsurf (now Devin
-// Desktop), Zed, JetBrains Junie, OpenAI Codex CLI and Google Gemini CLI,
-// looks for agent-framework projects under the given directories, and checks
+// Desktop), Zed, JetBrains Junie and AI Assistant, OpenAI Codex CLI and
+// Google Gemini CLI, looks for agent-framework projects under the given directories, and checks
 // the environment and the servers' configured environment, HTTP headers and
 // OAuth client secrets for credentials agents use, PantherClaw pck_ keys
 // included. Secrets never appear in a finding: only the variable or header
@@ -37,11 +37,13 @@ const (
 	KindEnvSecret    = "env_secret"
 )
 
-// Limits keep a scan bounded on large trees.
+// Limits keep a scan bounded on large trees. MaxNesting bounds the nesting
+// of an XML configuration, as the strict JSON readers do (HR-100).
 const (
 	MaxDepth    = 5
 	MaxFiles    = 20000
 	MaxFileSize = 1 << 20
+	MaxNesting  = 32
 	maxValue    = 256
 )
 
@@ -135,6 +137,9 @@ func clientConfigs(o Options) []clientConfig {
 		// %APPDATA% on Windows, $XDG_CONFIG_HOME on Linux.
 		add("devin_desktop", filepath.Join(o.ConfigDir, "devin", "mcp_config.json"), "mcpServers")
 		add("zed", filepath.Join(o.ConfigDir, "zed", "settings.json"), "context_servers")
+		for _, p := range jetBrainsConfigs(filepath.Join(o.ConfigDir, "JetBrains")) {
+			add("jetbrains_ai", p, "mcpServers")
+		}
 	}
 	if o.Home != "" {
 		add("claude_desktop", filepath.Join(o.Home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), "mcpServers")
@@ -144,6 +149,7 @@ func clientConfigs(o Options) []clientConfig {
 		add("devin_desktop", filepath.Join(o.Home, ".config", "devin", "mcp_config.json"), "mcpServers")
 		add("zed", filepath.Join(o.Home, ".config", "zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(o.Home, ".junie", "mcp", "mcp.json"), "mcpServers")
+		add("jetbrains_ai", filepath.Join(o.Home, ".ai", "mcp", "mcp.json"), "mcpServers")
 		add("codex", filepath.Join(o.Home, ".codex", "config.toml"), "mcp_servers")
 		add("gemini_cli", filepath.Join(o.Home, ".gemini", "settings.json"), "mcpServers")
 	}
@@ -159,14 +165,18 @@ func clientConfigs(o Options) []clientConfig {
 		add("vscode", filepath.Join(p, ".vscode", "mcp.json"), "servers")
 		add("zed", filepath.Join(p, ".zed", "settings.json"), "context_servers")
 		add("junie", filepath.Join(p, ".junie", "mcp", "mcp.json"), "mcpServers")
+		add("jetbrains_ai", filepath.Join(p, ".ai", "mcp", "mcp.json"), "mcpServers")
+		for _, w := range jetBrainsWorkspaces(p) {
+			add("jetbrains_ai", w, "mcpServers")
+		}
 		add("codex", filepath.Join(p, ".codex", "config.toml"), "mcp_servers")
 		add("gemini_cli", filepath.Join(p, ".gemini", "settings.json"), "mcpServers")
 	}
 	return out
 }
 
-// readConfig reads a JSON, JSONC or TOML (Codex) file into an object;
-// anything else is skipped.
+// readConfig reads a JSON, JSONC, TOML (Codex) or JetBrains XML file into
+// an object; anything else is skipped.
 func readConfig(path string) map[string]any {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFileSize {
@@ -177,11 +187,14 @@ func readConfig(path string) map[string]any {
 		return nil
 	}
 	var v map[string]any
-	if filepath.Ext(path) == ".toml" {
+	switch filepath.Ext(path) {
+	case ".toml":
 		if _, err := toml.Decode(string(b), &v); err != nil {
 			return nil
 		}
 		return v
+	case ".xml":
+		return fromJetBrainsXML(b)
 	}
 	if json.Unmarshal(fromJSONC(b), &v, jsontext.AllowDuplicateNames(true)) != nil {
 		return nil
