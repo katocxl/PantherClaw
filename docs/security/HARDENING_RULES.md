@@ -95,7 +95,7 @@
 | HR-076 | Responses are size- and decompression-ratio-capped and scanned for echoed injected secrets (redacted). | T-015 | M6 |
 | HR-077 | Egress deny list enforced at connection registration and at dial; connections to PantherClaw's own hosts are forbidden; private targets only via customer-hosted gateways. | T-002, T-021 | M6 |
 | HR-078 | Per-connection circuit breaker on `UNKNOWN` rate → connection quarantine + alert. | T-013 | M6 |
-| HR-079 | Destinations are classified (public/internal) in ActionIR; disclosure-capable params carry size/entropy obligations. | T-017 | M6/M10 |
+| HR-079 | Destinations are classified public or internal. A gateway action's class is its connection's: the Authority resolves it from the connection the ActionIR names (never from the gateway or the agent), gives it to policy as `action.destination_class` and records it on the decision receipt (founder decision 2026-10-10). Disclosure-capable params carry size/entropy obligations (M10). | T-017 | M6/M10 |
 
 ## MCP and connector runtime
 

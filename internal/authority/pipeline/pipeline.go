@@ -582,7 +582,13 @@ func (p *Pipeline) policyRules(ctx context.Context, s *state) {
 	if s.policy == nil {
 		return
 	}
-	out, err := s.policy.Compiled.Evaluate(ctx, s.def, s.a, papp.Input{Budget: s.policy.Budget, Facts: s.facts, Now: s.cont.Now})
+	in := papp.Input{Budget: s.policy.Budget, Facts: s.facts, Now: s.cont.Now}
+	if s.conn != nil {
+		// The class comes from the connection's record, never from the
+		// gateway or the agent (HR-079).
+		in.DestinationClass = s.conn.DestinationClass
+	}
+	out, err := s.policy.Compiled.Evaluate(ctx, s.def, s.a, in)
 	if err != nil {
 		s.cl.add(StepBoundaries, adomain.CannotAuthorize, ReasonPolicyEvaluation, "the policy could not be evaluated", "")
 		return

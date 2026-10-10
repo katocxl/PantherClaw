@@ -131,6 +131,9 @@ type Connection struct {
 	State       string // ACTIVE, QUARANTINED or RETIRED
 	AccessMode  string
 	DefaultMode string
+	// DestinationClass is where the connection sends data: "public" or
+	// "internal" (HR-079). Policies see it as action.destination_class.
+	DestinationClass string
 	// Modes are the explicit route modes; other routes take DefaultMode.
 	Modes map[string]string
 }

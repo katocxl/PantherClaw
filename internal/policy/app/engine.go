@@ -140,7 +140,7 @@ func (c *Compiled) Evaluate(ctx context.Context, d *defs.Definition, a actionir.
 	if err != nil {
 		return domain.Outcome{}, err
 	}
-	action := ActionRecord(d, a, vals)
+	action := ActionRecord(d, a, vals, in.DestinationClass)
 	now := in.Now.Unix()
 	compiled := c.forDefinition(d)
 	rules := make([]*domain.Rule, 0, len(c.Bundle.Rules))
@@ -289,6 +289,10 @@ type Input struct {
 	Budget uint64
 	Facts  map[string]fdomain.Value
 	Now    time.Time
+	// DestinationClass is the class of the connection the action came
+	// through, from the Authority's own records ("public" or "internal";
+	// "" for an action without a connection, HR-079).
+	DestinationClass string
 }
 
 func missingFact(needs []string, have map[string]fdomain.Value) string {

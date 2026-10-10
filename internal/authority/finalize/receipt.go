@@ -63,7 +63,9 @@ type DecisionPAP struct {
 	// prevented nothing; Connection is the connection the action named.
 	Monitor    bool   `json:"monitor,omitzero"`
 	Connection string `json:"connection,omitzero"`
-	Simulated  bool   `json:"simulated"`
+	// DestinationClass is the connection's class, from its record (HR-079).
+	DestinationClass string `json:"destination_class,omitzero"`
+	Simulated        bool   `json:"simulated"`
 }
 
 // receipt builds, fits and signs the decision receipt of one evaluation.
@@ -79,7 +81,7 @@ func (a *Authority) receipt(gw Gateway, ev *pipeline.Evaluation, txn ids.UUID, e
 		pap.Effective = ev.EffectiveHash
 	}
 	if ev.Connection != nil {
-		pap.Connection = ev.Connection.ID.String()
+		pap.Connection, pap.DestinationClass = ev.Connection.ID.String(), ev.Connection.DestinationClass
 	}
 	r := DecisionReceipt{Iss: a.issuer(), Jti: txn.String() + "/" + strconv.Itoa(evaluation), Iat: ev.Now.Unix(), Pap: pap}
 	payload, err := fit(r)
