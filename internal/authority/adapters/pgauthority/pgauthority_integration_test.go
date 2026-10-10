@@ -53,6 +53,7 @@ func (allow) Require(tapp.Caller, tdomain.Permission, tdomain.Path) error { retu
 
 type world struct {
 	t        *testing.T
+	db       *dbtest.DB
 	pool     *db.Pool
 	org      ids.OrgID
 	alice    ids.UUID
@@ -86,9 +87,10 @@ func exec(t *testing.T, p *db.Pool, org ids.OrgID, sql string, args ...any) {
 // Authority over PostgreSQL.
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	p := dbtest.New(t).AppPool(t)
+	d := dbtest.New(t)
+	p := d.AppPool(t)
 	ctx := context.Background()
-	w := &world{t: t, pool: p, org: ids.New[ids.Org](), alice: ids.NewV7(), billing: ids.NewV7(), agent: ids.NewV7(), instance: ids.NewV7(), env: ids.NewV7()}
+	w := &world{t: t, db: d, pool: p, org: ids.New[ids.Org](), alice: ids.NewV7(), billing: ids.NewV7(), agent: ids.NewV7(), instance: ids.NewV7(), env: ids.NewV7()}
 	team := ids.NewV7()
 	exec(t, p, w.org, "INSERT INTO pc.orgs (id, name) VALUES ($1, 'acme')", w.org)
 	if err := p.InTenantTx(ctx, w.org, func(ctx context.Context, tx db.TenantTx) error { return dbq.New(tx).InsertContainment(ctx, w.org) }); err != nil {
@@ -386,12 +388,37 @@ func (w *world) budget() (reserved, spent string) {
 	return money.MustParse(reserved).String(), money.MustParse(spent).String()
 }
 
+// waitExpired waits until the database clock, which BeginDispatch and the
+// sweep use, is past the permit's expiry.
+func (w *world) waitExpired(permit ids.UUID) {
+	w.t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var expired bool
+		if err := w.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
+			return tx.QueryRow(ctx, "SELECT expires_at < now() FROM pc.permits WHERE id = $1", permit).Scan(&expired)
+		}); err != nil {
+			w.t.Fatal(err)
+		}
+		if expired {
+			return
+		}
+		if time.Now().After(deadline) {
+			w.t.Fatal("the permit did not expire")
+		}
+	}
+}
+
 // TestINV07_SettlementOnPostgres: a decision reserves, only an accepted
 // outcome spends; a failed one or an expired permit releases the budget
 // and the refund's dedupe claim, and an unknown one holds both (HR-003).
 func TestINV07_SettlementOnPostgres(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
+	// The permits this test dispatches outlive it, so a slow run never
+	// expires one before its dispatch; only the one meant to expire gets a
+	// short lifetime.
+	const long = time.Hour
+	w.auth.PermitTTL = long
 	w.refundable("ch_1", "ch_2", "ch_3")
 	run := w.run(w.grant("500").ID, ids.UUID{})
 	dispatch := func(r finalize.Result, o finalize.Outcome) {
@@ -429,14 +456,16 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	}
 
 	// An issued permit that expires is released by the sweep, and a permit
-	// stuck in DISPATCHING becomes UNKNOWN.
-	w.auth.PermitTTL = time.Second
-	expiring := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
+	// stuck in DISPATCHING becomes UNKNOWN, even once it has expired too.
 	stuck := w.authorize(w.request(run, ids.NewV7(), "ch_3", "5.00"))
 	if _, err := w.auth.BeginDispatch(ctx, w.gw, stuck.PermitID, stuck.Epoch, finalize.Outbound{}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	w.db.AdminExec(t, "UPDATE pc.permits SET expires_at = now() - interval '1 second' WHERE id = $1", stuck.PermitID)
+	w.auth.PermitTTL = time.Millisecond
+	expiring := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
+	w.auth.PermitTTL = long
+	w.waitExpired(expiring.PermitID)
 	released, unknown, err := w.auth.Store.Sweep(ctx, w.org, time.Nanosecond)
 	if err != nil || released != 1 || unknown != 1 {
 		t.Fatalf("sweep: released %d unknown %d: %v", released, unknown, err)
@@ -447,7 +476,6 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	if res, sp := w.budget(); res != "35" || sp != "0" {
 		t.Fatalf("after the sweep: reserved %s spent %s, want the unknown 30 and 5 held", res, sp)
 	}
-	w.auth.PermitTTL = 0
 	again := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
 	dispatch(again, finalize.Accepted)
 	if res, sp := w.budget(); res != "35" || sp != "20" {
