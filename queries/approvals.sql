@@ -270,3 +270,55 @@ SELECT s.consume_window_s FROM (SELECT 1) one LEFT JOIN pc.waitlist_settings s O
 
 -- name: RunInstance :one
 SELECT instance_id FROM pc.runs WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);
+
+-- The approvals janitor (G0 M5 part 2 slice 207b) keeps the queue honest;
+-- correctness never depends on it, because expiry is checked at use and a
+-- material change gives a new binding.
+-- name: OverdueApprovalRequests :many
+SELECT id FROM pc.approval_requests
+WHERE org_id = sqlc.arg(org_id) AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (deadline_at <= now()
+    OR (state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at <= now())
+    OR (state = 'APPROVED' AND consume_by <= now()))
+ORDER BY deadline_at
+LIMIT 500;
+
+-- Live action requests made moot by a change of containment, agent, run,
+-- grant chain or definition, with the reason (decision 6, F153).
+-- name: MootApprovalRequests :many
+SELECT r.id, coalesce(CASE
+    WHEN c.kill_switch THEN 'KILL_SWITCH_ENGAGED'
+    WHEN a.state = 'SUSPENDED' THEN 'AGENT_SUSPENDED'
+    WHEN a.state = 'RETIRED' THEN 'AGENT_RETIRED'
+    WHEN run.state <> 'ACTIVE' OR run.expires_at <= now() THEN 'RUN_ENDED'
+    WHEN EXISTS (SELECT 1 FROM pc.grant_lineage l JOIN pc.grants x ON x.org_id = l.org_id AND x.id = l.ancestor_id
+                 WHERE l.org_id = r.org_id AND l.grant_id = r.grant_id AND x.state <> 'ACTIVE') THEN 'GRANT_REVOKED'
+    WHEN g.current_revision <> r.grant_revision THEN 'GRANT_REVISED'
+    WHEN pv.state IS DISTINCT FROM 'ACTIVE' THEN 'DEFINITION_CHANGED'
+    END, '')::text AS reason
+FROM pc.approval_requests r
+JOIN pc.agents a ON a.org_id = r.org_id AND a.id = r.agent_id
+JOIN pc.runs run ON run.org_id = r.org_id AND run.id = r.run_id
+JOIN pc.grants g ON g.org_id = r.org_id AND g.id = r.grant_id
+LEFT JOIN pc.org_containment c ON c.org_id = r.org_id
+LEFT JOIN pc.tool_packages tp ON tp.org_id = r.org_id
+    AND tp.name = convert_from(r.action_ir, 'UTF8')::jsonb #>> '{definition,package}'
+LEFT JOIN pc.package_versions pv ON pv.org_id = tp.org_id AND pv.package_id = tp.id
+    AND pv.version = convert_from(r.action_ir, 'UTF8')::jsonb #>> '{definition,version}'
+WHERE r.org_id = sqlc.arg(org_id) AND r.subject_kind = 'ACTION' AND r.action_ir IS NOT NULL
+  AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+ORDER BY r.created_at
+LIMIT 500;
+
+-- name: InvalidateApprovalRequest :one
+UPDATE pc.approval_requests SET state = 'INVALIDATED', end_reason = sqlc.arg(end_reason), ended_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+RETURNING grant_id, run_id;
+
+-- Live requests with responses that count: their people are checked again.
+-- name: RequestsWithResponses :many
+SELECT DISTINCT r.id FROM pc.approval_requests r
+JOIN pc.approval_responses x ON x.org_id = r.org_id AND x.request_id = r.id
+WHERE r.org_id = sqlc.arg(org_id) AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND x.kind IN ('APPROVE', 'STEP_UP') AND x.voided_at IS NULL
+LIMIT 500;

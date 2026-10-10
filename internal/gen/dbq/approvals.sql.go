@@ -873,6 +873,24 @@ func (q *Queries) InsertHoldEntry(ctx context.Context, arg InsertHoldEntryParams
 	return err
 }
 
+const invalidateApprovalRequest = `-- name: InvalidateApprovalRequest :one
+UPDATE pc.approval_requests SET state = 'INVALIDATED', end_reason = $1, ended_at = now()
+WHERE org_id = $2 AND id = $3 AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+RETURNING grant_id, run_id
+`
+
+type InvalidateApprovalRequestRow struct {
+	GrantID *ids.UUID
+	RunID   *ids.UUID
+}
+
+func (q *Queries) InvalidateApprovalRequest(ctx context.Context, endReason *string, orgID ids.OrgID, iD ids.UUID) (InvalidateApprovalRequestRow, error) {
+	row := q.db.QueryRow(ctx, invalidateApprovalRequest, endReason, orgID, iD)
+	var i InvalidateApprovalRequestRow
+	err := row.Scan(&i.GrantID, &i.RunID)
+	return i, err
+}
+
 const latestApprovalRequest = `-- name: LatestApprovalRequest :one
 
 SELECT r.id, r.state, r.end_reason, r.binding, r.deadline_at, r.evidence_deadline_at, r.consume_by, r.display,
@@ -1002,6 +1020,92 @@ func (q *Queries) MarkApproved(ctx context.Context, consumeBy *time.Time, orgID 
 	return result.RowsAffected(), nil
 }
 
+const mootApprovalRequests = `-- name: MootApprovalRequests :many
+SELECT r.id, coalesce(CASE
+    WHEN c.kill_switch THEN 'KILL_SWITCH_ENGAGED'
+    WHEN a.state = 'SUSPENDED' THEN 'AGENT_SUSPENDED'
+    WHEN a.state = 'RETIRED' THEN 'AGENT_RETIRED'
+    WHEN run.state <> 'ACTIVE' OR run.expires_at <= now() THEN 'RUN_ENDED'
+    WHEN EXISTS (SELECT 1 FROM pc.grant_lineage l JOIN pc.grants x ON x.org_id = l.org_id AND x.id = l.ancestor_id
+                 WHERE l.org_id = r.org_id AND l.grant_id = r.grant_id AND x.state <> 'ACTIVE') THEN 'GRANT_REVOKED'
+    WHEN g.current_revision <> r.grant_revision THEN 'GRANT_REVISED'
+    WHEN pv.state IS DISTINCT FROM 'ACTIVE' THEN 'DEFINITION_CHANGED'
+    END, '')::text AS reason
+FROM pc.approval_requests r
+JOIN pc.agents a ON a.org_id = r.org_id AND a.id = r.agent_id
+JOIN pc.runs run ON run.org_id = r.org_id AND run.id = r.run_id
+JOIN pc.grants g ON g.org_id = r.org_id AND g.id = r.grant_id
+LEFT JOIN pc.org_containment c ON c.org_id = r.org_id
+LEFT JOIN pc.tool_packages tp ON tp.org_id = r.org_id
+    AND tp.name = convert_from(r.action_ir, 'UTF8')::jsonb #>> '{definition,package}'
+LEFT JOIN pc.package_versions pv ON pv.org_id = tp.org_id AND pv.package_id = tp.id
+    AND pv.version = convert_from(r.action_ir, 'UTF8')::jsonb #>> '{definition,version}'
+WHERE r.org_id = $1 AND r.subject_kind = 'ACTION' AND r.action_ir IS NOT NULL
+  AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+ORDER BY r.created_at
+LIMIT 500
+`
+
+type MootApprovalRequestsRow struct {
+	ID     ids.UUID
+	Reason string
+}
+
+// Live action requests made moot by a change of containment, agent, run,
+// grant chain or definition, with the reason (decision 6, F153).
+func (q *Queries) MootApprovalRequests(ctx context.Context, orgID ids.OrgID) ([]MootApprovalRequestsRow, error) {
+	rows, err := q.db.Query(ctx, mootApprovalRequests, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MootApprovalRequestsRow{}
+	for rows.Next() {
+		var i MootApprovalRequestsRow
+		if err := rows.Scan(&i.ID, &i.Reason); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const overdueApprovalRequests = `-- name: OverdueApprovalRequests :many
+SELECT id FROM pc.approval_requests
+WHERE org_id = $1 AND state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND (deadline_at <= now()
+    OR (state = 'EVIDENCE_REQUESTED' AND evidence_deadline_at <= now())
+    OR (state = 'APPROVED' AND consume_by <= now()))
+ORDER BY deadline_at
+LIMIT 500
+`
+
+// The approvals janitor (G0 M5 part 2 slice 207b) keeps the queue honest;
+// correctness never depends on it, because expiry is checked at use and a
+// material change gives a new binding.
+func (q *Queries) OverdueApprovalRequests(ctx context.Context, orgID ids.OrgID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, overdueApprovalRequests, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const releaseHoldSlot = `-- name: ReleaseHoldSlot :execrows
 UPDATE pc.hold_slots SET pending = pending - 1, updated_at = now()
 WHERE org_id = $1 AND scope_kind = $2 AND scope_id = $3 AND pending > 0
@@ -1049,6 +1153,35 @@ func (q *Queries) ReopenHoldEntry(ctx context.Context, iD ids.UUID, orgID ids.Or
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const requestsWithResponses = `-- name: RequestsWithResponses :many
+SELECT DISTINCT r.id FROM pc.approval_requests r
+JOIN pc.approval_responses x ON x.org_id = r.org_id AND x.request_id = r.id
+WHERE r.org_id = $1 AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
+  AND x.kind IN ('APPROVE', 'STEP_UP') AND x.voided_at IS NULL
+LIMIT 500
+`
+
+// Live requests with responses that count: their people are checked again.
+func (q *Queries) RequestsWithResponses(ctx context.Context, orgID ids.OrgID) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, requestsWithResponses, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const runAncestors = `-- name: RunAncestors :many
