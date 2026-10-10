@@ -6,6 +6,7 @@ package pclaw
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"go/ast"
 	"go/parser"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 )
 
 // fakeMCP is a gateway MCP endpoint that records what reaches it. It
@@ -284,5 +286,77 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timed out")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// fakeParamGateway is a 2026-07-28 gateway endpoint whose create_refund
+// declares the currency for Mcp-Param-Currency, and which refuses a call
+// whose headers do not match its body (HeaderMismatch), as the gateway
+// does.
+func fakeParamGateway(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	declared := []mcpheader.Param{{Name: "Currency", Path: []string{"currency"}, Type: "string"}}
+	var mu sync.Mutex
+	var seen []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m struct {
+			ID     jsontext.Value `json:"id"`
+			Method string         `json:"method"`
+			Params struct {
+				Arguments jsontext.Value `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal(b, &m)
+		mu.Lock()
+		seen = append(seen, m.Method+" "+r.Header.Get("Mcp-Param-Currency"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch m.Method {
+		case "tools/list":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"result":{"resultType":"complete","tools":[{"name":"create_refund",`+
+				`"description":"Refund","inputSchema":{"type":"object","properties":{"currency":{"type":"string","x-mcp-header":"Currency"}}}}]}}`)
+		case "tools/call":
+			if msg := mcpheader.Check(r.Header, declared, m.Params.Arguments); msg != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"error":{"code":-32020,"message":"Header mismatch"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"result":{"content":[],"isError":false}}`)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return ts, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// TestHR080_MCPProxyMirrorsDeclaredParameters: a 2026-07-28 call carries
+// the Mcp-Param-* headers the tool's served schema declares, learned from
+// a tool list the client asked for; a call the gateway refuses for its
+// headers makes the proxy list the tools itself and send it once more;
+// a call that still does not match gets the gateway's error.
+func TestHR080_MCPProxyMirrorsDeclaredParameters(t *testing.T) {
+	const (
+		meta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+		list = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{` + meta + `}}`
+		call = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_refund","arguments":{"currency":"USD"},` + meta + `}}`
+		odd  = `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_refund","arguments":{"currency":840},` + meta + `}}`
+	)
+	ts, seen := fakeParamGateway(t)
+	out, _ := proxyRun(t, ts.URL, list, call)
+	if got := seen(); strings.Join(got, ",") != "tools/list ,tools/call USD" || len(out) != 2 || !strings.Contains(out[1], `"isError":false`) {
+		t.Fatalf("after a tool list: gateway saw %q, stdout %q", got, out)
+	}
+
+	ts, seen = fakeParamGateway(t)
+	out, _ = proxyRun(t, ts.URL, call, odd)
+	if got := seen(); strings.Join(got, ",") != "tools/call ,tools/list ,tools/call USD,tools/call ,tools/list ,tools/call " {
+		t.Fatalf("without a tool list: gateway saw %q", got)
+	}
+	if len(out) != 2 || !strings.Contains(out[0], `"isError":false`) || !strings.Contains(out[1], `"code":-32020`) || !strings.Contains(out[1], `"id":3`) {
+		t.Fatalf("stdout %q", out)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/katocxl/pantherclaw/internal/gateway/egress"
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 	"github.com/katocxl/pantherclaw/internal/sim/mcpsim"
 )
 
@@ -73,7 +74,7 @@ func TestHR082_TheClientSpeaksEitherVersion(t *testing.T) {
 			}
 			return nil
 		}
-		r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), decorate)
+		r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, decorate)
 		if err != nil || r.Status != http.StatusOK || r.IsError || r.Error != nil || refundID(t, r) == "" || c.Version() != tc.version {
 			t.Fatalf("%s: %+v %v (version %q)", name, r, err, c.Version())
 		}
@@ -81,7 +82,7 @@ func TestHR082_TheClientSpeaksEitherVersion(t *testing.T) {
 		if tc.version == Legacy {
 			sim.EndSessions() // the next call gets 404 and opens a new session
 		}
-		r, err = c.Call(ctx, "get_refund", jsontext.Value(`{"refund":"`+id+`"}`), decorate)
+		r, err = c.Call(ctx, "get_refund", jsontext.Value(`{"refund":"`+id+`"}`), nil, decorate)
 		if err != nil || r.IsError || refundID(t, r) != id {
 			t.Fatalf("%s: get: %+v %v", name, r, err)
 		}
@@ -99,7 +100,7 @@ func TestHR082_ServerRequestsAreRefused(t *testing.T) {
 	ctx := context.Background()
 	ask := []string{"elicitation/create", "sampling/createMessage", "roots/list"}
 	sim, c := simClient(t, mcpsim.Faults{Legacy: true, Ask: ask}, 1<<20)
-	r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil)
+	r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil)
 	if err != nil || r.IsError || !slices.Equal(r.Declined, ask) {
 		t.Fatalf("call = %+v %v", r, err)
 	}
@@ -108,7 +109,7 @@ func TestHR082_ServerRequestsAreRefused(t *testing.T) {
 		t.Fatalf("answers %q, want %q", got, want)
 	}
 	sim, c = simClient(t, mcpsim.Faults{InputRequired: true}, 1<<20)
-	r, err = c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil)
+	r, err = c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil)
 	if err != nil || !r.InputRequired || sim.Calls() != 0 || len(sim.Answers()) != 0 {
 		t.Fatalf("input_required = %+v %v", r, err)
 	}
@@ -120,15 +121,15 @@ func TestHR082_ServerRequestsAreRefused(t *testing.T) {
 func TestHR082_FailuresSayWhetherTheCallWasSent(t *testing.T) {
 	ctx := context.Background()
 	_, c := simClient(t, mcpsim.Faults{ToolError: true}, 1<<20)
-	if r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil); err != nil || !r.IsError {
+	if r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil); err != nil || !r.IsError {
 		t.Fatalf("tool error = %+v %v", r, err)
 	}
 	sim, c := simClient(t, mcpsim.Faults{Token: "sim-token"}, 1<<20)
-	if _, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil); !errors.Is(err, ErrNotSent) || sim.Calls() != 0 {
+	if _, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil); !errors.Is(err, ErrNotSent) || sim.Calls() != 0 {
 		t.Fatalf("no credential: %v", err)
 	}
 	sim, c = simClient(t, mcpsim.Faults{Stream: true}, 300)
-	_, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil)
+	_, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil)
 	if err == nil || errors.Is(err, ErrNotSent) || sim.Calls() != 1 {
 		t.Fatalf("over the cap: %v, %d runs", err, sim.Calls())
 	}
@@ -166,15 +167,77 @@ func TestHR081_ToolDigestsPinTheReviewedDefinition(t *testing.T) {
 // TestHR080_ToolNamesAreEncodedForHeaders: a name that is not plain ASCII
 // goes in Mcp-Name in the base64 form.
 func TestHR080_ToolNamesAreEncodedForHeaders(t *testing.T) {
+	c := New("http://127.0.0.1/mcp", nil)
 	for in, want := range map[string]string{
 		"get_refund":         "get_refund",
 		"Hello, 世界":          "=?base64?SGVsbG8sIOS4lueVjA==?=",
 		" padded ":           "=?base64?IHBhZGRlZCA=?=",
 		"=?base64?literal?=": "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?=",
 	} {
-		if got := headerValue(in); got != want {
-			t.Errorf("%q = %q, want %q", in, got, want)
+		req, err := c.post(context.Background(), Modern, "", "tools/call", in, nil, nil, nil)
+		if err != nil || req.Header.Get(headerName) != want {
+			t.Errorf("%q = %q %v, want %q", in, req.Header.Get(headerName), err, want)
 		}
+	}
+}
+
+// declared are the x-mcp-header declarations of a tool the simulator
+// lists.
+func declared(t *testing.T, sim *mcpsim.Server, i int) []mcpheader.Param {
+	t.Helper()
+	var d struct {
+		InputSchema jsontext.Value `json:"inputSchema"`
+	}
+	if err := json.Unmarshal(sim.Tools()[i], &d); err != nil {
+		t.Fatal(err)
+	}
+	params, err := mcpheader.Parse(d.InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return params
+}
+
+// TestHR080_CallsMirrorTheDeclaredParameters: a 2026-07-28 call carries an
+// Mcp-Param-* header, encoded, for each argument the tool's declarations
+// name, and the server runs it; without them a conforming server refuses
+// the call (HeaderMismatch) and runs nothing; an argument that cannot be
+// mirrored is never sent; 2025-11-25, which has no request metadata, sends
+// none.
+func TestHR080_CallsMirrorTheDeclaredParameters(t *testing.T) {
+	ctx := context.Background()
+	sim, c := simClient(t, mcpsim.Faults{ParamHeaders: true}, 1<<20)
+	params := declared(t, sim, 0)
+	if len(params) != 2 {
+		t.Fatalf("declared %+v", params)
+	}
+	r, err := c.Call(ctx, "create_refund", jsontext.Value(refundArgs), params, nil)
+	got := sim.ParamHeaders()
+	if err != nil || r.Error != nil || r.IsError || sim.Calls() != 1 || len(got) != 1 ||
+		got[0].Get("Mcp-Param-Currency") != "USD" || got[0].Get("Mcp-Param-Reason") != "duplicate" || len(got[0]) != 2 {
+		t.Fatalf("with the declarations = %+v %v, headers %v", r, err, got)
+	}
+	r, err = c.Call(ctx, "create_refund", jsontext.Value(`{"charge":"ch_1","amount":"30.00","currency":"USD"}`), params, nil)
+	if got := sim.ParamHeaders(); err != nil || r.IsError || sim.Calls() != 2 || len(got[1]) != 1 {
+		t.Fatalf("an absent argument = %+v %v, headers %v", r, err, got)
+	}
+	r, err = c.Call(ctx, "create_refund", jsontext.Value(refundArgs), nil, nil)
+	if err != nil || r.Error == nil || r.Error.Code != CodeHeaderMismatch || r.Status != http.StatusBadRequest || sim.Calls() != 2 {
+		t.Fatalf("without the declarations = %+v %v, %d runs", r, err, sim.Calls())
+	}
+	n := len(sim.ParamHeaders())
+	if _, err := c.Call(ctx, "create_refund", jsontext.Value(`{"charge":"ch_1","amount":"30.00","currency":840}`), params, nil); !errors.Is(err, ErrNotSent) ||
+		len(sim.ParamHeaders()) != n {
+		t.Fatalf("an argument that cannot be mirrored: %v", err)
+	}
+	mirrored, _ := mcpheader.Mirror(params, jsontext.Value(refundArgs))
+	req, err := c.post(ctx, Legacy, "session", "tools/call", "create_refund", mirrored, nil, nil)
+	if err != nil || req.Header.Get("Mcp-Param-Currency") != "" || req.Header.Get(headerName) != "" {
+		t.Fatalf("2025-11-25 headers %v %v", req.Header, err)
+	}
+	legacy, lc := simClient(t, mcpsim.Faults{Legacy: true, ParamHeaders: true}, 1<<20)
+	if r, err := lc.Call(ctx, "create_refund", jsontext.Value(refundArgs), declared(t, legacy, 0), nil); err != nil || r.IsError || legacy.Calls() != 1 {
+		t.Fatalf("2025-11-25 call = %+v %v", r, err)
 	}
 }
 

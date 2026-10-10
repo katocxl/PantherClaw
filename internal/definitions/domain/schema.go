@@ -6,6 +6,7 @@ package domain
 import (
 	"maps"
 	"slices"
+	"strings"
 )
 
 // Schema is the reviewed input schema of an MCP tool: what MCP clients
@@ -31,30 +32,51 @@ type Schema struct {
 	// Arrays.
 	Items    *Schema `json:"items,omitzero"`
 	MaxItems int     `json:"maxItems,omitzero"`
+	// Header, on a string, integer or boolean property reached from the
+	// root through properties only, names the Mcp-Param-{Header} HTTP
+	// header MCP clients mirror the argument into (MCP 2026-07-28,
+	// x-mcp-header); the MCP face checks it against the body (HR-080).
+	// Names are unique in an input schema, ignoring case.
+	Header string `json:"x-mcp-header,omitzero"`
 }
 
 const (
 	maxSchemaDepth = 4
 	maxSchemaNodes = 256
 	maxEnum        = 64
+	// maxHeaders bounds a tool's x-mcp-header declarations.
+	maxHeaders = 32
 )
+
+// schemaCheck is the state of one input schema's validation.
+type schemaCheck struct {
+	nodes int
+	// headers are the x-mcp-header names declared so far, in lower case.
+	headers map[string]bool
+}
 
 // validateSchema checks an input schema: the root is an object.
 func validateSchema(at string, s *Schema) error {
 	if s == nil || s.Type != "object" {
 		return invalid("%s: the root of an input schema is an object", at)
 	}
-	nodes := 0
-	return s.validate(at, 0, &nodes)
+	return s.validate(at, 0, true, &schemaCheck{headers: map[string]bool{}})
 }
 
-func (s *Schema) validate(at string, depth int, nodes *int) error {
-	*nodes++
+// validate checks one node; reachable says it is reached from the root
+// through properties only.
+func (s *Schema) validate(at string, depth int, reachable bool, c *schemaCheck) error {
+	c.nodes++
 	switch {
-	case *nodes > maxSchemaNodes:
+	case c.nodes > maxSchemaNodes:
 		return invalid("%s: more than %d schema nodes", at, maxSchemaNodes)
 	case depth > maxSchemaDepth:
 		return invalid("%s: deeper than %d levels", at, maxSchemaDepth)
+	}
+	if s.Header != "" {
+		if err := s.validateHeader(at, depth, reachable, c); err != nil {
+			return err
+		}
 	}
 	if s.Description != "" {
 		if err := text(at+".description", s.Description); err != nil {
@@ -70,7 +92,7 @@ func (s *Schema) validate(at string, depth int, nodes *int) error {
 		if str || integer || array {
 			return invalid("%s: an object takes properties, required and additionalProperties only", at)
 		}
-		return s.validateObject(at, depth, nodes)
+		return s.validateObject(at, depth, reachable, c)
 	case "string":
 		if object || integer || array {
 			return invalid("%s: a string takes enum, pattern, minLength and maxLength only", at)
@@ -93,13 +115,13 @@ func (s *Schema) validate(at string, depth int, nodes *int) error {
 		if object || str || integer || s.Items == nil || s.MaxItems < 1 || s.MaxItems > maxListItems {
 			return invalid("%s: an array takes items and maxItems 1..%d", at, maxListItems)
 		}
-		return s.Items.validate(at+".items", depth+1, nodes)
+		return s.Items.validate(at+".items", depth+1, false, c)
 	default:
 		return invalid("%s: type must be object, string, integer, boolean or array", at)
 	}
 }
 
-func (s *Schema) validateObject(at string, depth int, nodes *int) error {
+func (s *Schema) validateObject(at string, depth int, reachable bool, c *schemaCheck) error {
 	if s.AdditionalProperties == nil || *s.AdditionalProperties {
 		return invalid("%s: an object must set additionalProperties: false", at)
 	}
@@ -110,7 +132,7 @@ func (s *Schema) validateObject(at string, depth int, nodes *int) error {
 		if !fieldRe.MatchString(name) || s.Properties[name] == nil {
 			return invalid("%s: property %q", at, name)
 		}
-		if err := s.Properties[name].validate(at+".properties."+name, depth+1, nodes); err != nil {
+		if err := s.Properties[name].validate(at+".properties."+name, depth+1, reachable, c); err != nil {
 			return err
 		}
 	}
@@ -140,5 +162,26 @@ func (s *Schema) validateString(at string) error {
 	if s.Pattern != "" {
 		return anchored(at+".pattern", s.Pattern)
 	}
+	return nil
+}
+
+// validateHeader checks an x-mcp-header declaration: on a string, integer
+// or boolean property reached through properties only (never the root or
+// inside items), a header name, unique ignoring case.
+func (s *Schema) validateHeader(at string, depth int, reachable bool, c *schemaCheck) error {
+	key := strings.ToLower(s.Header)
+	switch {
+	case !reachable || depth == 0:
+		return invalid("%s: x-mcp-header only on a property reached from the root through properties", at)
+	case s.Type != "string" && s.Type != "integer" && s.Type != "boolean":
+		return invalid("%s: x-mcp-header only on a string, integer or boolean", at)
+	case !headerRe.MatchString(s.Header):
+		return invalid("%s: x-mcp-header %q is not a header name (a letter, then letters, digits and hyphens, at most 64)", at, s.Header)
+	case c.headers[key]:
+		return invalid("%s: x-mcp-header %q is declared twice, ignoring case", at, s.Header)
+	case len(c.headers) >= maxHeaders:
+		return invalid("%s: more than %d x-mcp-header declarations", at, maxHeaders)
+	}
+	c.headers[key] = true
 	return nil
 }
