@@ -10,9 +10,92 @@ package dbq
 
 import (
 	"context"
+	"time"
 
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
+
+const assignWaitlistEntry = `-- name: AssignWaitlistEntry :execrows
+UPDATE pc.waitlist_entries
+SET assignee_user_id = $1, assigned_at = CASE WHEN $1::uuid IS NULL THEN NULL ELSE now() END
+WHERE org_id = $2 AND id = $3 AND state = 'OPEN'
+`
+
+// Assignment only shows who is working on an entry (HR-177).
+func (q *Queries) AssignWaitlistEntry(ctx context.Context, assignee *ids.UUID, orgID ids.OrgID, iD ids.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, assignWaitlistEntry, assignee, orgID, iD)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const closeEntryOf = `-- name: CloseEntryOf :execrows
+UPDATE pc.waitlist_entries
+SET state = $1, decided_by = $2, decided_at = now(), decision_reason = $3
+WHERE org_id = $4 AND kind = $5 AND subject_type = $6
+  AND subject_id = $7 AND state = 'OPEN'
+`
+
+type CloseEntryOfParams struct {
+	State       string
+	DecidedBy   *string
+	Reason      string
+	OrgID       ids.OrgID
+	Kind        string
+	SubjectType string
+	SubjectID   ids.UUID
+}
+
+func (q *Queries) CloseEntryOf(ctx context.Context, arg CloseEntryOfParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeEntryOf,
+		arg.State,
+		arg.DecidedBy,
+		arg.Reason,
+		arg.OrgID,
+		arg.Kind,
+		arg.SubjectType,
+		arg.SubjectID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expireWaitlistEntries = `-- name: ExpireWaitlistEntries :many
+UPDATE pc.waitlist_entries
+SET state = 'EXPIRED', decided_by = 'system', decided_at = now(), decision_reason = 'EXPIRED'
+WHERE org_id = $1 AND state = 'OPEN' AND kind = ANY ($2::text[]) AND deadline_at <= now()
+RETURNING id, kind
+`
+
+type ExpireWaitlistEntriesRow struct {
+	ID   ids.UUID
+	Kind string
+}
+
+// Open entries past their deadline whose kind ends there (HR-177): an
+// access request or a tool review changes nothing when it expires.
+func (q *Queries) ExpireWaitlistEntries(ctx context.Context, orgID ids.OrgID, kinds []string) ([]ExpireWaitlistEntriesRow, error) {
+	rows, err := q.db.Query(ctx, expireWaitlistEntries, orgID, kinds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExpireWaitlistEntriesRow{}
+	for rows.Next() {
+		var i ExpireWaitlistEntriesRow
+		if err := rows.Scan(&i.ID, &i.Kind); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const getWaitlistEntry = `-- name: GetWaitlistEntry :one
 SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at FROM pc.waitlist_entries WHERE org_id = $1 AND id = $2
@@ -122,4 +205,85 @@ func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntri
 		return nil, err
 	}
 	return items, nil
+}
+
+const openEntryOf = `-- name: OpenEntryOf :one
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND subject_type = $2 AND subject_id = $3
+  AND state = 'OPEN'
+`
+
+func (q *Queries) OpenEntryOf(ctx context.Context, orgID ids.OrgID, subjectType string, subjectID ids.UUID) (ids.UUID, error) {
+	row := q.db.QueryRow(ctx, openEntryOf, orgID, subjectType, subjectID)
+	var id ids.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const openWaitlistEntry = `-- name: OpenWaitlistEntry :one
+INSERT INTO pc.waitlist_entries (org_id, id, kind, subject_type, subject_id, agent_id, run_id, transaction_id, requested_by,
+    evidence, priority, deadline_at)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12)
+ON CONFLICT (org_id, subject_type, subject_id) WHERE state = 'OPEN' DO NOTHING
+RETURNING id
+`
+
+type OpenWaitlistEntryParams struct {
+	OrgID         ids.OrgID
+	ID            ids.UUID
+	Kind          string
+	SubjectType   string
+	SubjectID     ids.UUID
+	AgentID       *ids.UUID
+	RunID         *ids.UUID
+	TransactionID *ids.UUID
+	RequestedBy   *string
+	Evidence      []byte
+	Priority      int16
+	DeadlineAt    time.Time
+}
+
+// Producers (G0 M5 part 2 slice 210). Each entry is opened in the
+// transaction that creates its subject; there is at most one open entry per
+// subject, so a producer that finds one returns it.
+func (q *Queries) OpenWaitlistEntry(ctx context.Context, arg OpenWaitlistEntryParams) (ids.UUID, error) {
+	row := q.db.QueryRow(ctx, openWaitlistEntry,
+		arg.OrgID,
+		arg.ID,
+		arg.Kind,
+		arg.SubjectType,
+		arg.SubjectID,
+		arg.AgentID,
+		arg.RunID,
+		arg.TransactionID,
+		arg.RequestedBy,
+		arg.Evidence,
+		arg.Priority,
+		arg.DeadlineAt,
+	)
+	var id ids.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const transactionOfRun = `-- name: TransactionOfRun :one
+SELECT t.run_id, r.agent_id, t.operation
+FROM pc.transactions t JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+WHERE t.org_id = $1 AND t.id = $2
+`
+
+type TransactionOfRunRow struct {
+	RunID     ids.UUID
+	AgentID   ids.UUID
+	Operation string
+}
+
+// An unknown outcome's run and agent, for its RECONCILIATION entry.
+func (q *Queries) TransactionOfRun(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (TransactionOfRunRow, error) {
+	row := q.db.QueryRow(ctx, transactionOfRun, orgID, iD)
+	var i TransactionOfRunRow
+	err := row.Scan(&i.RunID, &i.AgentID, &i.Operation)
+	return i, err
 }

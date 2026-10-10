@@ -271,22 +271,27 @@ UPDATE pc.permits
 SET state = 'UNKNOWN', finished_at = now()
 WHERE org_id = $1 AND state = 'DISPATCHING'
   AND dispatching_at < now() - make_interval(secs => $2::float8) AND budget_id IS NULL
-RETURNING id
+RETURNING id, transaction_id
 `
 
-func (q *Queries) MarkStaleDispatching(ctx context.Context, orgID ids.OrgID, staleSeconds float64) ([]ids.UUID, error) {
+type MarkStaleDispatchingRow struct {
+	ID            ids.UUID
+	TransactionID ids.UUID
+}
+
+func (q *Queries) MarkStaleDispatching(ctx context.Context, orgID ids.OrgID, staleSeconds float64) ([]MarkStaleDispatchingRow, error) {
 	rows, err := q.db.Query(ctx, markStaleDispatching, orgID, staleSeconds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ids.UUID{}
+	items := []MarkStaleDispatchingRow{}
 	for rows.Next() {
-		var id ids.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i MarkStaleDispatchingRow
+		if err := rows.Scan(&i.ID, &i.TransactionID); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

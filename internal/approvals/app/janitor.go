@@ -19,6 +19,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/jobs"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	pgwaitlist "github.com/katocxl/pantherclaw/internal/waitlist/adapters/pgwaitlist"
 )
 
 // JanitorInterval is how often the approvals janitor runs.
@@ -27,6 +28,9 @@ const JanitorInterval = time.Minute
 // Swept counts what one janitor run changed in one org.
 type Swept struct {
 	Expired, Invalidated, Revalidated int
+	// EntriesExpired counts the access requests and tool reviews that
+	// passed their deadline (HR-177).
+	EntriesExpired int
 }
 
 // SweepOrg keeps one org's approval queue honest (decision 6, HR-039,
@@ -37,7 +41,8 @@ type Swept struct {
 // suspended keys, and returning approvals no longer met to PENDING).
 // Correctness never depends on it: expiry is checked at use, a material
 // change gives a new binding, and consumption checks eligibility itself.
-// Each request is changed in its own transaction.
+// Each request is changed in its own transaction. It also ends the access
+// requests and tool reviews past their deadline, which changes nothing.
 func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) {
 	var out Swept
 	var overdue []ids.UUID
@@ -85,7 +90,12 @@ func SweepOrg(ctx context.Context, pool *db.Pool, org ids.OrgID) (Swept, error) 
 		}
 		out.Revalidated++
 	}
-	return out, nil
+	err = each(func(ctx context.Context, tx db.TenantTx) error {
+		n, err := pgwaitlist.ExpireEntries(ctx, tx, org)
+		out.EntriesExpired = n
+		return err
+	})
+	return out, err
 }
 
 // JanitorOrgArgs asks for one org's approvals to be swept. Job args carry
@@ -116,9 +126,9 @@ type janitorOrgWorker struct {
 
 func (w *janitorOrgWorker) Work(ctx context.Context, job *river.Job[JanitorOrgArgs]) error {
 	s, err := SweepOrg(ctx, w.pool, job.Args.Org)
-	if s.Expired+s.Invalidated > 0 {
+	if s.Expired+s.Invalidated+s.EntriesExpired > 0 {
 		w.log.InfoContext(ctx, "approvals.janitor", slog.String("org", job.Args.Org.String()),
-			slog.Int("expired", s.Expired), slog.Int("invalidated", s.Invalidated))
+			slog.Int("expired", s.Expired), slog.Int("invalidated", s.Invalidated), slog.Int("entries_expired", s.EntriesExpired))
 	}
 	return err
 }

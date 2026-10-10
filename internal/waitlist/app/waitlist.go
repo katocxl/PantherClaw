@@ -43,6 +43,11 @@ type Entry struct {
 	DecidedAt      *time.Time
 	DecisionReason string
 	CreatedAt      time.Time
+	// Priority runs from 1 (most urgent) to 4 (HR-177). Assignee is who
+	// is working on the entry, if anyone; it decides nothing.
+	Priority   int
+	Assignee   ids.UUID
+	AssignedAt *time.Time
 }
 
 // Page is one page of entries.
@@ -71,6 +76,10 @@ func view(r dbq.PcWaitlistEntry) (Entry, error) {
 	if r.DecidedBy != nil {
 		e.DecidedBy = *r.DecidedBy
 	}
+	e.Priority, e.AssignedAt = int(r.Priority), r.AssignedAt
+	if r.AssigneeUserID != nil {
+		e.Assignee = *r.AssigneeUserID
+	}
 	var ev evidence
 	if err := json.Unmarshal(r.Evidence, &ev); err != nil {
 		return e, err
@@ -88,11 +97,11 @@ func agentOf(r dbq.PcWaitlistEntry) ids.UUID {
 	return *r.AgentID
 }
 
-// canRead reports whether the caller may read entries about agent. Entries
-// about no agent are not readable here.
+// canRead reports whether the caller may read entries about agent. An
+// entry about no agent (a tool review) needs waitlist.read at org scope.
 func canRead(ctx context.Context, c tenancy.Caller, q *dbq.Queries, agent ids.UUID) (bool, error) {
 	if agent.IsZero() {
-		return false, nil
+		return c.Can(td.PermWaitlistRead, td.OrgPath(c.Org)), nil
 	}
 	a, err := q.GetAgent(ctx, c.Org, agent)
 	if err != nil {

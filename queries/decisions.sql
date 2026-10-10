@@ -83,7 +83,7 @@ UPDATE pc.permits
 SET state = 'UNKNOWN', finished_at = now()
 WHERE org_id = sqlc.arg(org_id) AND state = 'DISPATCHING'
   AND dispatching_at < now() - make_interval(secs => sqlc.arg(stale_seconds)::float8) AND budget_id IS NULL
-RETURNING id;
+RETURNING id, transaction_id;
 
 -- name: GetContainmentNow :one
 SELECT epoch, kill_switch, now()::timestamptz AS now
