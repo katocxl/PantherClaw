@@ -180,8 +180,13 @@ Before sending any byte to the target the gateway MUST call `BeginDispatch{permi
 - `REQUIRE_APPROVAL` / `REQUIRE_STEP_UP` return `wait.handle`. SDKs MAY long-poll `Wait{handle}` or subscribe via SSE; MCP clients receive a structured pending result, or a task when they support one (the tasks extension of MCP 2026-07-28, or a task-augmented call in 2025-11-25).
 - When the requirement is satisfied the workload **resubmits the same `run_id` + `action_id` with an identical action hash**. The Authority re-runs the full pipeline and finalizes only if the same requirement class is now satisfied. Polling an MCP task is such a resubmission: the gateway resubmits the held action with the polling request's own, freshly verified credentials, and only for the run, instance and connection that created the task.
 - **Approval binding:**
-  `binding = SHA-256(JCS({action_hash, decision_basis_digest, material_facts_digest, grant_revision, definition_digest, run_id, agent_instance, jkt, approver_requirements, expires_at, display_hash}))`
+  `binding = SHA-256(JCS({v, action_hash, effective_action_hash, decision_basis_digest, material_facts_digest, grant: {id, revision}, definition_digest, run_id, agent_instance, jkt, approver_requirements, expires_at, display_hash}))`
   where `display_hash` is the SHA-256 of the approval text rendered from the tool package's approval template (agent-supplied text is excluded and shown separately as untrusted).
+  - `v` is `1`. `effective_action_hash` is the action after obligations clamp it (equal to `action_hash` when nothing is clamped), so the approver binds the action that will run. `grant` is the run's grant and its revision; the whole chain is inside the decision basis.
+  - Hashes and digests are the base64url (no padding) of their 32 bytes. `expires_at` is RFC 3339 UTC in whole seconds. `approver_requirements` is the merged list, each `{kind, role, count, independent}` (approval) or `{kind, subject, method}` (step-up), approvals first by role, then step-ups by subject.
+  - A restoration of a suspended agent binds `{v, subject: "agent.restore", agent_id, agent_change_seq, requested_state, requested_by, reason_hash, approver_requirements, expires_at, display_hash}`.
+  - A batch approval's challenge is `SHA-256(JCS({v: 1, batch: [sorted bindings]}))`.
+  - These fields are additive to the first version of this formula (§13). Golden vectors: `internal/approvals/domain/testdata/binding_vectors.json`.
 - High-consequence approvals MUST be WebAuthn assertions with `challenge = binding` (user verification required). Approvals are accepted only from human sessions — never from API keys or service accounts. Two-person rules require two distinct users **and** distinct WebAuthn credentials.
 
 ## 9. Receipts and evidence
