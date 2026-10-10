@@ -424,10 +424,9 @@ func (s *Store) Tamper(ctx context.Context, org ids.OrgID, prev finalize.Stored,
 		if prev.Final || receipt == nil {
 			return nil
 		}
-		if err := expect(dbq.New(tx).UpdateDecision(ctx, dbq.UpdateDecisionParams{
-			Decision: "DENY", ReasonCode: "ACTION_TAMPERED", State: "FINAL", Evaluations: int32(prev.Evaluations + 1), //nolint:gosec // ≤ 33
-			OrgID: org, ID: prev.TransactionID, PrevEvaluations: int32(prev.Evaluations), //nolint:gosec // ≤ 32
-		})); err != nil {
+		// Only the decision changes: the transaction keeps its mode, grant
+		// and hashes.
+		if err := expect(dbq.New(tx).CloseTampered(ctx, org, prev.TransactionID, int32(prev.Evaluations))); err != nil { //nolint:gosec // ≤ 32
 			return err
 		}
 		return writeReceipt(ctx, tx, org, prev.TransactionID, prev.Evaluations+1, gatewayID, *receipt)
