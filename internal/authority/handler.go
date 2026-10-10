@@ -194,6 +194,31 @@ func credentials(w *pantherclawv1.WorkloadCredentials) *Credentials {
 	return c
 }
 
+// VerifyWorkload implements AuthorityServiceHandler: a workload that does
+// not verify is an answer, not an error, so the gateway can refuse it with
+// its PAP-Error code and a fresh nonce.
+func (h *Handler) VerifyWorkload(ctx context.Context, req *pantherclawv1.VerifyWorkloadRequest) (*pantherclawv1.VerifyWorkloadResponse, error) {
+	gw, err := gateway(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &pantherclawv1.VerifyWorkloadResponse{}
+	v, err := h.svc.Verify(ctx, gw, credentials(req.GetWorkload()))
+	var pe *pap.Error
+	switch {
+	case errors.As(err, &pe):
+		out.ErrorCode = string(pe.Code)
+	case errors.Is(err, ErrAgentUnusable):
+		out.ErrorCode = "agent_unusable"
+	case err != nil:
+		return nil, err
+	default:
+		out.Verified, out.InstanceId, out.EnvironmentId = true, v.Instance.String(), v.Environment.String()
+	}
+	out.Nonce = h.svc.nonce(ctx, gw)
+	return out, nil
+}
+
 // ReportUnknownWorkload implements AuthorityServiceHandler. A report whose
 // proof does not verify is refused with its PAP-Error code.
 func (h *Handler) ReportUnknownWorkload(ctx context.Context, req *pantherclawv1.ReportUnknownWorkloadRequest) (*pantherclawv1.ReportUnknownWorkloadResponse, error) {
