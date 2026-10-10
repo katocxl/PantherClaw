@@ -171,7 +171,7 @@ func (r *Reader) Connection(ctx context.Context, org ids.OrgID, id ids.UUID) (pi
 		}
 		out = pipeline.Connection{
 			ID: c.ID, Gateway: c.GatewayID, Kind: c.Kind, Package: c.Package, State: c.State, AccessMode: c.AccessMode,
-			DefaultMode: c.DefaultMode, Modes: make(map[string]string, len(routes)),
+			DefaultMode: c.DefaultMode, DestinationClass: c.DestinationClass, Modes: make(map[string]string, len(routes)),
 		}
 		for _, rt := range routes {
 			out.Modes[rt.Route] = rt.Mode
