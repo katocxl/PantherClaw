@@ -75,3 +75,17 @@ FROM pc.package_pins p
 JOIN pc.tool_packages t ON t.org_id = p.org_id AND t.id = p.package_id
 JOIN pc.package_versions v ON v.org_id = p.org_id AND v.id = p.version_id
 WHERE p.org_id = sqlc.arg(org_id) AND t.name = sqlc.arg(name);
+
+-- name: OpenCircuit :exec
+-- A gateway reported its breaker for a connection open (HR-078).
+INSERT INTO pc.circuit_states (org_id, connection_id, gateway_id, state, unknown_count, total_count, opened_at, closed_at, reported_at)
+VALUES (sqlc.arg(org_id), sqlc.arg(connection_id), sqlc.arg(gateway_id), 'OPEN', sqlc.arg(unknown_count), sqlc.arg(total_count), now(), NULL, now())
+ON CONFLICT (org_id, connection_id, gateway_id) DO UPDATE
+SET state = 'OPEN', unknown_count = EXCLUDED.unknown_count, total_count = EXCLUDED.total_count,
+    opened_at = CASE WHEN pc.circuit_states.state = 'OPEN' THEN pc.circuit_states.opened_at ELSE now() END,
+    closed_at = NULL, reported_at = now();
+
+-- name: CloseCircuits :execrows
+-- Restoring a connection closes its open circuits.
+UPDATE pc.circuit_states SET state = 'CLOSED', closed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND connection_id = sqlc.arg(connection_id) AND state = 'OPEN';

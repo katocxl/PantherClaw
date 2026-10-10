@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json/v2"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -346,6 +347,9 @@ type harness struct {
 	// mutatePkg edits the mock-payments package before it is compiled.
 	mutatePkg func([]byte) []byte
 	broker    *Broker
+	// circuits records the gateway's circuit reports.
+	circuitMu sync.Mutex
+	circuits  []string
 	gw        *Gateway
 	url       string
 }
@@ -432,6 +436,12 @@ func setup(t *testing.T, opts ...func(*harness)) *harness {
 		Authority: pantherclawv1connect.NewAuthorityServiceClient(connect.NewClient(connecthttp.NewTransport(hc, h.authorityURL))),
 		JWKSURL:   as.URL + "/.well-known/pantherclaw/jwks.json", JWKSClient: hc, Containment: h.containment,
 		Configuration: newFakeConfig(h.conn), Broker: h.broker,
+		ReportCircuit: func(_ context.Context, conn string, unknown, total int32) error {
+			h.circuitMu.Lock()
+			defer h.circuitMu.Unlock()
+			h.circuits = append(h.circuits, fmt.Sprintf("%s %d/%d", conn, unknown, total))
+			return nil
+		},
 	}, pclog.Discard())
 	if err != nil {
 		t.Fatal(err)
@@ -936,4 +946,34 @@ func TestS09_AuthorityDownFailsClosed(t *testing.T) {
 func sha(s string) []byte {
 	sum := sha256.Sum256([]byte(s))
 	return sum[:]
+}
+
+// TestHR078_UnknownOutcomesOpenTheCircuitAndStopDispatch: five UNKNOWN
+// outcomes in a row open the connection's circuit; the gateway reports it
+// and refuses every further request before the Authority is asked.
+func TestHR078_UnknownOutcomesOpenTheCircuitAndStopDispatch(t *testing.T) {
+	h := setup(t, func(h *harness) { h.target.status = http.StatusBadGateway })
+	for range 5 {
+		if r := h.post(t, inbound, nil); r.code != http.StatusGatewayTimeout || r.refusal.ErrorClass != "uncertain" {
+			t.Fatalf("unknown outcome = %d %+v", r.code, r.refusal)
+		}
+	}
+	r := h.post(t, inbound, nil)
+	if r.code != http.StatusServiceUnavailable || r.refusal.ErrorClass != "enforcement_failed" || r.refusal.Error != "circuit_open" ||
+		h.auth.snap().authorize != 5 || h.target.calls() != 5 {
+		t.Fatalf("open circuit = %d %+v, authorize %d, target %d", r.code, r.refusal, h.auth.snap().authorize, h.target.calls())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h.circuitMu.Lock()
+		got := append([]string(nil), h.circuits...)
+		h.circuitMu.Unlock()
+		if len(got) == 1 && got[0] == connID+" 5/5" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("circuit reports %v", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
