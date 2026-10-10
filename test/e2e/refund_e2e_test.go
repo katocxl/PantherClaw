@@ -37,6 +37,7 @@ import (
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
+	"github.com/katocxl/pantherclaw/internal/notifications/smtptest"
 	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
@@ -98,6 +99,10 @@ type options struct {
 	// shell also seeds pc.shell and the hook connection "shell" (dev seed
 	// --shell).
 	shell bool
+	// people serves the API at http://localhost (security keys need a
+	// name) with this OIDC provider and, with relay, email (M5 part 2).
+	people *idp
+	relay  *smtptest.Server
 }
 
 func freeAddr(t *testing.T) string {
@@ -146,6 +151,10 @@ func start(t *testing.T, o options) *stack {
 	}
 	// Workload proofs name the address they are sent to.
 	cfg["auth"] = map[string]any{"public_url": "http://" + apiAddr}
+	public := "http://" + apiAddr
+	if o.people != nil {
+		public = withPeople(t, cfg, dir, apiAddr, *o.people, o.relay)
+	}
 	// The gateway reaches the Authority only over mTLS (HR-181).
 	cfg["gateway_api"] = map[string]any{"addr": gwAPIAddr, "hostnames": []string{"127.0.0.1"}, "url": "https://" + gwAPIAddr}
 	write := func(name string) string {
@@ -161,7 +170,7 @@ func start(t *testing.T, o options) *stack {
 	// target-enforced target checks that its action tokens name it.
 	simSrv := httptest.NewUnstartedServer(nil)
 	t.Cleanup(simSrv.Close)
-	s.simURL, s.apiURL = "http://"+simSrv.Listener.Addr().String(), "http://"+apiAddr
+	s.simURL, s.apiURL = "http://"+simSrv.Listener.Addr().String(), public
 
 	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{

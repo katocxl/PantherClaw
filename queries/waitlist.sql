@@ -196,3 +196,86 @@ ON CONFLICT (org_id) DO UPDATE SET
     max_holds_per_run = EXCLUDED.max_holds_per_run, min_account_age_s = EXCLUDED.min_account_age_s,
     min_role_age_s = EXCLUDED.min_role_age_s, min_credential_age_s = EXCLUDED.min_credential_age_s,
     self_grant_delay_s = EXCLUDED.self_grant_delay_s, updated_by = EXCLUDED.updated_by, updated_at = now();
+
+-- SLA metrics (slice 214c, Team). An entry's first response is the first
+-- response to its approval request, or else a person's decision; its time
+-- to decision counts approvals and rejections only. Entries are kept to
+-- the agents the caller may read before anything is aggregated (T-042).
+-- name: WaitlistMetricAgents :many
+SELECT DISTINCT agent_id::uuid AS agent_id FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND created_at >= sqlc.arg(since) AND created_at < sqlc.arg(until) AND agent_id IS NOT NULL
+LIMIT 10000;
+
+-- name: WaitlistMetricsByKind :many
+WITH e AS (
+    SELECT e.kind, e.state, e.escalation_step, e.routing_health,
+        extract(epoch FROM COALESCE(e.first_response_at,
+            CASE WHEN e.state IN ('APPROVED', 'REJECTED') AND e.decided_by LIKE 'user:%' THEN e.decided_at END) - e.created_at)
+            AS first_s,
+        CASE WHEN e.state IN ('APPROVED', 'REJECTED') THEN extract(epoch FROM e.decided_at - e.created_at) END AS decision_s
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = sqlc.arg(org_id) AND e.created_at >= sqlc.arg(since) AND e.created_at < sqlc.arg(until)
+      AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+      AND (sqlc.arg(all_agents)::boolean OR e.agent_id = ANY (sqlc.arg(agents)::uuid[]))
+)
+SELECT kind, count(*) AS entries, count(decision_s) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY first_s), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY decision_s), 0)::float8 AS decision_p90,
+    avg((state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE routing_health <> 'OK') AS routing_failures
+FROM e
+GROUP BY kind
+ORDER BY kind;
+
+-- A decider is a person who responded to an entry's approval request or
+-- decided the entry; their first response is their own.
+-- name: WaitlistMetricsByDecider :many
+WITH e AS (
+    SELECT e.id, e.kind, e.state, e.subject_type, e.subject_id, e.decided_by, e.decided_at, e.created_at, e.escalation_step,
+        e.routing_health
+    FROM pc.waitlist_entries e
+    WHERE e.org_id = sqlc.arg(org_id) AND e.created_at >= sqlc.arg(since) AND e.created_at < sqlc.arg(until)
+      AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+      AND (sqlc.arg(all_agents)::boolean OR e.agent_id = ANY (sqlc.arg(agents)::uuid[]))
+), acts AS (
+    SELECT e.id, r.user_id, r.created_at AS at
+    FROM e JOIN pc.approval_responses r ON r.org_id = sqlc.arg(org_id) AND r.request_id = e.subject_id
+    WHERE e.subject_type = 'approval_request'
+    UNION ALL
+    SELECT e.id, substring(e.decided_by FROM 6)::uuid, e.decided_at FROM e
+    WHERE e.state IN ('APPROVED', 'REJECTED') AND e.decided_by ~ '^user:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+), per AS (
+    SELECT id, user_id, min(at) AS at FROM acts GROUP BY id, user_id
+)
+SELECT e.kind, per.user_id::uuid AS user_id, count(*) AS entries,
+    count(*) FILTER (WHERE e.state IN ('APPROVED', 'REJECTED')) AS decided,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM per.at - e.created_at)), 0)::float8 AS first_p90,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p50,
+    COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY CASE WHEN e.state IN ('APPROVED', 'REJECTED')
+        THEN extract(epoch FROM e.decided_at - e.created_at) END), 0)::float8 AS decision_p90,
+    avg((e.state = 'EXPIRED')::int)::float8 AS expiry_rate,
+    avg((e.escalation_step >= 2)::int)::float8 AS escalation_rate,
+    count(*) FILTER (WHERE e.routing_health <> 'OK') AS routing_failures
+FROM per JOIN e ON e.id = per.id
+GROUP BY e.kind, per.user_id
+ORDER BY e.kind, per.user_id
+LIMIT 1000;
+
+-- Entries decided or expired in [since, until), for the server's
+-- histograms (no org leaves the query); first_s is -1 when nobody
+-- responded.
+-- name: ClosedEntriesBetween :many
+SELECT kind, state,
+    COALESCE(extract(epoch FROM COALESCE(first_response_at,
+        CASE WHEN state IN ('APPROVED', 'REJECTED') AND decided_by LIKE 'user:%' THEN decided_at END) - created_at), -1)::float8
+        AS first_s,
+    extract(epoch FROM decided_at - created_at)::float8 AS decision_s
+FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND state IN ('APPROVED', 'REJECTED', 'EXPIRED') AND decided_at >= sqlc.arg(since)
+  AND decided_at < sqlc.arg(until)
+LIMIT 10000;
