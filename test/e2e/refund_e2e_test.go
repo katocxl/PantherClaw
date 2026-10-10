@@ -57,10 +57,13 @@ type stack struct {
 	gateway  string
 	sim      *payments.Server
 	simURL   string
-	simCalls *atomic.Int64
+	simCalls *atomic.Int64 // dispatches (non-GET requests) the target received
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
 	apiURL   string
+	// kek is the server's key-encryption key file: a test loads the
+	// server's signing keys with it to sign as the server does.
+	kek string
 	// serverCfg is the server's configuration file and logs its output, for
 	// a restart (serve).
 	serverCfg string
@@ -130,6 +133,7 @@ func start(t *testing.T, o options) *stack {
 	s := &stack{db: dbtest.New(t), simCalls: &atomic.Int64{}}
 	dir := t.TempDir()
 	kek := filepath.Join(dir, "kek")
+	s.kek = kek
 	if err := keys.GenerateKEKFile(kek); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +198,12 @@ func start(t *testing.T, o options) *stack {
 	}
 	s.sim = payments.New(o.faults, pclog.Discard()).WithRequire(require)
 	simSrv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.simCalls.Add(1)
+		// simCalls counts dispatches (writes). The reads the gateway makes
+		// to verify effects and list the target log (G0 M7) are not
+		// dispatches, and never retry one.
+		if r.Method != http.MethodGet {
+			s.simCalls.Add(1)
+		}
 		s.sim.Handler().ServeHTTP(w, r)
 	})
 	simSrv.Start()
@@ -225,6 +234,9 @@ func start(t *testing.T, o options) *stack {
 	// Several sessions' suites share one test database on a laptop; a slow
 	// Authorize there is not the Authority being down (S09 stops it).
 	gc.Control.Timeout = config.Duration(10 * time.Second)
+	// Verification tasks are claimed every second rather than every ten
+	// (G0 M7), so effects are verified within a test's patience.
+	gc.Control.VerifyEvery = config.Duration(time.Second)
 	if o.access == "pantherclaw_held" {
 		// The gateway's broker key, which only it can open credentials with
 		// (HR-061); it registers the public half when it starts.

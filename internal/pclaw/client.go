@@ -121,6 +121,7 @@ type clients struct {
 	packages   pantherclawv1connect.PackageServiceClient
 	policies   pantherclawv1connect.PolicyServiceClient
 	m6Clients
+	m7Clients
 }
 
 func (a *app) clients() (clients, error) {
@@ -148,6 +149,10 @@ func (a *app) clients() (clients, error) {
 			gateways:    pantherclawv1connect.NewGatewayAdminServiceClient(c),
 			containment: pantherclawv1connect.NewContainmentServiceClient(c),
 			connections: pantherclawv1connect.NewConnectionServiceClient(c),
+		},
+		m7Clients: m7Clients{
+			transactions:    pantherclawv1connect.NewTransactionServiceClient(c),
+			reconciliations: pantherclawv1connect.NewReconciliationServiceClient(c),
 		},
 	}, nil
 }
