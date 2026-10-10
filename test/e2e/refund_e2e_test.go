@@ -61,6 +61,9 @@ type stack struct {
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
 	apiURL   string
+	// kek is the server's key-encryption key file: a test loads the
+	// server's signing keys with it to sign as the server does.
+	kek string
 	// serverCfg is the server's configuration file and logs its output, for
 	// a restart (serve).
 	serverCfg string
@@ -130,6 +133,7 @@ func start(t *testing.T, o options) *stack {
 	s := &stack{db: dbtest.New(t), simCalls: &atomic.Int64{}}
 	dir := t.TempDir()
 	kek := filepath.Join(dir, "kek")
+	s.kek = kek
 	if err := keys.GenerateKEKFile(kek); err != nil {
 		t.Fatal(err)
 	}
