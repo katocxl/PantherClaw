@@ -57,7 +57,7 @@ type stack struct {
 	gateway  string
 	sim      *payments.Server
 	simURL   string
-	simCalls *atomic.Int64
+	simCalls *atomic.Int64 // dispatches (non-GET requests) the target received
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
 	apiURL   string
@@ -194,7 +194,12 @@ func start(t *testing.T, o options) *stack {
 	}
 	s.sim = payments.New(o.faults, pclog.Discard()).WithRequire(require)
 	simSrv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.simCalls.Add(1)
+		// simCalls counts dispatches (writes). The reads the gateway makes
+		// to verify effects and list the target log (G0 M7) are not
+		// dispatches, and never retry one.
+		if r.Method != http.MethodGet {
+			s.simCalls.Add(1)
+		}
 		s.sim.Handler().ServeHTTP(w, r)
 	})
 	simSrv.Start()

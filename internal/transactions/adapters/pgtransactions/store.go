@@ -66,13 +66,17 @@ func (s *Store) Claim(ctx context.Context, org ids.OrgID, gateway ids.UUID, limi
 			if err != nil {
 				return err
 			}
-			if n != 1 || v.TransactionID == nil {
+			if n != 1 {
 				continue
 			}
-			out = append(out, app.Lease{
+			l := app.Lease{
 				Task: v.ID, Secret: secret, Purpose: domain.Purpose(v.Purpose), Connection: v.ConnectionID, Operation: v.Operation,
-				Request: v.Request, Correlate: "pc-" + v.TransactionID.String(), Attempt: int(v.Attempts) + 1, Deadline: v.DeadlineAt,
-			})
+				Request: v.Request, Attempt: int(v.Attempts) + 1, Deadline: v.DeadlineAt,
+			}
+			if v.TransactionID != nil {
+				l.Correlate = "pc-" + v.TransactionID.String()
+			}
+			out = append(out, l)
 		}
 		return nil
 	})
@@ -88,7 +92,14 @@ func (s *Store) Report(ctx context.Context, org ids.OrgID, gateway ids.UUID, r a
 		gw := gateway
 		task, err := q.LeasedVerification(ctx, dbq.LeasedVerificationParams{OrgID: org, ID: r.Task, GatewayID: &gw, LeaseHash: hash[:]})
 		if db.IsNoRows(err) {
-			return app.ErrLease
+			tl, err := q.LeasedTargetLog(ctx, dbq.LeasedTargetLogParams{OrgID: org, ID: r.Task, GatewayID: &gw, LeaseHash: hash[:]})
+			if db.IsNoRows(err) {
+				return app.ErrLease
+			} else if err != nil {
+				return err
+			}
+			out, err = targetLog(ctx, tx, q, org, gateway, tl, r, sign)
+			return err
 		} else if err != nil {
 			return err
 		}

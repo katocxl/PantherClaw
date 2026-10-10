@@ -107,9 +107,13 @@ func (c controlVerifications) Claim(ctx context.Context, limit int) ([]dispatch.
 
 // Report implements Verifications.
 func (c controlVerifications) Report(ctx context.Context, l dispatch.Lease, o dispatch.Observation) error {
-	_, err := c.ctl.Gateway.ReportObservation(ctx, &pb.ReportObservationRequest{
+	req := &pb.ReportObservationRequest{
 		TaskId: l.Task, Lease: l.Secret, HttpStatus: int32(min(max(o.HTTPStatus, 0), 599)), Found: o.Found,
 		Complete: o.Complete, Fields: o.Fields, ResponseDigest: o.Digest,
-	})
+	}
+	for _, it := range o.Items {
+		req.Items = append(req.Items, &pb.TargetLogItem{ObjectRef: it.ObjectRef, Correlation: it.Correlation, Created: it.Created})
+	}
+	_, err := c.ctl.Gateway.ReportObservation(ctx, req)
 	return err
 }

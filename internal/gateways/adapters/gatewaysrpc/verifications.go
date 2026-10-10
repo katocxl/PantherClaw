@@ -5,6 +5,7 @@ package gatewaysrpc
 
 import (
 	"context"
+	"time"
 
 	"connectrpc.com/connect/v2"
 
@@ -67,10 +68,18 @@ func (h *GatewayHandler) ReportObservation(ctx context.Context, req *pb.ReportOb
 	if err != nil {
 		return nil, errInvalidID
 	}
-	a, err := h.verifications.Report(ctx, id.Org, id.Gateway, txapp.Report{
+	r := txapp.Report{
 		Task: task, Secret: req.GetLease(), HTTPStatus: int(req.GetHttpStatus()), Found: req.GetFound(), Complete: req.GetComplete(),
 		Fields: req.GetFields(), ResponseDigest: req.GetResponseDigest(),
-	})
+	}
+	for _, it := range req.GetItems() {
+		item := txapp.TargetLogItem{ObjectRef: it.GetObjectRef(), Correlation: it.GetCorrelation()}
+		if c := it.GetCreated(); c > 0 {
+			item.Created = time.Unix(c, 0).UTC()
+		}
+		r.Items = append(r.Items, item)
+	}
+	a, err := h.verifications.Report(ctx, id.Org, id.Gateway, r)
 	if err != nil {
 		return nil, err
 	}
