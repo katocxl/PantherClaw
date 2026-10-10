@@ -30,7 +30,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
 	"github.com/katocxl/pantherclaw/internal/platform/rootkey"
-	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
 )
 
 // Development fact provider: the refund definition needs a fresh
@@ -41,11 +40,18 @@ const (
 	devGrantLifetime = 24 * time.Hour
 )
 
-// seedPackage imports the reference payments package into org and activates
-// it. It is signed with a throwaway development root generated here and
-// trusted for this import only (G0 M4 part 2, decision 3): the org records
-// the signed metadata, never the key, and no server trusts that key.
-func seedPackage(ctx context.Context, pool *db.Pool, org ids.OrgID) error {
+// devPackage is a reference package dev seed imports.
+type devPackage struct {
+	Name, Version string
+	Raw           []byte
+}
+
+// seedPackages imports reference packages into org and activates them. One
+// metadata document lists them all; it is signed with a throwaway
+// development root generated here and trusted for this import only (G0 M4
+// part 2, decision 3): the org records the signed metadata, never the key,
+// and no server trusts that key.
+func seedPackages(ctx context.Context, pool *db.Pool, org ids.OrgID, pkgs ...devPackage) error {
 	priv, kid, err := rootkey.Generate(rootkey.PurposePackages)
 	if err != nil {
 		return err
@@ -54,32 +60,34 @@ func seedPackage(ctx context.Context, pool *db.Pool, org ids.OrgID) error {
 	if err != nil {
 		return err
 	}
-	raw := mockpayments.Package
-	sum := sha256.Sum256(raw)
+	targets := map[string]trust.Target{}
+	for _, p := range pkgs {
+		sum := sha256.Sum256(p.Raw)
+		targets[trust.Key(p.Name, p.Version)] = trust.Target{Length: int64(len(p.Raw)), Hashes: map[string]string{"sha256": hex.EncodeToString(sum[:])}}
+	}
 	doc, err := trust.Sign(trust.Targets{
-		Version: 1, Expires: time.Now().Add(180 * 24 * time.Hour).UTC().Format(time.RFC3339),
-		Targets: map[string]trust.Target{
-			trust.Key(mockpayments.Name, mockpayments.Version): {Length: int64(len(raw)), Hashes: map[string]string{"sha256": hex.EncodeToString(sum[:])}},
-		},
+		Version: 1, Expires: time.Now().Add(180 * 24 * time.Hour).UTC().Format(time.RFC3339), Targets: targets,
 	}, signer)
 	if err != nil {
 		return err
 	}
 	im := &defsapp.Importer{Roots: trust.Roots{kid: signer.Public()}, Repo: &defspg.Store{Pool: pool}, Clock: clock.System{}}
-	ev := &audit.Event{
-		Name: "package.imported", Actor: devSeedActor, Outcome: audit.Success,
-		Object: &audit.Object{Type: "package_version", ID: trust.Key(mockpayments.Name, mockpayments.Version)},
-	}
-	if _, err := im.Import(ctx, org, mockpayments.Name, mockpayments.Version, doc, raw, ev); err != nil {
-		return fmt.Errorf("dev seed: package: %w", err)
-	}
-	act := &audit.Event{
-		Name: "package.transitioned", Actor: devSeedActor, Outcome: audit.Success,
-		Object:  &audit.Object{Type: "package_version", ID: trust.Key(mockpayments.Name, mockpayments.Version)},
-		Details: map[string]string{"from": string(defs.StateReviewed), "to": string(defs.StateActive)},
-	}
-	if err := im.Transition(ctx, org, mockpayments.Name, mockpayments.Version, defs.StateActive, act); err != nil {
-		return fmt.Errorf("dev seed: activate package: %w", err)
+	for _, p := range pkgs {
+		ev := &audit.Event{
+			Name: "package.imported", Actor: devSeedActor, Outcome: audit.Success,
+			Object: &audit.Object{Type: "package_version", ID: trust.Key(p.Name, p.Version)},
+		}
+		if _, err := im.Import(ctx, org, p.Name, p.Version, doc, p.Raw, ev); err != nil {
+			return fmt.Errorf("dev seed: package %s: %w", p.Name, err)
+		}
+		act := &audit.Event{
+			Name: "package.transitioned", Actor: devSeedActor, Outcome: audit.Success,
+			Object:  &audit.Object{Type: "package_version", ID: trust.Key(p.Name, p.Version)},
+			Details: map[string]string{"from": string(defs.StateReviewed), "to": string(defs.StateActive)},
+		}
+		if err := im.Transition(ctx, org, p.Name, p.Version, defs.StateActive, act); err != nil {
+			return fmt.Errorf("dev seed: activate package %s: %w", p.Name, err)
+		}
 	}
 	return nil
 }
@@ -136,6 +144,8 @@ type devGrantTerms struct {
 	MaxPerAction money.Money // per refund
 	Limit        money.Money // the task budget
 	MaxCount     int         // 0: no count limit
+	// Shell also allows shell commands (pc.shell, the Claude Code hook).
+	Shell bool
 }
 
 // seedGrant issues a root grant to the seeded agent for its owner: refunds
@@ -144,8 +154,12 @@ type devGrantTerms struct {
 // definitions; dev seed is the grantor of record (no person signs in for
 // the seeded owner).
 func seedGrant(ctx context.Context, pool *db.Pool, org ids.OrgID, w devWorkload, t devGrantTerms) (gdomain.Grant, error) {
+	ops := []string{"payments.refund.create", "payments.refund.get"}
+	if t.Shell {
+		ops = append(ops, shellOperation)
+	}
 	bounds, err := json.Marshal(map[string]any{
-		"operations": []string{"payments.refund.create", "payments.refund.get"},
+		"operations": ops,
 		"params": map[string]any{"payments.refund.create": map[string]any{
 			"amount": map[string]any{"max": map[string]string{string(t.MaxPerAction.Currency): t.MaxPerAction.Amount.String()}},
 		}},
@@ -181,16 +195,18 @@ func seedGrant(ctx context.Context, pool *db.Pool, org ids.OrgID, w devWorkload,
 		Grantor:    gdomain.Principal{Kind: gdomain.PrincipalUser, ID: w.Owner}, Basis: "issued by pantherclaw-server dev seed",
 	}
 	defsStore := &defspg.Store{Pool: pool}
-	refund, err := defsStore.Active(ctx, org, "payments.refund.create")
-	if err != nil {
-		return gdomain.Grant{}, err
-	}
-	lookup := func(op string) *defs.Definition {
-		if op == "payments.refund.create" {
-			return refund
+	active := map[string]*defs.Definition{}
+	for _, op := range []string{"payments.refund.create", shellOperation} {
+		if op == shellOperation && !t.Shell {
+			continue
 		}
-		return nil
+		d, err := defsStore.Active(ctx, org, op)
+		if err != nil {
+			return gdomain.Grant{}, err
+		}
+		active[op] = d
 	}
+	lookup := func(op string) *defs.Definition { return active[op] }
 	if err := g.ValidateIssue(gdomain.IssueContext{Now: now, Lookup: lookup}); err != nil {
 		return gdomain.Grant{}, fmt.Errorf("dev seed: grant: %w", err)
 	}

@@ -4,7 +4,8 @@ Operational procedures. Each runbook is completed (from stub to tested procedure
 
 | Runbook | Milestone | Purpose |
 |---|---|---|
-| [key-rotation.md](key-rotation.md) | M1 / M7 | Rotate signing keys, DEKs, KEKs, broker keys, internal CA |
+| [key-rotation.md](key-rotation.md) | M1 / M6 / M7 | Rotate signing keys, DEKs, KEKs, gateway broker keys and sealed credentials; the internal CA |
+| [gateway.md](gateway.md) | M6 | Enroll, renew, check and revoke gateways |
 | [kill-switch.md](kill-switch.md) | M6 | Engage and restore the org-wide emergency stop |
 | [backup-restore.md](backup-restore.md) | M13 | Backups, point-in-time recovery, restore drill |
 | [incident-response.md](incident-response.md) | M10 | Respond to a security incident in PantherClaw itself |

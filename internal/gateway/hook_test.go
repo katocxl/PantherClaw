@@ -24,7 +24,7 @@ const hookPath = "/hook/payments"
 // pc.shell package (the Claude Code hook).
 func withShell(h *harness) {
 	h.pkgFile = "../../packages/pc-shell/package.yaml"
-	h.conn.Kind, h.conn.GatewayConnection.Package, h.conn.AccessMode = "local", "pc.shell", "agent_held"
+	h.conn.Kind, h.conn.GatewayConnection.Package, h.conn.AccessMode = "local", "pc.shell", "none"
 }
 
 func shellInput(command, cwd string) string {
