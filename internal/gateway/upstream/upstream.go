@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -39,6 +38,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/katocxl/pantherclaw/internal/gateway/egress"
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
 )
 
@@ -60,6 +60,9 @@ const (
 const (
 	codeMethodNotFound     = -32601
 	codeUnsupportedVersion = -32022
+	// CodeHeaderMismatch: a 2026-07-28 server found the request headers
+	// differ from the body, and ran nothing.
+	CodeHeaderMismatch = -32020
 )
 
 // ErrNotSent wraps a failure before the tools/call left the gateway:
@@ -142,11 +145,18 @@ func Params(tool string, args jsontext.Value) ([]byte, error) {
 	return v, nil
 }
 
-// Call sends tools/call for tool with args (a JSON object). An error
-// wrapping ErrNotSent means the call never left the gateway; any other
-// error may have left it, and its outcome is unknown.
-func (c *Client) Call(ctx context.Context, tool string, args jsontext.Value, decorate Decorate) (Result, error) {
-	ex, err := c.do(ctx, "tools/call", tool, map[string]any{"name": tool, "arguments": args}, decorate)
+// Call sends tools/call for tool with args (a JSON object). params are the
+// x-mcp-header declarations of the tool's pinned definition: to a
+// 2026-07-28 server, each argument they name present also goes in its
+// Mcp-Param-{Name} header, encoded (Custom Headers from Tool Parameters).
+// An error wrapping ErrNotSent means the call never left the gateway; any
+// other error may have left it, and its outcome is unknown.
+func (c *Client) Call(ctx context.Context, tool string, args jsontext.Value, params []mcpheader.Param, decorate Decorate) (Result, error) {
+	mirrored, err := mcpheader.Mirror(params, args)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+	}
+	ex, err := c.do(ctx, "tools/call", tool, map[string]any{"name": tool, "arguments": args}, mirrored, decorate)
 	if err != nil {
 		return Result{}, err
 	}
@@ -170,7 +180,7 @@ func (c *Client) ListTools(ctx context.Context, decorate Decorate) ([]jsontext.V
 		if cursor != "" {
 			p["cursor"] = cursor
 		}
-		ex, err := c.do(ctx, "tools/list", "", p, decorate)
+		ex, err := c.do(ctx, "tools/list", "", p, nil, decorate)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +209,7 @@ func (c *Client) ListTools(ctx context.Context, decorate Decorate) ([]jsontext.V
 // do sends one request in the server's version: in 2025-11-25 in the
 // session, opening a new one once when the server ended it (it then ran
 // nothing). An error wrapping ErrNotSent means the request never left.
-func (c *Client) do(ctx context.Context, method, name string, params map[string]any, decorate Decorate) (exchanged, error) {
+func (c *Client) do(ctx context.Context, method, name string, params map[string]any, mirrored http.Header, decorate Decorate) (exchanged, error) {
 	v, err := c.negotiate(ctx, decorate)
 	if err != nil {
 		return exchanged{}, fmt.Errorf("%w: %w", ErrNotSent, err)
@@ -220,7 +230,7 @@ func (c *Client) do(ctx context.Context, method, name string, params map[string]
 		if err != nil {
 			return exchanged{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 		}
-		ex, err := c.exchange(ctx, v, session, method, name, id, body, decorate)
+		ex, err := c.exchange(ctx, v, session, method, name, mirrored, id, body, decorate)
 		if err != nil {
 			return ex, err
 		}
@@ -245,7 +255,7 @@ func (c *Client) negotiate(ctx context.Context, decorate Decorate) (string, erro
 	if err != nil {
 		return "", err
 	}
-	ex, err := c.exchange(ctx, Modern, "", "server/discover", "", id, body, decorate)
+	ex, err := c.exchange(ctx, Modern, "", "server/discover", "", nil, id, body, decorate)
 	if err != nil {
 		return "", err
 	}
@@ -299,7 +309,7 @@ func (c *Client) ensureSession(ctx context.Context, decorate Decorate) (string, 
 	if err != nil {
 		return "", err
 	}
-	ex, err := c.exchange(ctx, "", "", "initialize", "", id, body, decorate)
+	ex, err := c.exchange(ctx, "", "", "initialize", "", nil, id, body, decorate)
 	if err != nil {
 		return "", err
 	}
@@ -320,7 +330,7 @@ func (c *Client) ensureSession(ctx context.Context, decorate Decorate) (string, 
 	if err != nil {
 		return "", err
 	}
-	nx, err := c.exchange(ctx, Legacy, s, "notifications/initialized", "", nil, note, decorate)
+	nx, err := c.exchange(ctx, Legacy, s, "notifications/initialized", "", nil, nil, note, decorate)
 	if err != nil {
 		return "", err
 	}
@@ -399,11 +409,12 @@ func (e exchanged) result() Result {
 // exchange posts one message and reads its answer: one JSON object, or an
 // event stream on which the server may ask the client things before it
 // answers. v is the version whose headers the request carries ("" for
-// initialize); id is nil for a notification.
-func (c *Client) exchange(ctx context.Context, v, session, method, name string, id jsontext.Value, body []byte,
-	decorate Decorate,
+// initialize); mirrored are its Mcp-Param-* headers; id is nil for a
+// notification.
+func (c *Client) exchange(ctx context.Context, v, session, method, name string, mirrored http.Header, id jsontext.Value,
+	body []byte, decorate Decorate,
 ) (exchanged, error) {
-	req, err := c.post(ctx, v, session, method, name, body, decorate)
+	req, err := c.post(ctx, v, session, method, name, mirrored, body, decorate)
 	if err != nil {
 		return exchanged{}, err
 	}
@@ -443,8 +454,12 @@ func (c *Client) exchange(ctx context.Context, v, session, method, name string, 
 	return out, nil
 }
 
-// post prepares one POST with the version's headers.
-func (c *Client) post(ctx context.Context, v, session, method, name string, body []byte, decorate Decorate) (*http.Request, error) {
+// post prepares one POST with the version's headers: in 2026-07-28 the
+// method, the name and the mirrored parameters; in 2025-11-25, which has
+// no request metadata, the session.
+func (c *Client) post(ctx context.Context, v, session, method, name string, mirrored http.Header, body []byte,
+	decorate Decorate,
+) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -458,7 +473,10 @@ func (c *Client) post(ctx context.Context, v, session, method, name string, body
 		req.Header.Set(headerVersion, Modern)
 		req.Header.Set(headerMethod, method)
 		if name != "" {
-			req.Header.Set(headerName, headerValue(name))
+			req.Header.Set(headerName, mcpheader.Encode(name))
+		}
+		for k, vs := range mirrored {
+			req.Header[k] = slices.Clone(vs)
 		}
 	case Legacy:
 		req.Header.Set(headerVersion, Legacy)
@@ -531,7 +549,7 @@ func (c *Client) answer(ctx context.Context, v, session string, m message, decor
 	if err != nil {
 		return err
 	}
-	req, err := c.post(ctx, v, session, "", "", body, decorate)
+	req, err := c.post(ctx, v, session, "", "", nil, body, decorate)
 	if err != nil {
 		return err
 	}
@@ -550,21 +568,6 @@ func sameID(a, b jsontext.Value) bool {
 }
 
 func isNull(id jsontext.Value) bool { return len(id) == 0 || string(id) == "null" }
-
-// headerValue encodes an Mcp-Name value that is not plain header-safe
-// ASCII in the base64 sentinel form (2026-07-28, Value Encoding).
-func headerValue(s string) string {
-	plain := s != "" && s == strings.TrimSpace(s) && (!strings.HasPrefix(s, "=?base64?") || !strings.HasSuffix(s, "?="))
-	for i := range len(s) {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			plain = false
-		}
-	}
-	if plain {
-		return s
-	}
-	return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(s)) + "?="
-}
 
 func visibleASCII(s string) bool {
 	for i := range len(s) {

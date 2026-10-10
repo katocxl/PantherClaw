@@ -64,14 +64,20 @@ func (g *Gateway) checkDrift(ctx context.Context, cfg *control.Config) {
 			continue
 		}
 		for _, d := range drifts {
-			g.log.WarnContext(ctx, "security.upstream_drift", slog.String("connection_id", id), slog.String("upstream_tool", d.Tool),
-				slog.String("expected_digest", d.Expected), slog.String("observed_digest", d.Observed))
-			if g.reportDrift == nil {
-				continue
-			}
-			if err := g.reportDrift(ctx, id, d); err != nil {
-				g.log.ErrorContext(ctx, "gateway.drift_not_reported", slog.String("connection_id", id), pclog.Err(err))
-			}
+			g.drifted(ctx, id, d)
 		}
+	}
+}
+
+// drifted logs and reports one drifted tool, found by a check of the loop
+// or of a call (dispatch.Options.OnDrift).
+func (g *Gateway) drifted(ctx context.Context, connection string, d dispatch.Drift) {
+	g.log.WarnContext(ctx, "security.upstream_drift", slog.String("connection_id", connection), slog.String("upstream_tool", d.Tool),
+		slog.String("expected_digest", d.Expected), slog.String("observed_digest", d.Observed))
+	if g.reportDrift == nil {
+		return
+	}
+	if err := g.reportDrift(ctx, connection, d); err != nil {
+		g.log.ErrorContext(ctx, "gateway.drift_not_reported", slog.String("connection_id", connection), pclog.Err(err))
 	}
 }

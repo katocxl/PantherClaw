@@ -111,6 +111,9 @@ const (
 	// An upstream MCP tool no longer matches its reviewed definition
 	// (HR-081).
 	CodeUpstreamDrift = "upstream_drift"
+	// An upstream MCP tool's pinned definition declares x-mcp-header
+	// parameters the specification forbids, so no client may call it.
+	CodeUpstreamInvalid = "upstream_tool_invalid"
 )
 
 // Containment is the gateway's containment view (control.Containment).
@@ -143,6 +146,9 @@ type Options struct {
 	// ReportCircuit tells the server a connection's circuit opened
 	// (HR-078); nil reports nothing.
 	ReportCircuit Reporter
+	// OnDrift is told of each drifted upstream tool that a call's own check
+	// finds (CheckDrift returns what it finds instead); nil tells nothing.
+	OnDrift func(ctx context.Context, connection string, d Drift)
 	// Now is the breaker's clock; nil is time.Now.
 	Now func() time.Time
 	Log *slog.Logger
@@ -159,10 +165,11 @@ type Engine struct {
 	breaker     *breaker
 	log         *slog.Logger
 	nonces      nonces
+	onDrift     func(ctx context.Context, connection string, d Drift)
 
 	mu      sync.Mutex
 	clients map[string]clientEntry
-	// drift is each kind-mcp connection's drifted tools (CheckDrift).
+	// drift is what the last check of each kind-mcp connection found.
 	drift map[string]driftEntry
 }
 
@@ -190,7 +197,7 @@ func New(o Options) (*Engine, error) {
 	return &Engine{
 		org: o.Org, authority: o.Authority, permits: newPermitVerifier(o.JWKSURL, o.JWKSClient, o.GatewayID, o.Org),
 		containment: o.Containment, broker: o.Broker, allowed: o.AllowedPrefixes, breaker: newBreaker(o.Now, o.ReportCircuit, o.Log),
-		log: o.Log, clients: map[string]clientEntry{}, drift: map[string]driftEntry{},
+		log: o.Log, onDrift: o.OnDrift, clients: map[string]clientEntry{}, drift: map[string]driftEntry{},
 	}, nil
 }
 
@@ -289,8 +296,8 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	if e.breaker.open(ctx, conn) {
 		return Result{Class: EnforcementFailed, Code: CodeCircuitOpen}
 	}
-	if e.drifted(conn, c.Action.Action.Operation) {
-		return Result{Class: EnforcementFailed, Code: CodeUpstreamDrift}
+	if code := e.refusedUpstream(conn, c.Action.Action.Operation); code != "" {
+		return Result{Class: EnforcementFailed, Code: code}
 	}
 	ar, err := e.authority.Authorize(ctx, &pb.AuthorizeRequest{ActionIr: c.Action.Canonical, Workload: c.Workload})
 	t.lap("authz")

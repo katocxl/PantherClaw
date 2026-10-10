@@ -9,31 +9,32 @@
 // Before a request means anything, the transport rules hold (HR-080): one
 // JSON-RPC request per POST (any batch is refused); MCP-Protocol-Version,
 // Mcp-Method and Mcp-Name present and equal to the body (Mcp-Name after
-// decoding its base64 form); GET and DELETE are 405; a foreign Origin is
-// 403. Every request carries PAP/1 credentials and the Authority verifies
-// them: tools/call through Authorize, everything else through
-// VerifyWorkload (HR-021). Clients see exactly the connection's reviewed
-// package tools, with their reviewed descriptions and schemas (HR-081),
-// and every answer is private. tools/call goes down the one dispatch path;
-// a held call becomes a task for a client that supports the tasks
-// extension, and an identical call reuses the held action (HR-185,
-// holds.go).
+// decoding its base64 form); on tools/call, an Mcp-Param-{Name} header for
+// exactly the arguments that the tool's reviewed schema marks x-mcp-header
+// and the body carries, each equal to its argument after decoding; GET and
+// DELETE are 405; a foreign Origin is 403. Every request carries PAP/1
+// credentials and the Authority verifies them: tools/call through
+// Authorize, everything else through VerifyWorkload (HR-021). Clients see
+// exactly the connection's reviewed package tools, with their reviewed
+// descriptions and schemas (HR-081), and every answer is private.
+// tools/call goes down the one dispatch path; a held call becomes a task
+// for a client that supports the tasks extension, and an identical call
+// reuses the held action (HR-185, holds.go).
 package mcp
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
@@ -43,6 +44,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 	"github.com/katocxl/pantherclaw/internal/platform/version"
 )
 
@@ -228,7 +230,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.legacy(w, r, conn, body, req, p)
 		return
 	}
-	if msg := headerMismatch(r.Header, req, p); msg != "" {
+	if msg := headerMismatch(r.Header, req, p, toolHeaders(conn, req.Method, p.Name)); msg != "" {
 		fail(w, http.StatusBadRequest, req.ID, codeHeaderMismatch, "Header mismatch: "+msg, nil)
 		return
 	}
@@ -333,8 +335,9 @@ func protocolVersion(meta map[string]jsontext.Value) string {
 }
 
 // headerMismatch checks the request metadata headers against the body
-// (HR-080) and says what is wrong, or "".
-func headerMismatch(h http.Header, req request, p params) string {
+// (HR-080) and says what is wrong, or "". declared are the x-mcp-header
+// parameters of the tool a tools/call names (none for other methods).
+func headerMismatch(h http.Header, req request, p params, declared []mcpheader.Param) string {
 	one := func(name string) (string, string) {
 		vs := h.Values(name)
 		switch len(vs) {
@@ -376,31 +379,51 @@ func headerMismatch(h http.Header, req request, p params) string {
 		if len(h.Values(HeaderName)) > 0 {
 			return HeaderName + " header for a method that names nothing"
 		}
-		return ""
+	} else {
+		n, msg := one(HeaderName)
+		if msg != "" {
+			return msg
+		}
+		if decoded, ok := mcpheader.Decode(n); !ok || decoded != source {
+			return HeaderName + " header does not match the body"
+		}
 	}
-	n, msg := one(HeaderName)
-	if msg != "" {
-		return msg
-	}
-	decoded, ok := DecodeHeader(n)
-	if !ok || decoded != source {
-		return HeaderName + " header does not match the body"
-	}
-	return ""
+	return mcpheader.Check(h, declared, p.Arguments)
 }
 
-// DecodeHeader decodes a header value that may use the base64 sentinel
-// form "=?base64?…?=" (MCP 2026-07-28, Value Encoding).
-func DecodeHeader(v string) (string, bool) {
-	inner, ok := strings.CutPrefix(v, "=?base64?")
-	if !ok || !strings.HasSuffix(inner, "?=") {
-		return v, true
+// toolHeaders are the x-mcp-header parameters of the tool a tools/call
+// names, as its reviewed schema declares them; none for another method or
+// a tool the connection does not serve.
+func toolHeaders(conn *control.Connection, method, name string) []mcpheader.Param {
+	if method != "tools/call" {
+		return nil
 	}
-	b, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(inner, "?="))
-	if err != nil || !utf8.Valid(b) {
-		return "", false
+	ts := tools(conn)
+	i := slices.IndexFunc(ts, func(t tool) bool { return t.Name == name })
+	if i < 0 {
+		return nil
 	}
-	return string(b), true
+	return headerParams(ts[i].InputSchema)
+}
+
+// headerParams are the x-mcp-header declarations of a reviewed input
+// schema, which the package decoder checked: on strings, integers and
+// booleans reached through properties only, unique ignoring case.
+func headerParams(s *domain.Schema) []mcpheader.Param {
+	var out []mcpheader.Param
+	var walk func(*domain.Schema, []string)
+	walk = func(s *domain.Schema, path []string) {
+		if s.Header != "" && len(path) > 0 {
+			out = append(out, mcpheader.Param{Name: s.Header, Path: path, Type: s.Type})
+		}
+		for _, name := range slices.Sorted(maps.Keys(s.Properties)) {
+			walk(s.Properties[name], append(slices.Clip(path), name))
+		}
+	}
+	if s != nil {
+		walk(s, nil)
+	}
+	return out
 }
 
 // inbound reads a request's PAP/1 credentials (hashing the raw body) and

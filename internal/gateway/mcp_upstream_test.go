@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +29,15 @@ func withUpstream(t *testing.T, f mcpsim.Faults) (*mcpsim.Server, func(*harness)
 	sim := mcpsim.New(f)
 	ts := httptest.NewServer(sim.Handler())
 	t.Cleanup(ts.Close)
-	tools := mcpsim.New(mcpsim.Faults{}).Tools()
+	return sim, pinnedTo(t, ts.URL, mcpsim.Faults{})
+}
+
+// pinnedTo makes the connection a kind-mcp connection to the MCP server at
+// base, and the package dispatch refunds to its tools, pinned to the
+// digests of the definitions a simulator with faults f lists.
+func pinnedTo(t *testing.T, base string, f mcpsim.Faults) func(*harness) {
+	t.Helper()
+	tools := mcpsim.New(f).Tools()
 	create, err := upstream.ToolDigest(tools[0])
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +46,8 @@ func withUpstream(t *testing.T, f mcpsim.Faults) (*mcpsim.Server, func(*harness)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sim, func(h *harness) {
-		h.conn.Kind, h.targetURL = "mcp", ts.URL+"/mcp"
+	return func(h *harness) {
+		h.conn.Kind, h.targetURL = "mcp", base+"/mcp"
 		h.mutatePkg = func(raw []byte) []byte {
 			for _, r := range [][2]string{
 				{
@@ -204,5 +213,136 @@ func TestHR081_UpstreamDriftIsRefusedAndReported(t *testing.T) {
 	if r := h.mcpCall(t, http.MethodPost, mcpPath, getRefund, nil); strings.Contains(string(r.body.Result.Meta["io.pantherclaw/error"]), "upstream_drift") ||
 		sim.Calls() != 1 {
 		t.Fatalf("a matching tool was refused: %+v", r.body.Result)
+	}
+}
+
+// lastOutcome is the outcome of the last recorded execution.
+func (s authSnap) lastOutcome() pb.Outcome {
+	if len(s.records) == 0 {
+		return pb.Outcome_OUTCOME_UNSPECIFIED
+	}
+	return s.records[len(s.records)-1].GetOutcome()
+}
+
+// switched serves whichever simulator is current: an upstream server whose
+// tools change while the gateway runs.
+type switched struct{ cur atomic.Pointer[mcpsim.Server] }
+
+func (s *switched) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.cur.Load().Handler().ServeHTTP(w, r)
+}
+
+// declareCurrency makes create_refund's reviewed input schema declare the
+// currency for Mcp-Param-Currency.
+func declareCurrency(h *harness) {
+	prev := h.mutatePkg
+	h.mutatePkg = func(raw []byte) []byte {
+		const currency = "            currency:\n              type: string\n              enum: [USD, EUR]\n"
+		if prev != nil {
+			raw = prev(raw)
+		}
+		return bytes.Replace(raw, []byte(currency), []byte(currency+"              x-mcp-header: Currency\n"), 1)
+	}
+}
+
+// TestHR080_ParamHeadersAreCheckedInAndMirroredOut: in both directions.
+// The MCP face serves the reviewed x-mcp-header declaration and refuses a
+// call whose Mcp-Param-Currency is missing, different or undeclared with
+// HeaderMismatch, before the Authority. Upstream, the call carries the
+// headers the server's pinned, drift-checked definition declares
+// (Mcp-Param-Currency and Mcp-Param-Reason), with values from the
+// permitted action, whatever the agent sent; it checks the server first
+// when no check ran yet. A pinned definition whose declarations break the
+// specification is never called. A server that refuses the headers makes
+// the next call check again, which finds the drift.
+func TestHR080_ParamHeadersAreCheckedInAndMirroredOut(t *testing.T) {
+	declares := mcpsim.Faults{ParamHeaders: true}
+	sim := mcpsim.New(declares)
+	ts := httptest.NewServer(sim.Handler())
+	t.Cleanup(ts.Close)
+	h := setup(t, pinnedTo(t, ts.URL, declares), declareCurrency)
+	call := jsonRPC("tools/call", refundArgs)
+
+	list := h.mcpCall(t, http.MethodPost, mcpPath, jsonRPC("tools/list", ""), nil)
+	if len(list.body.Result.Tools) != 2 || !strings.Contains(string(list.body.Result.Tools[0].InputSchema), `"x-mcp-header":"Currency"`) ||
+		strings.Contains(string(list.body.Result.Tools[0].InputSchema), "Reason") {
+		t.Fatalf("served %+v", list.body.Result.Tools)
+	}
+	for name, hdr := range map[string]map[string]string{
+		"no Mcp-Param-Currency": nil,
+		"another currency":      {"Mcp-Param-Currency": "EUR"},
+		"an undeclared header":  {"Mcp-Param-Currency": "USD", "Mcp-Param-Reason": "fraudulent"},
+	} {
+		if r := h.mcpCall(t, http.MethodPost, mcpPath, call, hdr); r.code != http.StatusBadRequest || r.errCode() != -32020 ||
+			!strings.Contains(r.body.Error.Message, "Mcp-Param-") {
+			t.Errorf("%s: %d %+v", name, r.code, r.body.Error)
+		}
+	}
+	if s := h.auth.snap(); s.authorize != 0 || sim.Calls() != 0 {
+		t.Fatalf("a mismatched call went on: authorize %d, %d upstream runs", s.authorize, sim.Calls())
+	}
+
+	r := h.mcpCall(t, http.MethodPost, mcpPath, call, map[string]string{"Mcp-Param-Currency": "=?base64?VVNE?="})
+	got := sim.ParamHeaders()
+	if r.code != http.StatusOK || r.body.Result.IsError || sim.Calls() != 1 || len(got) != 1 ||
+		got[0].Get("Mcp-Param-Currency") != "USD" || got[0].Get("Mcp-Param-Reason") != "duplicate" || len(got[0]) != 2 {
+		t.Fatalf("a matching call = %d %+v %+v, upstream headers %v", r.code, r.body.Error, r.body.Result, got)
+	}
+	params, _ := upstream.Params("create_refund", jsontext.Value(`{"amount":"30.00","charge":"ch_1","currency":"USD","reason":"duplicate"}`))
+	sum := sha256.Sum256(params)
+	if s := h.auth.snap(); len(s.begins) != 1 || !bytes.Equal(s.begins[0].GetOutboundBodySha256(), sum[:]) || s.outcome() != pb.Outcome_OUTCOME_ACCEPTED {
+		t.Fatalf("BeginDispatch %+v, recorded %+v", s.begins, s.records)
+	}
+
+	// Declarations the specification forbids (inside array items): the tool
+	// is not called, and once checked it is refused before the Authority.
+	invalid := mcpsim.Faults{InvalidHeaders: true}
+	isim := mcpsim.New(invalid)
+	its := httptest.NewServer(isim.Handler())
+	t.Cleanup(its.Close)
+	h = setup(t, pinnedTo(t, its.URL, invalid))
+	getRefund := jsonRPC("tools/call", `"name":"get_refund","arguments":{"refund":"re_1"}`)
+	r = h.mcpCall(t, http.MethodPost, mcpPath, getRefund, nil)
+	if !strings.Contains(string(r.body.Result.Meta["io.pantherclaw/error"]), "upstream_tool_invalid") || isim.Calls() != 0 ||
+		h.auth.snap().outcome() != pb.Outcome_OUTCOME_FAILED {
+		t.Fatalf("an invalid tool before a check = %+v, %d runs", r.body.Result, isim.Calls())
+	}
+	h.gw.checkDrift(t.Context(), h.gw.config.Current())
+	n := h.auth.snap().authorize
+	if r := h.mcpCall(t, http.MethodPost, mcpPath, getRefund, nil); !strings.Contains(string(r.body.Result.Meta["io.pantherclaw/error"]), "upstream_tool_invalid") ||
+		h.auth.snap().authorize != n || len(h.driftReports()) != 0 {
+		t.Fatalf("an invalid tool after a check = %+v, authorize %d, reports %q", r.body.Result, h.auth.snap().authorize-n, h.driftReports())
+	}
+	if r := h.mcpCall(t, http.MethodPost, mcpPath, call, nil); r.body.Result.IsError || isim.Calls() != 1 {
+		t.Fatalf("a valid tool of the same server = %+v", r.body.Result)
+	}
+
+	// The server starts requiring headers its pinned definition did not
+	// declare: the call it refuses is FAILED, and the next call checks
+	// again, finds the drift and sends nothing.
+	plain, changed := mcpsim.New(mcpsim.Faults{}), mcpsim.New(declares)
+	sw := &switched{}
+	sw.cur.Store(plain)
+	sts := httptest.NewServer(sw)
+	t.Cleanup(sts.Close)
+	h = setup(t, pinnedTo(t, sts.URL, mcpsim.Faults{}))
+	if r := h.mcpCall(t, http.MethodPost, mcpPath, call, nil); r.body.Result.IsError || plain.Calls() != 1 {
+		t.Fatalf("before the change = %+v", r.body.Result)
+	}
+	sw.cur.Store(changed)
+	r = h.mcpCall(t, http.MethodPost, mcpPath, call, nil)
+	if !strings.Contains(string(r.body.Result.Meta["io.pantherclaw/error"]), "target_refused") || changed.Calls() != 0 ||
+		h.auth.snap().lastOutcome() != pb.Outcome_OUTCOME_FAILED {
+		t.Fatalf("refused headers = %+v", r.body.Result)
+	}
+	r = h.mcpCall(t, http.MethodPost, mcpPath, call, nil)
+	if !strings.Contains(string(r.body.Result.Meta["io.pantherclaw/error"]), "upstream_drift") || len(changed.ParamHeaders()) != 1 ||
+		changed.Calls() != 0 {
+		t.Fatalf("after the refusal = %+v, %d calls reached the server", r.body.Result, len(changed.ParamHeaders()))
+	}
+	// The call's own check reports the drift at once, as the loop does.
+	want := connID + " create_refund " + toolDigest(t, mcpsim.Faults{}, 0) + " " + toolDigest(t, declares, 0)
+	if got := h.driftReports(); !slices.Equal(got, []string{want}) {
+		t.Fatalf("reports %q, want %q", got, want)
 	}
 }
