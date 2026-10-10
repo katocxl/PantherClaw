@@ -75,6 +75,108 @@ func (q *Queries) CountWorkloadAccessRequests(ctx context.Context, orgID ids.Org
 	return column_1, err
 }
 
+const deciderCandidates = `-- name: DeciderCandidates :many
+SELECT b.user_id::uuid AS user_id,
+       min(CASE b.scope_type WHEN 'ORG' THEN 2 WHEN 'BUSINESS_UNIT' THEN 1 ELSE 0 END)::integer AS rank
+FROM pc.role_bindings b
+JOIN pc.users u ON u.org_id = b.org_id AND u.id = b.user_id AND u.state = 'ACTIVE'
+WHERE b.org_id = $1 AND b.role = ANY ($2::text[])
+  AND (b.scope_type = 'ORG'
+    OR (b.scope_type = 'BUSINESS_UNIT' AND b.business_unit_id = $3::uuid)
+    OR (b.scope_type = 'TEAM' AND b.team_id = $4::uuid)
+    OR (b.scope_type = 'ENVIRONMENT' AND b.environment_id = $5::uuid))
+GROUP BY b.user_id
+ORDER BY rank, b.user_id
+LIMIT $6
+`
+
+type DeciderCandidatesParams struct {
+	OrgID          ids.OrgID
+	Roles          []string
+	BusinessUnitID *ids.UUID
+	TeamID         *ids.UUID
+	EnvironmentID  *ids.UUID
+	Lim            int32
+}
+
+type DeciderCandidatesRow struct {
+	UserID ids.UUID
+	Rank   int32
+}
+
+// The enabled people holding one of roles where the agent lives, with the
+// rank of their nearest binding: 0 environment or team, 1 business unit,
+// 2 org. An entry about no agent matches org bindings only.
+func (q *Queries) DeciderCandidates(ctx context.Context, arg DeciderCandidatesParams) ([]DeciderCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, deciderCandidates,
+		arg.OrgID,
+		arg.Roles,
+		arg.BusinessUnitID,
+		arg.TeamID,
+		arg.EnvironmentID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeciderCandidatesRow{}
+	for rows.Next() {
+		var i DeciderCandidatesRow
+		if err := rows.Scan(&i.UserID, &i.Rank); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entryForRouting = `-- name: EntryForRouting :one
+SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at,
+       a.team_id, t.business_unit_id, a.environment_id
+FROM pc.waitlist_entries e
+LEFT JOIN pc.agents a ON a.org_id = e.org_id AND a.id = e.agent_id
+LEFT JOIN pc.teams t ON t.org_id = a.org_id AND t.id = a.team_id
+WHERE e.org_id = $1 AND e.id = $2 AND e.state = 'OPEN'
+FOR UPDATE OF e
+`
+
+type EntryForRoutingRow struct {
+	ID             ids.UUID
+	Kind           string
+	SubjectType    string
+	SubjectID      ids.UUID
+	AgentID        *ids.UUID
+	RequestedBy    *string
+	DeadlineAt     time.Time
+	CreatedAt      time.Time
+	TeamID         *ids.UUID
+	BusinessUnitID *ids.UUID
+	EnvironmentID  *ids.UUID
+}
+
+func (q *Queries) EntryForRouting(ctx context.Context, orgID ids.OrgID, iD ids.UUID) (EntryForRoutingRow, error) {
+	row := q.db.QueryRow(ctx, entryForRouting, orgID, iD)
+	var i EntryForRoutingRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.SubjectType,
+		&i.SubjectID,
+		&i.AgentID,
+		&i.RequestedBy,
+		&i.DeadlineAt,
+		&i.CreatedAt,
+		&i.TeamID,
+		&i.BusinessUnitID,
+		&i.EnvironmentID,
+	)
+	return i, err
+}
+
 const expireWaitlistEntries = `-- name: ExpireWaitlistEntries :many
 UPDATE pc.waitlist_entries
 SET state = 'EXPIRED', decided_by = 'system', decided_at = now(), decision_reason = 'EXPIRED'
@@ -153,6 +255,35 @@ func (q *Queries) GrantCurrentRevision(ctx context.Context, orgID ids.OrgID, iD 
 	var current_revision int32
 	err := row.Scan(&current_revision)
 	return current_revision, err
+}
+
+const insertWaitlistRoute = `-- name: InsertWaitlistRoute :exec
+INSERT INTO pc.waitlist_routes (org_id, id, entry_id, step, kind, user_id, channel_id)
+VALUES ($1, $2, $3, $4, $5, $6,
+    $7)
+`
+
+type InsertWaitlistRouteParams struct {
+	OrgID     ids.OrgID
+	ID        ids.UUID
+	EntryID   ids.UUID
+	Step      int16
+	Kind      string
+	UserID    *ids.UUID
+	ChannelID *ids.UUID
+}
+
+func (q *Queries) InsertWaitlistRoute(ctx context.Context, arg InsertWaitlistRouteParams) error {
+	_, err := q.db.Exec(ctx, insertWaitlistRoute,
+		arg.OrgID,
+		arg.ID,
+		arg.EntryID,
+		arg.Step,
+		arg.Kind,
+		arg.UserID,
+		arg.ChannelID,
+	)
+	return err
 }
 
 const listWaitlistEntries = `-- name: ListWaitlistEntries :many
@@ -291,6 +422,37 @@ func (q *Queries) OpenWaitlistEntry(ctx context.Context, arg OpenWaitlistEntryPa
 	return id, err
 }
 
+const orgUsersWithRoles = `-- name: OrgUsersWithRoles :many
+SELECT DISTINCT u.id
+FROM pc.role_bindings b
+JOIN pc.users u ON u.org_id = b.org_id AND u.id = b.user_id
+WHERE b.org_id = $1 AND b.role = ANY ($2::text[]) AND b.scope_type = 'ORG' AND u.state = 'ACTIVE'
+ORDER BY u.id
+LIMIT 50
+`
+
+// The enabled people holding one of roles at org scope (the org's admins
+// for an unroutable entry).
+func (q *Queries) OrgUsersWithRoles(ctx context.Context, orgID ids.OrgID, roles []string) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, orgUsersWithRoles, orgID, roles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const runTransaction = `-- name: RunTransaction :one
 SELECT decision, reason_code FROM pc.transactions
 WHERE org_id = $1 AND id = $2 AND run_id = $3
@@ -307,6 +469,34 @@ func (q *Queries) RunTransaction(ctx context.Context, orgID ids.OrgID, iD ids.UU
 	var i RunTransactionRow
 	err := row.Scan(&i.Decision, &i.ReasonCode)
 	return i, err
+}
+
+const setEntryRouting = `-- name: SetEntryRouting :execrows
+UPDATE pc.waitlist_entries
+SET routing_health = $1, escalation_step = $2, next_step_at = $3
+WHERE org_id = $4 AND id = $5 AND state = 'OPEN'
+`
+
+type SetEntryRoutingParams struct {
+	Health     string
+	Step       int16
+	NextStepAt *time.Time
+	OrgID      ids.OrgID
+	ID         ids.UUID
+}
+
+func (q *Queries) SetEntryRouting(ctx context.Context, arg SetEntryRoutingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setEntryRouting,
+		arg.Health,
+		arg.Step,
+		arg.NextStepAt,
+		arg.OrgID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const settleAccessRequest = `-- name: SettleAccessRequest :execrows
@@ -360,4 +550,33 @@ func (q *Queries) TransactionOfRun(ctx context.Context, orgID ids.OrgID, iD ids.
 	var i TransactionOfRunRow
 	err := row.Scan(&i.RunID, &i.AgentID, &i.Operation)
 	return i, err
+}
+
+const unroutedEntries = `-- name: UnroutedEntries :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = $1 AND state = 'OPEN' AND next_step_at IS NULL AND escalation_step = 0
+ORDER BY priority, deadline_at, id
+LIMIT $2
+`
+
+// Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry with
+// no next step time has not been routed yet.
+func (q *Queries) UnroutedEntries(ctx context.Context, orgID ids.OrgID, lim int32) ([]ids.UUID, error) {
+	rows, err := q.db.Query(ctx, unroutedEntries, orgID, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ids.UUID{}
+	for rows.Next() {
+		var id ids.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

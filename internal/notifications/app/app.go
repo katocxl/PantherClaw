@@ -146,6 +146,8 @@ type Enqueued struct {
 	Notification ids.UUID
 	Deliveries   int
 	Duplicate    bool
+	// Channels are the channels it was routed to.
+	Channels []ids.UUID
 }
 
 // Enqueue renders m from its fixed template (HR-158), routes it to the
@@ -212,6 +214,7 @@ func (s *Service) Enqueue(ctx context.Context, tx db.TenantTx, m Message) (Enque
 			return Enqueued{}, err
 		}
 		out.Deliveries += added
+		out.Channels = append(out.Channels, c.ID)
 	}
 	return out, nil
 }

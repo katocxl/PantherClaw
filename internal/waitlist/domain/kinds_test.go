@@ -4,9 +4,11 @@
 package domain_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 	"github.com/katocxl/pantherclaw/internal/waitlist/domain"
 )
@@ -82,5 +84,28 @@ func TestHR176_AWorkloadCitesOnlyScopeDenials(t *testing.T) {
 		if got := domain.ScopeDenial(c.decision, c.reason); got != c.want {
 			t.Errorf("%s %s: %v", c.decision, c.reason, got)
 		}
+	}
+}
+
+// TestHR173_TheFirstNoticeGoesToTheNearestDeciders (decision 8): the
+// nearest rank any decider has, at most 50; the next steps at a half and
+// three quarters of the entry's time.
+func TestHR173_TheFirstNoticeGoesToTheNearestDeciders(t *testing.T) {
+	var cs []domain.Candidate
+	for i := range 120 {
+		cs = append(cs, domain.Candidate{User: ids.NewV7(), Rank: domain.RankBusinessUnit + i%2})
+	}
+	near := domain.Nearest(cs)
+	if len(near) != domain.MaxRecipients || slices.ContainsFunc(near, func(c domain.Candidate) bool { return c.Rank != domain.RankBusinessUnit }) {
+		t.Fatalf("nearest: %d", len(near))
+	}
+	if domain.Nearest(nil) != nil {
+		t.Fatal("no deciders")
+	}
+	created := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	deadline := created.Add(time.Hour)
+	if domain.NextStep(created, deadline, 0) != created.Add(30*time.Minute) || domain.NextStep(created, deadline, 1) != created.Add(45*time.Minute) ||
+		!domain.NextStep(created, deadline, 2).IsZero() {
+		t.Fatal("next steps")
 	}
 }

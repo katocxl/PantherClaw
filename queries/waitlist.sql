@@ -79,3 +79,57 @@ WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND run_id = sqlc.arg(run_
 
 -- name: GrantCurrentRevision :one
 SELECT current_revision FROM pc.grants WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);
+
+-- Routing (G0 M5 part 2 slice 211, HR-173, decision 8). An open entry with
+-- no next step time has not been routed yet.
+-- name: UnroutedEntries :many
+SELECT id FROM pc.waitlist_entries
+WHERE org_id = sqlc.arg(org_id) AND state = 'OPEN' AND next_step_at IS NULL AND escalation_step = 0
+ORDER BY priority, deadline_at, id
+LIMIT sqlc.arg(lim);
+
+-- name: EntryForRouting :one
+SELECT e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.requested_by, e.deadline_at, e.created_at,
+       a.team_id, t.business_unit_id, a.environment_id
+FROM pc.waitlist_entries e
+LEFT JOIN pc.agents a ON a.org_id = e.org_id AND a.id = e.agent_id
+LEFT JOIN pc.teams t ON t.org_id = a.org_id AND t.id = a.team_id
+WHERE e.org_id = sqlc.arg(org_id) AND e.id = sqlc.arg(id) AND e.state = 'OPEN'
+FOR UPDATE OF e;
+
+-- The enabled people holding one of roles where the agent lives, with the
+-- rank of their nearest binding: 0 environment or team, 1 business unit,
+-- 2 org. An entry about no agent matches org bindings only.
+-- name: DeciderCandidates :many
+SELECT b.user_id::uuid AS user_id,
+       min(CASE b.scope_type WHEN 'ORG' THEN 2 WHEN 'BUSINESS_UNIT' THEN 1 ELSE 0 END)::integer AS rank
+FROM pc.role_bindings b
+JOIN pc.users u ON u.org_id = b.org_id AND u.id = b.user_id AND u.state = 'ACTIVE'
+WHERE b.org_id = sqlc.arg(org_id) AND b.role = ANY (sqlc.arg(roles)::text[])
+  AND (b.scope_type = 'ORG'
+    OR (b.scope_type = 'BUSINESS_UNIT' AND b.business_unit_id = sqlc.narg(business_unit_id)::uuid)
+    OR (b.scope_type = 'TEAM' AND b.team_id = sqlc.narg(team_id)::uuid)
+    OR (b.scope_type = 'ENVIRONMENT' AND b.environment_id = sqlc.narg(environment_id)::uuid))
+GROUP BY b.user_id
+ORDER BY rank, b.user_id
+LIMIT sqlc.arg(lim);
+
+-- name: InsertWaitlistRoute :exec
+INSERT INTO pc.waitlist_routes (org_id, id, entry_id, step, kind, user_id, channel_id)
+VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(entry_id), sqlc.arg(step), sqlc.arg(kind), sqlc.narg(user_id),
+    sqlc.narg(channel_id));
+
+-- name: SetEntryRouting :execrows
+UPDATE pc.waitlist_entries
+SET routing_health = sqlc.arg(health), escalation_step = sqlc.arg(step), next_step_at = sqlc.narg(next_step_at)
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'OPEN';
+
+-- The enabled people holding one of roles at org scope (the org's admins
+-- for an unroutable entry).
+-- name: OrgUsersWithRoles :many
+SELECT DISTINCT u.id
+FROM pc.role_bindings b
+JOIN pc.users u ON u.org_id = b.org_id AND u.id = b.user_id
+WHERE b.org_id = sqlc.arg(org_id) AND b.role = ANY (sqlc.arg(roles)::text[]) AND b.scope_type = 'ORG' AND u.state = 'ACTIVE'
+ORDER BY u.id
+LIMIT 50;
