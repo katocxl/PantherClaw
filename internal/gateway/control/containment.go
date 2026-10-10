@@ -20,7 +20,8 @@ import (
 const MaxStaleness = 2 * time.Second
 
 // Refusals: why the gateway will not dispatch now. Each is reported to the
-// agent as enforcement_failed (or policy_denied for the kill switch).
+// agent as enforcement_failed with its own code (containment_stale,
+// kill_switch, gateway_revoked): nothing was sent.
 var (
 	ErrStale      = errors.New("containment_stale")
 	ErrKillSwitch = errors.New("kill_switch_engaged")

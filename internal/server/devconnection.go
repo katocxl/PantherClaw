@@ -18,6 +18,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/httpx"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	mockpayments "github.com/katocxl/pantherclaw/packages/mock-payments"
+	pcshell "github.com/katocxl/pantherclaw/packages/pc-shell"
 )
 
 // devConnectionName is the development connection's name: agents call the
@@ -45,6 +46,27 @@ func seedConnection(ctx context.Context, cfg *Config, pool *db.Pool, org ids.Org
 	})
 	if err != nil {
 		return capp.Connection{}, fmt.Errorf("dev: connection: %w", err)
+	}
+	return c, nil
+}
+
+// The development hook connection (G0 M6 design decision 16): the Claude
+// Code hook asks the gateway at /hook/shell.
+const (
+	devShellConnectionName = "shell"
+	shellOperation         = "shell.command.run"
+)
+
+// seedShellConnection creates the kind-local connection serving pc.shell,
+// in enforce mode, as the operator but through every connection check.
+// DEVELOPMENT ONLY.
+func seedShellConnection(ctx context.Context, cfg *Config, pool *db.Pool, org ids.OrgID, gateway ids.UUID) (capp.Connection, error) {
+	c, err := capp.New(pool, nil, cfg.Auth.PublicURL, cfg.GatewayAPI.URL).Seed(ctx, org, "dev-seed", capp.CreateInput{
+		Name: devShellConnectionName, Kind: capp.KindLocal, Package: pcshell.Name, Gateway: gateway,
+		DestinationClass: capp.ClassInternal, AccessMode: capp.AccessNone, DefaultMode: "enforce",
+	})
+	if err != nil {
+		return capp.Connection{}, fmt.Errorf("dev: shell connection: %w", err)
 	}
 	return c, nil
 }
@@ -120,4 +142,4 @@ func cmdDevConnection(ctx context.Context, args []string, stdout, stderr io.Writ
 
 // errTargetNeedsGateway: a development connection needs the gateway that
 // serves it.
-var errTargetNeedsGateway = errors.New("dev seed: --target-url needs --gateway-out (the connection's gateway)")
+var errTargetNeedsGateway = errors.New("dev seed: --target-url and --shell need --gateway-out (the connection's gateway)")
