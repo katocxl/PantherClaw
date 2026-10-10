@@ -101,26 +101,20 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 			Code: adomain.ReasonAmbiguousInput, Check: "exact_meaning", Decisive: true,
 		}}}, nil
 	}
+	req.Gateway = gw.ID // the certificate's gateway, never the request's
 	for attempt := 0; ; attempt++ {
 		if attempt > maxAttempts+1 {
 			return Result{}, fmt.Errorf("finalize: no stable decision after %d attempts", attempt)
 		}
-		prev, err := a.Store.Lookup(ctx, gw.Org, run, action)
+		prev, ev, err := a.evaluate(ctx, req, run, action)
 		if err != nil {
-			return Result{}, fmt.Errorf("finalize: lookup: %w", err)
+			return Result{}, err
 		}
-		if prev != nil {
+		if ev == nil { // the stored transaction answers
 			if prev.ActionHash != req.Action.HashHex() {
 				return a.tampered(ctx, gw, req, *prev)
 			}
-			if prev.Final || prev.Evaluations >= MaxEvaluations {
-				return repeat(*prev, req.Action.HashHex()), nil
-			}
-		}
-		req.Gateway = gw.ID // the certificate's gateway, never the request's
-		ev, err := a.Pipeline.Evaluate(ctx, req)
-		if err != nil {
-			return Result{}, err
+			return repeat(*prev, req.Action.HashHex()), nil
 		}
 		if attempt >= maxAttempts {
 			ev = override(ev, ReasonConcurrentChange, "the authority changed while deciding; try again")
@@ -144,6 +138,41 @@ func (a *Authority) Authorize(ctx context.Context, gw Gateway, req pipeline.Requ
 			return Result{}, err
 		}
 	}
+}
+
+// Lookuper reads the stored transaction for (run, action). A pipeline
+// snapshot Reader that implements it (pgauthority's) lets Authorize look the
+// transaction up in the evaluation's own snapshot.
+type Lookuper interface {
+	Lookup(ctx context.Context, org ids.OrgID, run, action ids.UUID) (*Stored, error)
+}
+
+// evaluate looks up the stored transaction for (run, action) and, unless it
+// answers the request (another action hash, a final decision, or the
+// evaluation cap), evaluates the action: both from one snapshot when the
+// pipeline's Reader offers one. A nil evaluation means prev answers.
+func (a *Authority) evaluate(ctx context.Context, req pipeline.Request, run, action ids.UUID) (*Stored, *pipeline.Evaluation, error) {
+	var prev *Stored
+	var ev *pipeline.Evaluation
+	err := a.Pipeline.Snapshot(ctx, req.Org, func(ctx context.Context, r pipeline.Reader) error {
+		l, ok := r.(Lookuper)
+		if !ok {
+			l = a.Store
+		}
+		var err error
+		if prev, err = l.Lookup(ctx, req.Org, run, action); err != nil {
+			return fmt.Errorf("finalize: lookup: %w", err)
+		}
+		if prev != nil && (prev.ActionHash != req.Action.HashHex() || prev.Final || prev.Evaluations >= MaxEvaluations) {
+			return nil
+		}
+		ev, err = a.Pipeline.EvaluateWith(ctx, r, req)
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return prev, ev, nil
 }
 
 func retryable(err error) bool {
@@ -228,15 +257,15 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 		w.Permit = p
 		res.Permit, res.PermitID, res.Epoch = p.JWS, p.ID, p.Epoch
 	}
+	// The receipt Finalize records is the one Sign returned last, so it
+	// needs no second lookup.
 	w.Sign = func(budgets []BudgetState) (Receipt, error) {
-		return a.receipt(gw, ev, w.TransactionID, w.Evaluation, budgets)
+		r, err := a.receipt(gw, ev, w.TransactionID, w.Evaluation, budgets)
+		res.Receipt = r.JWS
+		return r, err
 	}
 	if err := a.Store.Finalize(ctx, gw.Org, w); err != nil {
 		return Result{}, err
-	}
-	stored, err := a.Store.Lookup(ctx, gw.Org, ev.RunID, ev.ActionID)
-	if err == nil && stored != nil {
-		res.Receipt = stored.Receipt
 	}
 	return res, nil
 }

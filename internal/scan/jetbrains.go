@@ -34,14 +34,25 @@ import (
 //     McpProjectServerCommands, or .idea/.idea.<Solution>/.idea/workspace.xml
 //     for Rider, as committed Rider projects show.
 //   - Since 2025.3 (https://youtrack.jetbrains.com/issue/LLM-22682) the
-//     definitions are JSON in ~/.ai/mcp/mcp.json and <project>/.ai/mcp/mcp.json:
-//     the registry keys llm.mcp.client.global.mcp.json.path (under the user's
-//     home) and llm.mcp.client.project.mcp.json.path (under the project
-//     directory), both ".ai/mcp/mcp.json" by default. Gson reads the file as
+//     definitions are JSON in ~/.ai/mcp/mcp.json and <project>/.ai/mcp/mcp.json.
+//     Gson reads the file as
 //     {"mcpServers": {name: {command, args, env, type, url, headers}}} or, when
 //     it has no "mcpServers", as that map itself
 //     (McpServerConfigurationServiceBase.Companion.parseConfigurations); a
 //     server with a command is local, one with only a URL is remote.
+//   - Those paths are the registry keys llm.mcp.client.global.mcp.json.path
+//     (under the user's home) and llm.mcp.client.project.mcp.json.path (under
+//     the project directory), both ".ai/mcp/mcp.json" by default; Java's
+//     Path.resolve keeps an absolute value whole. The IntelliJ platform keeps
+//     a changed registry value in each IDE's options/ide.general.xml, as
+//     <entry key="…" value="…" source="USER" /> in component "Registry"
+//     (RegistryManagerImpl's @State, Registry.getState and fromState in
+//     github.com/JetBrains/intellij-community). A -D system property in the
+//     IDE's .vmoptions sets a key the registry has not stored
+//     (RegistryValue.resolveRequiredValue); the scan does not read it.
+//     early-access-registry.txt holds only keys read through
+//     EarlyAccessRegistryManager, and AI Assistant reads these with
+//     Registry.stringValue.
 //
 // The XML component's entries have had three layouts:
 //
@@ -90,6 +101,73 @@ func jetBrainsConfigs(dir string) []string {
 		out = append(out, filepath.Join(ide, "options", "llm.mcpServers.xml"))
 	}
 	return out
+}
+
+// The registry keys that move the AI Assistant's mcp.json under the user's
+// home directory and under a project's.
+const (
+	jetBrainsGlobalMCPJSON  = "llm.mcp.client.global.mcp.json.path"
+	jetBrainsProjectMCPJSON = "llm.mcp.client.project.mcp.json.path"
+)
+
+// jetBrainsMCPJSONPaths returns the mcp.json paths that the registries of
+// the IDEs in dir (<config>/JetBrains) set, for the home directory (global)
+// and for projects, each once. An empty value, which names the directory
+// itself, is left out.
+func jetBrainsMCPJSONPaths(dir string) (global, project []string) {
+	for _, ide := range entries(dir, "") {
+		reg := jetBrainsRegistry(readFile(filepath.Join(ide, "options", "ide.general.xml")))
+		if p := reg[jetBrainsGlobalMCPJSON]; p != "" && !slices.Contains(global, p) {
+			global = append(global, p)
+		}
+		if p := reg[jetBrainsProjectMCPJSON]; p != "" && !slices.Contains(project, p) {
+			project = append(project, p)
+		}
+	}
+	return global, project
+}
+
+// jetBrainsRegistry reads the registry values an IDE keeps in
+// ide.general.xml, the last of each key as Registry.loadState does, or
+// returns nil for a file that is not well formed.
+func jetBrainsRegistry(b []byte) map[string]string {
+	doc := parseXML(b)
+	if doc == nil {
+		return nil
+	}
+	reg := map[string]string{}
+	for _, top := range doc.kids { // <application>
+		for _, c := range top.kids {
+			if v, _ := c.attr("name"); c.name != "component" || v != "Registry" {
+				continue
+			}
+			for _, e := range c.kids {
+				if k, v, ok := e.pair(); ok && e.name == "entry" {
+					reg[k] = v
+				}
+			}
+		}
+	}
+	return reg
+}
+
+// resolvePath resolves p against dir as Java's Path.resolve does: an
+// absolute p is kept, and on Windows a p rooted without a drive (\dir) takes
+// dir's drive, and one relative to dir's drive (C:dir) is joined to dir. A p
+// relative to another drive's working directory gives "".
+func resolvePath(dir, p string) string {
+	vol := filepath.VolumeName(p)
+	switch {
+	case filepath.IsAbs(p):
+		return filepath.Clean(p)
+	case vol != "" && !strings.EqualFold(vol, filepath.VolumeName(dir)):
+		return ""
+	case vol != "":
+		return filepath.Join(dir, p[len(vol):])
+	case p != "" && os.IsPathSeparator(p[0]):
+		return filepath.Join(filepath.VolumeName(dir), p)
+	}
+	return filepath.Join(dir, p)
 }
 
 // jetBrainsWorkspaces lists a project's workspace.xml files: .idea's, and
