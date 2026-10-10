@@ -159,10 +159,38 @@ type state struct {
 	covered bool
 }
 
-// Evaluate runs steps 1–8. It returns an error only when the database time
-// cannot be read; every other failure to read evidence is a MISSING item,
-// so the decision cannot be ALLOW (fail closed, invariant 8).
+// Snapshot calls fn with a Reader whose reads all come from one snapshot
+// when the Pipeline's Reader is a Snapshotter, and with that Reader itself
+// otherwise.
+func (p *Pipeline) Snapshot(ctx context.Context, org ids.OrgID, fn func(ctx context.Context, r Reader) error) error {
+	if s, ok := p.Reader.(Snapshotter); ok {
+		return s.Snapshot(ctx, org, fn)
+	}
+	return fn(ctx, p.Reader)
+}
+
+// Evaluate runs steps 1–8 on one snapshot (see Snapshot).
 func (p *Pipeline) Evaluate(ctx context.Context, req Request) (*Evaluation, error) {
+	var ev *Evaluation
+	err := p.Snapshot(ctx, req.Org, func(ctx context.Context, r Reader) error {
+		var err error
+		ev, err = p.EvaluateWith(ctx, r, req)
+		return err
+	})
+	return ev, err
+}
+
+// EvaluateWith runs steps 1–8, reading through r (a snapshot's Reader). It
+// returns an error only when the database time cannot be read; every other
+// failure to read evidence is a MISSING item, so the decision cannot be
+// ALLOW (fail closed, invariant 8).
+func (p *Pipeline) EvaluateWith(ctx context.Context, r Reader, req Request) (*Evaluation, error) {
+	in := *p
+	in.Reader = r
+	return in.evaluate(ctx, req)
+}
+
+func (p *Pipeline) evaluate(ctx context.Context, req Request) (*Evaluation, error) {
 	cont, err := p.Reader.Containment(ctx, req.Org)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: containment: %w", err)

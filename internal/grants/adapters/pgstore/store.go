@@ -185,47 +185,64 @@ func (s *Store) Grant(ctx context.Context, org ids.OrgID, id domain.GrantID) (do
 func (s *Store) Chain(ctx context.Context, org ids.OrgID, id domain.GrantID) ([]domain.Grant, error) {
 	var out []domain.Grant
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		rows, err := dbq.New(tx).GetGrantChain(ctx, org, id.UUID())
-		if err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			return app.ErrNotFound
-		}
-		for _, r := range rows {
-			g, err := toGrant(org, fromChain(r))
-			if err != nil {
-				return err
-			}
-			out = append(out, g)
-		}
-		return nil
+		var err error
+		out, err = s.ChainInTx(ctx, tx, org, id)
+		return err
 	})
 	return out, err
 }
 
+// ChainInTx is Chain inside the caller's transaction (the Authority's
+// one-snapshot read).
+func (s *Store) ChainInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, id domain.GrantID) ([]domain.Grant, error) {
+	rows, err := dbq.New(tx).GetGrantChain(ctx, org, id.UUID())
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, app.ErrNotFound
+	}
+	out := make([]domain.Grant, 0, len(rows))
+	for _, r := range rows {
+		g, err := toGrant(org, fromChain(r))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
 // Envelopes implements app.Repository.
 func (s *Store) Envelopes(ctx context.Context, org ids.OrgID, scopes []domain.Scope) ([]domain.Envelope, error) {
+	var out []domain.Envelope
+	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		var err error
+		out, err = s.EnvelopesInTx(ctx, tx, org, scopes)
+		return err
+	})
+	return out, err
+}
+
+// EnvelopesInTx is Envelopes inside the caller's transaction.
+func (s *Store) EnvelopesInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, scopes []domain.Scope) ([]domain.Envelope, error) {
 	keys := make([]string, 0, len(scopes))
 	for _, sc := range scopes {
 		keys = append(keys, ScopeKey(sc))
 	}
+	rows, err := dbq.New(tx).GetEnvelopes(ctx, org, keys)
+	if err != nil {
+		return nil, err
+	}
 	var out []domain.Envelope
-	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		rows, err := dbq.New(tx).GetEnvelopes(ctx, org, keys)
+	for _, r := range rows {
+		e, err := toEnvelope(org, envelopeRow(r))
 		if err != nil {
-			return err
+			return nil, err
 		}
-		for _, r := range rows {
-			e, err := toEnvelope(org, envelopeRow(r))
-			if err != nil {
-				return err
-			}
-			out = append(out, e)
-		}
-		return nil
-	})
-	return out, err
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // EnvelopeByID implements app.Repository: revision 0 is the current one.
@@ -644,29 +661,36 @@ func (s *Store) PutEnvelope(ctx context.Context, org ids.OrgID, e domain.Envelop
 func (s *Store) Agent(ctx context.Context, org ids.OrgID, id ids.UUID) (app.Agent, error) {
 	var out app.Agent
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		q := dbq.New(tx)
-		row, err := q.SubjectAgent(ctx, org, id)
-		if db.IsNoRows(err) {
-			return app.ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		out = app.Agent{ID: id, State: row.State, Path: tdomain.OrgPath(org)}
-		if row.TeamID != nil {
-			out.TeamID = *row.TeamID
-			if row.BusinessUnitID != nil {
-				out.BusinessUnitID = *row.BusinessUnitID
-				out.Path = out.Path.Child(tdomain.ScopeBusinessUnit, *row.BusinessUnitID)
-			}
-			out.Path = out.Path.Child(tdomain.ScopeTeam, *row.TeamID)
-		}
-		if row.EnvironmentID != nil {
-			out.EnvironmentID = *row.EnvironmentID
-		}
-		return nil
+		var err error
+		out, err = s.AgentInTx(ctx, tx, org, id)
+		return err
 	})
 	return out, err
+}
+
+// AgentInTx is Agent inside the caller's transaction (the Authority's
+// one-snapshot read).
+func (s *Store) AgentInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, id ids.UUID) (app.Agent, error) {
+	row, err := dbq.New(tx).SubjectAgent(ctx, org, id)
+	if db.IsNoRows(err) {
+		return app.Agent{}, app.ErrNotFound
+	}
+	if err != nil {
+		return app.Agent{}, err
+	}
+	out := app.Agent{ID: id, State: row.State, Path: tdomain.OrgPath(org)}
+	if row.TeamID != nil {
+		out.TeamID = *row.TeamID
+		if row.BusinessUnitID != nil {
+			out.BusinessUnitID = *row.BusinessUnitID
+			out.Path = out.Path.Child(tdomain.ScopeBusinessUnit, *row.BusinessUnitID)
+		}
+		out.Path = out.Path.Child(tdomain.ScopeTeam, *row.TeamID)
+	}
+	if row.EnvironmentID != nil {
+		out.EnvironmentID = *row.EnvironmentID
+	}
+	return out, nil
 }
 
 // Run implements app.Subjects.

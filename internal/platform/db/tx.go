@@ -88,6 +88,12 @@ func Serializable() TxOption {
 	return func(o *pgx.TxOptions) { o.IsoLevel = pgx.Serializable }
 }
 
+// RepeatableRead runs the transaction at REPEATABLE READ isolation: every
+// statement sees the snapshot taken by its first one.
+func RepeatableRead() TxOption {
+	return func(o *pgx.TxOptions) { o.IsoLevel = pgx.RepeatableRead }
+}
+
 // ReadOnly marks the transaction read-only.
 func ReadOnly() TxOption {
 	return func(o *pgx.TxOptions) { o.AccessMode = pgx.ReadOnly }
