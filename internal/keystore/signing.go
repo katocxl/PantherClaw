@@ -155,6 +155,66 @@ func RotateSigningKey(ctx context.Context, pool *db.Pool, kp keys.KeyProvider, p
 	return newKID, err
 }
 
+// ReplaceSigningKey gives purpose a new active key and revokes every
+// earlier key of it in the same transaction, with no overlap: nothing the
+// old keys signed is trusted any longer. It is for keys whose holders must
+// be set up again anyway, such as the internal gateway CA, whose gateways
+// re-enroll with the new pin (founder decision 2026-10-10). It returns the
+// new key id and the revoked ones. Reload the registry afterwards.
+func ReplaceSigningKey(ctx context.Context, pool *db.Pool, kp keys.KeyProvider, p keys.Purpose, actor domain.Actor) (string, []string, error) {
+	if !p.Valid() {
+		return "", nil, fmt.Errorf("keystore: unknown purpose %q", p)
+	}
+	org := ids.PlatformOrg
+	var newKID string
+	var revoked []string
+	err := pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		newKID, revoked = "", nil
+		q := dbq.New(tx)
+		if err := q.LockKeystore(ctx, org.UUID()); err != nil {
+			return err
+		}
+		rows, err := q.ListSigningKeys(ctx, org)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if r.Purpose != string(p) || (r.State != string(keys.StateActive) && r.State != string(keys.StateRetiring)) {
+				continue
+			}
+			if r.State == string(keys.StateActive) {
+				if err := db.ExpectOneRow(q.TransitionSigningKey(ctx, dbq.TransitionSigningKeyParams{
+					OrgID: org, Kid: r.Kid, FromState: string(keys.StateActive), ToState: string(keys.StateRetiring),
+				})); err != nil {
+					return err
+				}
+			}
+			if err := db.ExpectOneRow(q.TransitionSigningKey(ctx, dbq.TransitionSigningKeyParams{
+				OrgID: org, Kid: r.Kid, FromState: string(keys.StateRetiring), ToState: string(keys.StateRevoked),
+			})); err != nil {
+				return err
+			}
+			if _, err := audit.Record(ctx, tx, audit.Event{
+				Name: "signing_key.revoked", Actor: actor, Outcome: audit.Success,
+				Object: &audit.Object{Type: "signing_key", ID: r.Kid}, Details: map[string]string{"purpose": r.Purpose, "reason": "replaced"},
+			}); err != nil {
+				return err
+			}
+			revoked = append(revoked, r.Kid)
+		}
+		k, err := createSigningKey(ctx, tx, kp, p)
+		if err != nil {
+			return err
+		}
+		newKID = k.KID
+		return nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return newKID, revoked, nil
+}
+
 // RevokeSigningKey revokes a retiring key (an active key must be rotated
 // first, so a purpose is never left without a signer by accident).
 func RevokeSigningKey(ctx context.Context, pool *db.Pool, kid string, actor domain.Actor) error {

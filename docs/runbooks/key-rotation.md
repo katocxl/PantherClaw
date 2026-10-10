@@ -1,6 +1,6 @@
 # Runbook — Key rotation
 
-**Status:** broker keys and sealed credentials are tested procedures (M6). The other rows are outlines for the milestones named. Rotating the internal gateway CA has no tooling yet (§6).
+**Status:** broker keys, sealed credentials and the internal gateway CA are tested procedures (M6). The other rows are outlines for the milestones named.
 
 | Key | Rotation | Procedure | In code today |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | KEK (key-encryption key files) | provider policy / on suspicion | rewrap all DEKs with the new KEK; verify decryption of samples; disable the old KEK | `pantherclaw-server keys gen-kek`; the gateway's `broker.kek_files` accepts old and new (§5) |
 | Gateway broker keys | on suspicion, or when a gateway host is replaced | §5 | yes (M6) |
 | Sealed connection credentials | at the provider's rotation, or on suspicion | §5.3 | yes (M6) |
-| Internal gateway CA | only on compromise | §6 | **no tooling in M6** |
+| Internal gateway CA | on compromise, or planned with every gateway operator | §6: a new key, then every gateway re-enrolls | yes (M6): `pantherclaw-server keys rotate-gateway-ca`; without downtime in M13 |
 | Offline roots (licence, package) | only on compromise | freeze promotions, publish revocation, re-sign with a new root, ship the root update in a signed release | procedure only |
 
 Compromise of any key: treat it as an incident ([incident-response.md](incident-response.md)), rotate immediately and record G4.
@@ -53,11 +53,25 @@ pclaw seal --connection <connection-id> --from-file secret.txt --fingerprint sha
 
 ## 6. Internal gateway CA
 
-The internal CA (signing-key purpose `gateway_ca`) issues the gateways' 24-hour client certificates and the gateway listener's server certificate. The CA certificate is derived from the key, so its SHA-256 (`ca_sha256`) is stable for the key's lifetime. Every gateway pins it at enrollment.
+The internal CA (signing-key purpose `gateway_ca`) issues two things:
+- the gateways' 24-hour client certificates;
+- the gateway listener's server certificate.
 
-**There is no rotation procedure in M6.** No operator command creates a new `gateway_ca` key. Gateways trust only the CA they pinned, and they refuse a renewal that returns another CA. So a new CA key would need every gateway to enroll again with the new pin ([gateway.md](gateway.md) §2–§3). The server would also have to trust both CAs while that happens, which it does for a retiring key it still holds.
+The CA certificate is derived from the key, so its SHA-256 (`ca_sha256`) stays the same for the key's lifetime. Every gateway pins it at enrollment, and refuses a renewal that returns another CA.
 
-Until rotation is designed (see the open founder question in the M6 status), treat a suspected CA key compromise as an incident:
-1. revoke the affected gateways (`pclaw gateway revoke`);
-2. engage the kill switch if actions may have been authorized through a forged gateway ([kill-switch.md](kill-switch.md));
-3. follow [incident-response.md](incident-response.md).
+Replacing the CA therefore means every gateway enrolls again. That is the M6 procedure (founder decision 2026-10-10). Rotation without downtime is planned for M13. Replace the CA when its key may be compromised, or on a planned schedule with every gateway's operator ready.
+
+1. **Contain**, if the key may be compromised. Engage the kill switch when actions may have been authorized through a forged gateway ([kill-switch.md](kill-switch.md)), and follow [incident-response.md](incident-response.md).
+2. **Replace the key** (server operator):
+   ```bash
+   pantherclaw-server keys rotate-gateway-ca --config server.json --confirm
+   # replaced the gateway CA: new key …, pin sha256:… (was sha256:…); revoked 1 earlier key(s)
+   ```
+   One transaction creates the new key and revokes every earlier one, with no overlap. Without `--confirm` nothing changes.
+3. **Restart every server instance**, so the listener presents a certificate from the new CA and trusts only it. From then on, every gateway is refused until it enrolls again: its pinned CA no longer matches.
+4. **Re-enroll every gateway** ([gateway.md](gateway.md) §2–§3):
+   - a gateway admin issues a new token with `pclaw gateway enroll-token`, which shows the new `ca_sha256`;
+   - the operator sets `control.ca_sha256` to it and runs `pantherclaw-gateway enroll` again. A new identity replaces the old one in `identity_dir`.
+
+   Broker keys and sealed credentials are unaffected: they belong to the gateway record, not to its certificate.
+5. **Check:** `pclaw gateway get` shows a new certificate per gateway, and agent calls succeed again.
