@@ -73,7 +73,9 @@ func runPayments(ctx context.Context, args []string, stderr io.Writer) error {
 	addr := fs.String("addr", "127.0.0.1:9090", "listen address (loopback)")
 	latency := fs.Duration("latency", 0, "added latency per request")
 	decline := fs.Float64("decline-rate", 0, "probability of a 402 decline (no effect)")
-	hang := fs.Float64("hang-rate", 0, "probability of never answering (unknown outcome)")
+	hang := fs.Float64("hang-rate", 0, "probability of never answering, refunding nothing (unknown outcome, no effect)")
+	lose := fs.Float64("lose-response-rate", 0, "probability of refunding and then never answering (unknown outcome, effect happened)")
+	settle := fs.Duration("settle-after", 0, "how long a new refund stays pending before it succeeds")
 	redirect := fs.String("redirect-to", "", "answer every refund with a 307 redirect to this URL")
 	tokenFile := fs.String("token-file", "", "file holding the bearer token every request must carry (the credential PantherClaw holds)")
 	actionTokens := fs.Bool("require-action-tokens", false, "require a valid PAP-Action token on every refund (with --jwks-url and --audience)")
@@ -97,7 +99,9 @@ func runPayments(ctx context.Context, args []string, stderr io.Writer) error {
 		req.ActionTokens = &payments.ActionVerifier{JWKSURL: *jwksURL, Audience: *audience}
 	}
 	log := pclog.New(stderr, pclog.Options{Service: "pantherclaw-sim", Version: version.Get().Version})
-	sim := payments.New(payments.Faults{Latency: *latency, DeclineRate: *decline, HangRate: *hang, RedirectTo: *redirect}, log).WithRequire(req)
+	sim := payments.New(payments.Faults{
+		Latency: *latency, DeclineRate: *decline, HangRate: *hang, LoseRate: *lose, SettleAfter: *settle, RedirectTo: *redirect,
+	}, log).WithRequire(req)
 	return serve(ctx, *addr, sim.Handler(), log, "sim.payments_listening")
 }
 
