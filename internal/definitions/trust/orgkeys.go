@@ -58,13 +58,14 @@ func ParseOrgKey(b []byte) (string, ed25519.PublicKey, error) {
 	return kid, pub, nil
 }
 
-// checkSigner reports whether kid may sign targets: a package root, or an
-// org key, each with the kid derived from its own key.
+// checkSigner reports whether kid may sign targets: a package root, an org
+// key or the development key (HR-163), each with the kid derived from its
+// own key.
 func checkSigner(kid string, pub ed25519.PublicKey) error {
-	if kid == RootKID(pub) || kid == OrgKID(pub) {
+	if kid == RootKID(pub) || kid == OrgKID(pub) || kid == DevKID(pub) {
 		return nil
 	}
-	return fmt.Errorf("trust: signing key %q is neither a package root nor an org package-signing key", kid)
+	return fmt.Errorf("trust: signing key %q is not a package root, an org package-signing key or the development package key", kid)
 }
 
 // checkNamespace refuses targets signed by an org key that list a reserved

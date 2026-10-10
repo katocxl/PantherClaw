@@ -89,6 +89,10 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if *gatewayOut != "" && cfg.GatewayAPI.Addr == "" {
 		return errors.New("dev seed: --gateway-out needs gateway_api in the server config (gateways reach the Authority only over mTLS)")
 	}
+	signer, err := devPackageSigner(cfg, stdout)
+	if err != nil {
+		return err
+	}
 	appCfg, err := cfg.dbConfig(cfg.DB.AppUser, cfg.DB.AppPasswordFile, 2)
 	if err != nil {
 		return err
@@ -127,7 +131,7 @@ func cmdDev(ctx context.Context, args []string, stdout, stderr io.Writer, env En
 	if *shell {
 		pkgs = append(pkgs, devPackage{pcshell.Name, pcshell.Version, pcshell.Package})
 	}
-	if err := seedPackages(ctx, pool, org, pkgs...); err != nil {
+	if err := seedPackages(ctx, pool, org, signer, pkgs...); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "seeded org %s (%q) with package %s@%s active\n", org, *name, mockpayments.Name, mockpayments.Version)

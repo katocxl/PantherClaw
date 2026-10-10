@@ -32,5 +32,6 @@
     "oidc_providers": []
   },
   "webauthn": { "rp_name": "PantherClaw" },
-  "notifications": { "concurrency": 5 }
+  "notifications": { "concurrency": 5 },
+  "dev": { "package_key_file": "deploy/dev/secrets/package-dev.pub.json" }
 }

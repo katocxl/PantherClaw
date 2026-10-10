@@ -29,7 +29,6 @@ import (
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	"github.com/katocxl/pantherclaw/internal/platform/money"
-	"github.com/katocxl/pantherclaw/internal/platform/rootkey"
 )
 
 // Development fact provider: the refund definition needs a fresh
@@ -47,19 +46,11 @@ type devPackage struct {
 }
 
 // seedPackages imports reference packages into org and activates them. One
-// metadata document lists them all; it is signed with a throwaway
-// development root generated here and trusted for this import only (G0 M4
-// part 2, decision 3): the org records the signed metadata, never the key,
-// and no server trusts that key.
-func seedPackages(ctx context.Context, pool *db.Pool, org ids.OrgID, pkgs ...devPackage) error {
-	priv, kid, err := rootkey.Generate(rootkey.PurposePackages)
-	if err != nil {
-		return err
-	}
-	signer, err := jws.NewSigner(kid, priv)
-	if err != nil {
-		return err
-	}
+// metadata document lists them all, signed by signer (devPackageSigner): the
+// development package key that local servers trust (HR-163), or a throwaway
+// key trusted for this import only. The org records the signed metadata,
+// never the key.
+func seedPackages(ctx context.Context, pool *db.Pool, org ids.OrgID, signer *jws.Signer, pkgs ...devPackage) error {
 	targets := map[string]trust.Target{}
 	for _, p := range pkgs {
 		sum := sha256.Sum256(p.Raw)
@@ -71,7 +62,7 @@ func seedPackages(ctx context.Context, pool *db.Pool, org ids.OrgID, pkgs ...dev
 	if err != nil {
 		return err
 	}
-	im := &defsapp.Importer{Roots: trust.Roots{kid: signer.Public()}, Repo: &defspg.Store{Pool: pool}, Clock: clock.System{}}
+	im := &defsapp.Importer{Roots: trust.Roots{signer.KeyID(): signer.Public()}, Repo: &defspg.Store{Pool: pool}, Clock: clock.System{}}
 	for _, p := range pkgs {
 		ev := &audit.Event{
 			Name: "package.imported", Actor: devSeedActor, Outcome: audit.Success,
