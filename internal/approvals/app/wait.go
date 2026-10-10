@@ -79,6 +79,7 @@ type Waits struct {
 	pool                   *db.Pool
 	log                    *slog.Logger
 	perInstance, perServer int
+	longPoll               time.Duration
 
 	mu        sync.Mutex
 	instances map[ids.UUID]int
@@ -103,9 +104,17 @@ func NewWaits(pool *db.Pool, perInstance, perServer int, log *slog.Logger) *Wait
 		log = pclog.Discard()
 	}
 	return &Waits{
-		pool: pool, log: log, perInstance: perInstance, perServer: perServer,
+		pool: pool, log: log, perInstance: perInstance, perServer: perServer, longPoll: LongPollMax,
 		instances: map[ids.UUID]int{}, waiters: map[waitKey]map[chan struct{}]struct{}{},
 	}
+}
+
+// WithLongPoll lowers the cap of one Wait call below LongPollMax.
+func (w *Waits) WithLongPoll(d time.Duration) *Waits {
+	if d > 0 && d < LongPollMax {
+		w.longPoll = d
+	}
+	return w
 }
 
 // Read returns the state of the handle (a transaction id) for the instance
@@ -201,15 +210,15 @@ func (w *Waits) wake(k waitKey) {
 	}
 }
 
-// Wait long-polls the handle for at most timeout (LongPollMax by default
-// and at most): it answers at once when the state differs from known (or
+// Wait long-polls the handle for at most timeout (the long-poll cap by
+// default and at most): it answers at once when the state differs from known (or
 // known is empty) or is final, and otherwise when the state changes or the
 // time passes (timedOut).
 func (w *Waits) Wait(ctx context.Context, org ids.OrgID, instance, run, handle ids.UUID, known string, timeout time.Duration) (
 	v WaitView, timedOut bool, err error,
 ) {
-	if timeout <= 0 || timeout > LongPollMax {
-		timeout = LongPollMax
+	if timeout <= 0 || timeout > w.longPoll {
+		timeout = w.longPoll
 	}
 	release, err := w.acquire(instance)
 	if err != nil {
