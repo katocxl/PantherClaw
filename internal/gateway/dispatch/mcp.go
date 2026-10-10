@@ -8,9 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -108,6 +111,110 @@ func (e *Engine) sendMCP(ctx context.Context, r Result, conn *control.Connection
 		r.ToolResult = res.Error == nil && !res.InputRequired
 	}
 	return e.record(ctx, r, want, outcome, res.Status, digest, elapsed, class, code, t)
+}
+
+// Drift is an upstream tool that no longer matches the definition the
+// connection's package was reviewed against (HR-081): Observed is the
+// digest the server lists now, empty when the tool is gone.
+type Drift struct {
+	Tool, Expected, Observed string
+}
+
+// CheckDrift lists a kind-mcp connection's upstream tools, with its
+// credential, and compares each reviewed tool with what the server lists
+// now (G0 M6 design decision 14). Until a later check finds them matching
+// again, or the connection changes, the gateway refuses the drifted tools
+// itself (upstream_drift), so nothing runs against a changed tool while
+// the server quarantines the package.
+func (e *Engine) CheckDrift(ctx context.Context, conn *control.Connection) ([]Drift, error) {
+	reviewed := map[string][]string{} // upstream tool → reviewed digests
+	for i := range conn.Package.Definitions {
+		if m := mcpTemplate(&conn.Package.Definitions[i]); m != nil && !slices.Contains(reviewed[m.Tool], m.UpstreamDigest) {
+			reviewed[m.Tool] = append(reviewed[m.Tool], m.UpstreamDigest)
+		}
+	}
+	if conn.GetKind() != "mcp" || len(reviewed) == 0 {
+		return nil, nil
+	}
+	ce, err := e.entry(conn)
+	if err != nil {
+		return nil, err
+	}
+	var secret []byte
+	if conn.GetAccessMode() == "pantherclaw_held" {
+		if secret, err = e.openCredential(conn); err != nil {
+			return nil, err
+		}
+		defer clear(secret)
+	}
+	tools, err := ce.mcp.ListTools(ctx, func(req *http.Request) error {
+		if secret != nil {
+			return placeCredential(conn, req, secret)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	listed := map[string][]string{}
+	for _, t := range tools {
+		var n struct {
+			Name string `json:"name"`
+		}
+		d, err := upstream.ToolDigest(t)
+		if err != nil || json.Unmarshal(t, &n) != nil {
+			return nil, fmt.Errorf("%w: a tool definition does not decode", upstream.ErrProtocol)
+		}
+		listed[n.Name] = append(listed[n.Name], d)
+	}
+	var drifts []Drift
+	drifted := map[string]bool{}
+	for _, tool := range slices.Sorted(maps.Keys(reviewed)) {
+		for _, want := range reviewed[tool] {
+			got := listed[tool]
+			switch {
+			case len(got) == 0:
+				drifts = append(drifts, Drift{Tool: tool, Expected: want})
+			case slices.ContainsFunc(got, func(d string) bool { return d != want }):
+				// A changed definition, or the name listed more than once.
+				drifts = append(drifts, Drift{Tool: tool, Expected: want, Observed: got[slices.IndexFunc(got, func(d string) bool { return d != want })]})
+			default:
+				continue
+			}
+			drifted[tool] = true
+		}
+	}
+	e.mu.Lock()
+	e.drift[conn.GetId()] = driftEntry{revision: conn.GetRevision(), tools: drifted}
+	e.mu.Unlock()
+	return drifts, nil
+}
+
+// driftEntry is the drifted tools of one revision of a connection.
+type driftEntry struct {
+	revision int32
+	tools    map[string]bool
+}
+
+// drifted reports whether an operation dispatches to an upstream tool the
+// last check found drifted.
+func (e *Engine) drifted(conn *control.Connection, operation string) bool {
+	def, ok := conn.Package.Definition(operation)
+	m := mcpTemplate(def)
+	if !ok || m == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	d, ok := e.drift[conn.GetId()]
+	return ok && d.revision == conn.GetRevision() && d.tools[m.Tool]
+}
+
+func mcpTemplate(d *defs.Definition) *defs.MCPDispatch {
+	if d == nil || d.Dispatch == nil {
+		return nil
+	}
+	return d.Dispatch.MCP
 }
 
 // answerBody is what the server answered: the CallToolResult, an

@@ -108,6 +108,9 @@ const (
 	// An upstream MCP server asked for input the gateway never gives
 	// (HR-082).
 	CodeInputRequired = "upstream_input_required"
+	// An upstream MCP tool no longer matches its reviewed definition
+	// (HR-081).
+	CodeUpstreamDrift = "upstream_drift"
 )
 
 // Containment is the gateway's containment view (control.Containment).
@@ -159,6 +162,8 @@ type Engine struct {
 
 	mu      sync.Mutex
 	clients map[string]clientEntry
+	// drift is each kind-mcp connection's drifted tools (CheckDrift).
+	drift map[string]driftEntry
 }
 
 // clientEntry is a connection's egress client for one revision of it, and
@@ -185,7 +190,7 @@ func New(o Options) (*Engine, error) {
 	return &Engine{
 		org: o.Org, authority: o.Authority, permits: newPermitVerifier(o.JWKSURL, o.JWKSClient, o.GatewayID, o.Org),
 		containment: o.Containment, broker: o.Broker, allowed: o.AllowedPrefixes, breaker: newBreaker(o.Now, o.ReportCircuit, o.Log),
-		log: o.Log, clients: map[string]clientEntry{},
+		log: o.Log, clients: map[string]clientEntry{}, drift: map[string]driftEntry{},
 	}, nil
 }
 
@@ -283,6 +288,9 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	}
 	if e.breaker.open(ctx, conn) {
 		return Result{Class: EnforcementFailed, Code: CodeCircuitOpen}
+	}
+	if e.drifted(conn, c.Action.Action.Operation) {
+		return Result{Class: EnforcementFailed, Code: CodeUpstreamDrift}
 	}
 	ar, err := e.authority.Authorize(ctx, &pb.AuthorizeRequest{ActionIr: c.Action.Canonical, Workload: c.Workload})
 	t.lap("authz")
