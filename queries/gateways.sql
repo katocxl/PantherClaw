@@ -71,12 +71,14 @@ SELECT * FROM pc.gateway_certs WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg
 UPDATE pc.gateway_certs SET state = 'SUPERSEDED', superseded_at = now()
 WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'ACTIVE';
 
+-- Revoking also covers a SUPERSEDED certificate, which authenticates for a
+-- grace period after a renewal; superseded_at belongs to that state only.
 -- name: RevokeGatewayCert :execrows
-UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = sqlc.arg(reason)::text
+UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = sqlc.arg(reason)::text, superseded_at = NULL
 WHERE org_id = sqlc.arg(org_id) AND gateway_id = sqlc.arg(gateway_id) AND id = sqlc.arg(id) AND state <> 'REVOKED';
 
 -- name: RevokeGatewayCerts :execrows
-UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = sqlc.arg(reason)::text
+UPDATE pc.gateway_certs SET state = 'REVOKED', revoked_at = now(), revoke_reason = sqlc.arg(reason)::text, superseded_at = NULL
 WHERE org_id = sqlc.arg(org_id) AND gateway_id = sqlc.arg(gateway_id) AND state <> 'REVOKED';
 
 -- name: ListGatewayCerts :many
