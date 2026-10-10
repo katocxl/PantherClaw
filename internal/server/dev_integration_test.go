@@ -387,7 +387,10 @@ func TestIntDevSeedAudits(t *testing.T) {
 		return rows.Err()
 	})
 	want := []string{
-		"audit.dev.org_seeded", "audit.dev.workload_seeded", "audit.package.imported", "audit.package.transitioned",
+		// Importing the reviewed package opens its TOOL_REVIEW entry, which
+		// activating it settles (G0 M5 part 2).
+		"audit.dev.org_seeded", "audit.dev.workload_seeded", "audit.waitlist.entry_opened", "audit.package.imported",
+		"audit.package.transitioned",
 		"audit.dev.gateway_seeded", "audit.connection.created", "audit.facts.provider_registered", "audit.grant.issued", "audit.run.started",
 	}
 	if err != nil || !slices.Equal(kinds, want) {
