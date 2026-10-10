@@ -14,7 +14,10 @@
 // them: tools/call through Authorize, everything else through
 // VerifyWorkload (HR-021). Clients see exactly the connection's reviewed
 // package tools, with their reviewed descriptions and schemas (HR-081),
-// and every answer is private. tools/call goes down the one dispatch path.
+// and every answer is private. tools/call goes down the one dispatch path;
+// a held call becomes a task for a client that supports the tasks
+// extension, and an identical call reuses the held action (HR-185,
+// holds.go).
 package mcp
 
 import (
@@ -29,8 +32,10 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/katocxl/pantherclaw/internal/actionir"
 	"github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
@@ -79,6 +84,7 @@ const (
 	codeMethodNotFound     = -32601
 	codeInvalidParams      = -32602
 	codeHeaderMismatch     = -32020
+	codeMissingCapability  = -32021
 	codeUnsupportedVersion = -32022
 	codeUnknownConnection  = -32001
 	codeAuthentication     = -32002
@@ -102,6 +108,7 @@ type Handler struct {
 	publicURL string
 	origin    string
 	log       *slog.Logger
+	holds     *store
 }
 
 // New returns the MCP face. publicURL is the gateway's base URL: proofs
@@ -110,7 +117,7 @@ func New(engine *dispatch.Engine, config Configuration, publicURL string, log *s
 	if log == nil {
 		log = pclog.Discard()
 	}
-	h := &Handler{engine: engine, config: config, publicURL: strings.TrimSuffix(publicURL, "/"), log: log}
+	h := &Handler{engine: engine, config: config, publicURL: strings.TrimSuffix(publicURL, "/"), log: log, holds: newStore(time.Now)}
 	if u, err := url.Parse(publicURL); err == nil {
 		h.origin = u.Scheme + "://" + u.Host
 	}
@@ -137,6 +144,7 @@ type params struct {
 	Name      string                    `json:"name,omitzero"`
 	URI       string                    `json:"uri,omitzero"`
 	Arguments jsontext.Value            `json:"arguments,omitzero"`
+	TaskID    string                    `json:"taskId,omitzero"`
 }
 
 type rpcError struct {
@@ -238,8 +246,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch req.Method {
 	case "tools/call":
 		h.call(w, r, conn, req, p, in)
+	case "tasks/get", "tasks/cancel", "tasks/update":
+		h.task(w, r, conn, req, p, in)
 	case "tools/list", "server/discover":
-		if !h.verify(w, r, req.ID, in) {
+		if _, ok := h.verify(w, r, req.ID, in); !ok {
 			return
 		}
 		if req.Method == "tools/list" {
@@ -352,6 +362,9 @@ func headerMismatch(h http.Header, req request, p params) string {
 		source = p.Name
 	case "resources/read":
 		source = p.URI
+	case "tasks/get", "tasks/cancel", "tasks/update":
+		// The tasks extension: Mcp-Name is the task id.
+		source = p.TaskID
 	default:
 		named = false
 	}
@@ -401,21 +414,21 @@ func (h *Handler) refusePAP(w http.ResponseWriter, r *http.Request, id jsontext.
 
 // verify asks the Authority to verify the workload of a request that
 // decides nothing, and answers when it does not verify.
-func (h *Handler) verify(w http.ResponseWriter, r *http.Request, id jsontext.Value, in dispatch.Inbound) bool {
+func (h *Handler) verify(w http.ResponseWriter, r *http.Request, id jsontext.Value, in dispatch.Inbound) (dispatch.Verified, bool) {
 	v, err := h.engine.Verify(r.Context(), in.Creds)
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "gateway.authority_unavailable", pclog.Err(err))
 		fail(w, http.StatusServiceUnavailable, id, codeUnavailable, "the Authority is unavailable", nil)
-		return false
+		return v, false
 	}
 	if !v.OK {
 		h.refusePAP(w, r, id, v.Code, v.Nonce)
-		return false
+		return v, false
 	}
 	if v.Nonce != "" {
 		w.Header().Set(dispatch.HeaderNonce, v.Nonce)
 	}
-	return true
+	return v, true
 }
 
 func serverInfo() map[string]any {
@@ -425,9 +438,13 @@ func serverInfo() map[string]any {
 func discoverResult() map[string]any {
 	return map[string]any{
 		"resultType": "complete", "supportedVersions": []string{ProtocolVersion},
-		"capabilities": map[string]any{"tools": map[string]any{"listChanged": false}},
+		"capabilities": map[string]any{
+			"tools":      map[string]any{"listChanged": false},
+			"extensions": map[string]any{extTasks: map[string]any{}},
+		},
 		"instructions": "PantherClaw authorizes every tool call before it runs. A refused call is a tool error " +
-			"whose _meta io.pantherclaw/error says why; a held call carries io.pantherclaw/hold.",
+			"whose _meta io.pantherclaw/error says why; a held call carries io.pantherclaw/hold, or becomes a task " +
+			"when the client supports tasks.",
 		"ttlMs": listTTL, "cacheScope": "private", "_meta": serverInfo(),
 	}
 }
@@ -505,8 +522,11 @@ func (h *Handler) call(w http.ResponseWriter, r *http.Request, conn *control.Con
 		fail(w, http.StatusOK, req.ID, codeInvalidParams, "the "+dispatch.HeaderRunID+" header is required", nil)
 		return
 	}
+	// The action id is the client's (PC-Action-Id), or the held one for an
+	// identical call (HR-185), or new.
 	action := in.Action
-	if action == "" {
+	fresh := action == ""
+	if fresh {
 		action = ids.NewV7().String()
 	}
 	args := p.Arguments
@@ -516,6 +536,13 @@ func (h *Handler) call(w http.ResponseWriter, r *http.Request, conn *control.Con
 	parsed, err := conn.Mapper.MCP(ctx, mapping.Context{
 		Org: h.config.Current().Org, Env: in.Env, RunID: in.Run, ActionID: action, AgentInstance: in.Instance, Connection: conn.GetId(),
 	}, p.Name, args)
+	k := actionKey(parsed.Action)
+	if err == nil && fresh {
+		if held, ok := h.holds.heldAction(k); ok {
+			parsed.Action.ActionID, action = held, held
+			parsed, err = actionir.Encode(parsed.Action)
+		}
+	}
 	if err != nil {
 		write(w, http.StatusOK, response{ID: req.ID, Result: errorResult(dispatch.Result{
 			Class: dispatch.CannotAuthorize, Code: "invalid_arguments",
@@ -527,10 +554,90 @@ func (h *Handler) call(w http.ResponseWriter, r *http.Request, conn *control.Con
 		h.refusePAP(w, r, req.ID, res.PAPError, res.Nonce)
 		return
 	}
+	b := binding{conn: conn.GetId(), run: in.Run, instance: in.Instance}
+	h.holds.settle(k, b, action, res)
 	if res.Nonce != "" {
 		w.Header().Set(dispatch.HeaderNonce, res.Nonce)
 	}
+	if res.Class == dispatch.Held && supportsTasks(p.Meta) {
+		if t := h.holds.newTask(b, parsed, k); t != nil {
+			write(w, http.StatusOK, response{ID: req.ID, Result: t.view("task", res.TransactionID)})
+			return
+		}
+	}
 	write(w, http.StatusOK, response{ID: req.ID, Result: callResult(res)})
+}
+
+// task serves tasks/get, tasks/cancel and tasks/update (the tasks
+// extension) for the run, instance and connection that created the task;
+// any other binding gets "task not found" (HR-185). A poll of a working
+// task resubmits its action with the poll's credentials; every other
+// request is verified first (HR-021).
+func (h *Handler) task(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, p params, in dispatch.Inbound) {
+	if !supportsTasks(p.Meta) {
+		fail(w, http.StatusBadRequest, req.ID, codeMissingCapability, "Missing required client capability",
+			map[string]any{"requiredCapabilities": map[string]any{"extensions": map[string]any{extTasks: map[string]any{}}}})
+		return
+	}
+	b := binding{conn: conn.GetId(), run: in.Run, instance: in.Instance}
+	if req.Method == "tasks/get" {
+		if t, claimed, _ := h.holds.lookup(p.TaskID, b, true); claimed {
+			h.resubmit(w, r, conn, req, t, in)
+			return
+		}
+	}
+	v, ok := h.verify(w, r, req.ID, in)
+	if !ok {
+		return
+	}
+	if v.Instance != in.Instance {
+		// The token names another instance than the one verified: nothing
+		// of either is shown.
+		b = binding{}
+	}
+	notFound := func() {
+		fail(w, http.StatusOK, req.ID, codeInvalidParams, "Failed to retrieve task: Task not found", nil)
+	}
+	switch req.Method {
+	case "tasks/get":
+		t, _, found := h.holds.lookup(p.TaskID, b, false)
+		if !found {
+			notFound()
+			return
+		}
+		write(w, http.StatusOK, response{ID: req.ID, Result: t.view("complete", "")})
+	case "tasks/cancel":
+		if !h.holds.cancel(p.TaskID, b) {
+			notFound()
+			return
+		}
+		write(w, http.StatusOK, response{ID: req.ID, Result: map[string]any{"resultType": "complete"}})
+	default: // tasks/update: no task of this face ever waits for input.
+		if _, _, found := h.holds.lookup(p.TaskID, b, false); !found {
+			notFound()
+			return
+		}
+		write(w, http.StatusOK, response{ID: req.ID, Result: map[string]any{"resultType": "complete"}})
+	}
+}
+
+// resubmit sends a working task's action down the dispatch path again
+// with the poll's own credentials, as the workload's resubmission (PAP-1
+// §8): the Authority runs the whole pipeline, and the task completes with
+// the tool's result once the action is no longer held.
+func (h *Handler) resubmit(w http.ResponseWriter, r *http.Request, conn *control.Connection, req request, t task, in dispatch.Inbound) {
+	defer h.holds.release(t.id)
+	res := h.engine.Dispatch(r.Context(), dispatch.Call{Connection: conn, Action: t.action, Workload: in.Creds})
+	if res.Class == dispatch.AuthenticationFailed {
+		h.refusePAP(w, r, req.ID, res.PAPError, res.Nonce)
+		return
+	}
+	h.holds.settle(t.key, t.binding, t.action.Action.ActionID, res)
+	if res.Nonce != "" {
+		w.Header().Set(dispatch.HeaderNonce, res.Nonce)
+	}
+	done := h.holds.finish(t, res, callResult(res))
+	write(w, http.StatusOK, response{ID: req.ID, Result: done.view("complete", res.TransactionID)})
 }
 
 type content struct {

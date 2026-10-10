@@ -884,9 +884,12 @@ func TestHR010_AQuarantinedConnectionDispatchesNothing(t *testing.T) {
 
 // testWorkloadToken is a token-shaped string naming testAgent in testEnv.
 // The gateway reads it without verifying; the Authority verifies it.
-func testWorkloadToken() string {
+func testWorkloadToken() string { return workloadTokenFor(testAgent) }
+
+// workloadTokenFor is an unsigned workload token naming instance.
+func workloadTokenFor(instance string) string {
 	enc := base64.RawURLEncoding.EncodeToString
-	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + testAgent +
+	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + instance +
 		`","pap":{"v":1,"env":"` + testEnv + `"}}`
 	return enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(payload)) + ".sig"
 }
