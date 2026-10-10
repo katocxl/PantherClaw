@@ -10,7 +10,10 @@
 -- consumed than it is: a commit moves an amount from reserved to spent, and
 -- a release lowers reserved. Views that show a budget add the pending ones
 -- (reserved minus pending, spent plus pending commits). The sweep lister
--- gets a budget_settle purpose: orgs with pending reservations (HR-054).
+-- gets a budget_settle purpose: orgs with pending reservations (HR-054),
+-- added to its definition from 00060_effects. This migration must reach
+-- main after M7's 00060-00069: any later redefinition of the lister there
+-- has to be carried into this one first.
 
 -- +goose Up
 ALTER TABLE pc.reservations
@@ -51,6 +54,14 @@ BEGIN
                 FROM pc.permits p
                 WHERE (p.state = 'ISSUED' AND p.expires_at < now())
                    OR (p.state = 'DISPATCHING' AND p.dispatching_at < now() - interval '30 seconds')
+                ORDER BY 1
+                LIMIT p_max_rows;
+        WHEN 'verifications_due' THEN
+            RETURN QUERY
+                SELECT DISTINCT v.org_id, v.org_id
+                FROM pc.verifications v
+                WHERE (v.state IN ('PENDING', 'LEASED') AND v.deadline_at <= now())
+                   OR (v.state = 'LEASED' AND v.lease_expires_at <= now())
                 ORDER BY 1
                 LIMIT p_max_rows;
         WHEN 'budget_settle' THEN
@@ -98,6 +109,14 @@ BEGIN
                 FROM pc.permits p
                 WHERE (p.state = 'ISSUED' AND p.expires_at < now())
                    OR (p.state = 'DISPATCHING' AND p.dispatching_at < now() - interval '30 seconds')
+                ORDER BY 1
+                LIMIT p_max_rows;
+        WHEN 'verifications_due' THEN
+            RETURN QUERY
+                SELECT DISTINCT v.org_id, v.org_id
+                FROM pc.verifications v
+                WHERE (v.state IN ('PENDING', 'LEASED') AND v.deadline_at <= now())
+                   OR (v.state = 'LEASED' AND v.lease_expires_at <= now())
                 ORDER BY 1
                 LIMIT p_max_rows;
         ELSE
