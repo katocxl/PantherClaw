@@ -194,6 +194,10 @@ message ReviseGrantRequest {
     gte: 0
     lte: 2
   }];
+  // The ACCESS_REQUEST waitlist entry this revision answers (F051); the
+  // revision closes it as approved. The entry must be open and about this
+  // grant.
+  optional string access_request_id = 10 [(buf.validate.field).string.uuid = true];
 }
 
 // ReviseGrantResponse returns the new revision.

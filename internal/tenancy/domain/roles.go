@@ -80,31 +80,31 @@ func with(ps ...[]Permission) []Permission {
 var roles = []Role{
 	{
 		Name: RoleOrgAdmin, Title: "Org Admin", Scopes: orgScope,
-		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages and registers the org's package-signing keys. Cannot approve actions, publish policies, activate packages, issue grants, change guardrails, manage gateways and connections, engage the kill switch or read restricted evidence.",
+		Description: "Administers the organization: hierarchy, users, invitations, roles and service accounts; imports tool packages and registers the org's package-signing keys. Sets the Agent Waitlist's escalation chains and settings. Cannot approve actions or see approval requests, restore suspended agents, publish policies, activate packages, issue grants, change guardrails, manage gateways and connections, engage the kill switch or read restricted evidence.",
 		Permissions: with(basicReads, []Permission{
 			PermOrgUpdate, PermBusinessUnitManage, PermTeamManage, PermTeamMembersManage, PermEnvironmentManage,
 			PermUserRead, PermUserManage, PermInvitationRead, PermInvitationManage, PermRoleRead, PermRoleBind,
 			PermServiceAccountRead, PermServiceAccountManage, PermAuditRead, PermAgentRead, PermRunRead,
-			PermWaitlistRead, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport, PermPackageKeyManage,
-			PermNotificationRead, PermNotificationManage,
+			PermWaitlistRead, PermWaitlistManage, PermIssuerRead, PermIssuerManage, PermFactRead, PermPackageImport,
+			PermPackageKeyManage, PermNotificationRead, PermNotificationManage,
 		}, authorityReads, boundaryReads),
 	},
 	{
 		Name: RoleSecurityAdmin, Title: "Security Admin", Scopes: orgScope,
-		Description: "Watches and contains: reads users, roles and audit, disables compromised users and service accounts, revokes grants, responds to incidents.",
+		Description: "Watches and contains: reads users, roles, audit and approval requests, disables compromised users and service accounts, revokes grants, responds to incidents, sets the Agent Waitlist's escalation chains and settings, and restores suspended agents with a security key (human only).",
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermUserManage, PermRoleRead, PermInvitationRead, PermServiceAccountRead,
 			PermServiceAccountManage, PermAuditRead, PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage,
-			PermWaitlistRead, PermIssuerRead, PermGrantRevoke, PermFactRead,
-			PermNotificationRead, PermNotificationManage,
+			PermWaitlistRead, PermWaitlistManage, PermApprovalRead, PermAgentRestore, PermIssuerRead, PermGrantRevoke,
+			PermFactRead, PermNotificationRead, PermNotificationManage,
 		}, authorityReads, boundaryReads),
 	},
 	{
 		Name: RoleAgentOwner, Title: "Agent Owner", Scopes: anyScope,
-		Description: "Owns agents in scope and is accountable for them; can revoke their grants but not issue them.",
+		Description: "Owns agents in scope and is accountable for them; sees their approval requests and can revoke their grants but not issue them.",
 		Permissions: with(basicReads, []Permission{
 			PermAgentRead, PermAgentManage, PermRunRead, PermRunStart, PermRunManage, PermWaitlistRead, PermAgentEnroll,
-			PermGrantRevoke,
+			PermGrantRevoke, PermApprovalRead,
 		}, authorityReads),
 	},
 	{
@@ -117,20 +117,20 @@ var roles = []Role{
 		Description: "Publishes reviewed policies, changes guardrails, activates imported tool packages and registers fact providers in scope (human only). Cannot author policies or import packages.",
 		Permissions: with(basicReads, []Permission{
 			PermAgentRead, PermPolicyPublish, PermGuardrailsManage, PermPackageActivate, PermFactRead,
-			PermFactProviderManage, PermServiceAccountRead,
+			PermFactProviderManage, PermServiceAccountRead, PermWaitlistRead,
 		}, authorityReads),
 	},
 	{
 		Name: RoleApprover, Title: "Approver", Scopes: anyScope,
-		Description: "Approves or declines held actions in scope (human only).",
-		Permissions: with(basicReads, []Permission{PermApprovalRespond}),
+		Description: "Approves held actions in scope with a security key, or declines them (human only); sees the approval requests and waitlist entries routed to them.",
+		Permissions: with(basicReads, []Permission{PermApprovalRespond, PermApprovalRead, PermWaitlistRead}),
 	},
 	{
 		Name: RoleResponder, Title: "Responder", Scopes: anyScope,
-		Description: "Investigates and contains incidents in scope.",
+		Description: "Investigates and contains incidents in scope, and restores suspended agents with a security key (human only).",
 		Permissions: with(basicReads, []Permission{
 			PermAgentRead, PermIncidentRespond, PermRunRead, PermRunManage, PermGrantRead, PermGrantRevoke,
-			PermConnectionRead, PermContainmentRead,
+			PermConnectionRead, PermContainmentRead, PermWaitlistRead, PermAgentRestore,
 		}),
 	},
 	{
@@ -139,7 +139,7 @@ var roles = []Role{
 		Permissions: with(basicReads, []Permission{
 			PermUserRead, PermRoleRead, PermInvitationRead, PermServiceAccountRead, PermAuditRead,
 			PermAgentRead, PermEvidenceReadRestricted, PermRunRead, PermWaitlistRead, PermIssuerRead, PermFactRead,
-			PermNotificationRead,
+			PermNotificationRead, PermApprovalRead,
 		}, authorityReads, boundaryReads),
 	},
 	{
@@ -171,7 +171,7 @@ var roles = []Role{
 		Name: RoleGrantIssuer, Title: "Grant Issuer", Scopes: anyScope,
 		Description: "Issues, revises and revokes grants to agents in scope (human only). Every grant must still fit inside the guardrails, which the issuer cannot change.",
 		Permissions: with(basicReads, []Permission{
-			PermAgentRead, PermRunRead, PermGrantIssue, PermGrantRevoke, PermFactRead,
+			PermAgentRead, PermRunRead, PermGrantIssue, PermGrantRevoke, PermFactRead, PermWaitlistRead,
 		}, authorityReads),
 	},
 	{

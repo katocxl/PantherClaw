@@ -7,6 +7,7 @@ package pantherclaw.v1;
 
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
+import "pantherclaw/v1/authority.proto";
 import "pantherclaw/v1/grants.proto";
 import "pantherclaw/v1/identity.proto";
 import "pantherclaw/v1/runs.proto";
@@ -40,6 +41,27 @@ service WorkloadService {
   // shares its ancestors' budgets and may set smaller limits of its own.
   // permission: workload.delegate
   rpc DelegateGrant(DelegateGrantRequest) returns (DelegateGrantResponse);
+  // Wait long-polls a held transaction of the caller's run (the wait handle
+  // is the transaction id, G0 M5 part 2 design decision 15). It answers as
+  // soon as the state differs from known_state, or after at most 30
+  // seconds, with states, codes and times only: never approver identities,
+  // notes or the display (HR-174). Waiting never extends a deadline or
+  // dispatches anything; on READY the agent resubmits the identical action.
+  // At most 4 waits per instance and 1,000 per server run at once
+  // (ResourceExhausted with a retry time beyond them).
+  // permission: workload.run
+  rpc Wait(WaitRequest) returns (WaitResponse);
+  // SubmitEvidence adds an UNTRUSTED note to the open approval request of a
+  // held transaction of the caller's run (HR-172). It never changes the
+  // binding; an EVIDENCE_REQUESTED request returns to PENDING.
+  // permission: workload.run
+  rpc SubmitEvidence(SubmitEvidenceRequest) returns (SubmitEvidenceResponse);
+  // RequestAccess files an access request for the caller's run's grant,
+  // citing one of the run's denials whose decisive reason is about scope
+  // (decision 10). At most 3 per run; the note is UNTRUSTED. It grants
+  // nothing (HR-176).
+  // permission: workload.run
+  rpc RequestAccess(WorkloadServiceRequestAccessRequest) returns (WorkloadServiceRequestAccessResponse);
 }
 
 // AttestationKind names the preset an attestation token is for.
@@ -184,4 +206,73 @@ message DelegateGrantRequest {
 message DelegateGrantResponse {
   // The grant, bound to the child run.
   Grant grant = 1;
+}
+
+// WaitRequest waits on a held transaction.
+message WaitRequest {
+  // The caller's run; it must be bound to the caller's instance.
+  string run_id = 1 [(buf.validate.field).string.uuid = true];
+  // The wait handle (the transaction id).
+  string handle = 2 [(buf.validate.field).string.uuid = true];
+  // Answer at once when the state differs from this one (unspecified:
+  // answer at once).
+  WaitState known_state = 3 [(buf.validate.field).enum.defined_only = true];
+  // How long to wait at most, in seconds (default and maximum 30).
+  int32 timeout_seconds = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 30
+  }];
+}
+
+// WaitResponse returns the state.
+message WaitResponse {
+  // The wait handle with the current state.
+  WaitInfo wait = 1;
+  // Whether the wait ended because the timeout passed, not because the
+  // state changed.
+  bool timed_out = 2;
+}
+
+// SubmitEvidenceRequest adds evidence from the workload.
+message SubmitEvidenceRequest {
+  // The caller's run; it must be bound to the caller's instance.
+  string run_id = 1 [(buf.validate.field).string.uuid = true];
+  // The wait handle (the transaction id).
+  string handle = 2 [(buf.validate.field).string.uuid = true];
+  // The note (UNTRUSTED, at most 4 KiB).
+  string note = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 4096
+  }];
+}
+
+// SubmitEvidenceResponse returns the state.
+message SubmitEvidenceResponse {
+  // The evidence id.
+  string evidence_id = 1;
+  // The wait handle with the current state.
+  WaitInfo wait = 2;
+}
+
+// WorkloadServiceRequestAccessRequest files an access request from the
+// workload.
+message WorkloadServiceRequestAccessRequest {
+  // The caller's run; it must be bound to the caller's instance.
+  string run_id = 1 [(buf.validate.field).string.uuid = true];
+  // A transaction of the run that was denied for scope.
+  string transaction_id = 2 [(buf.validate.field).string.uuid = true];
+  // What is needed and why: UNTRUSTED (at most 4 KiB).
+  string note = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 4096
+  }];
+}
+
+// WorkloadServiceRequestAccessResponse returns the waitlist entry's id.
+message WorkloadServiceRequestAccessResponse {
+  // The ACCESS_REQUEST entry (an open one for the same grant is returned
+  // instead of a new one).
+  string entry_id = 1;
+  // Its deadline.
+  google.protobuf.Timestamp deadline_time = 2;
 }

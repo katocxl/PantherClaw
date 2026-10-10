@@ -50,6 +50,9 @@ const (
 	// AgentServiceSubmitScanFindingsProcedure is the procedure name of the AgentService's
 	// SubmitScanFindings RPC.
 	AgentServiceSubmitScanFindingsProcedure = "/pantherclaw.v1.AgentService/SubmitScanFindings"
+	// AgentServiceRequestAgentRestorationProcedure is the procedure name of the AgentService's
+	// RequestAgentRestoration RPC.
+	AgentServiceRequestAgentRestorationProcedure = "/pantherclaw.v1.AgentService/RequestAgentRestoration"
 )
 
 var (
@@ -126,6 +129,13 @@ var (
 			Procedure:  AgentServiceSubmitScanFindingsProcedure,
 		}
 	})
+	agentServiceRequestAgentRestorationSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_agents_proto.Services().ByName("AgentService").Methods().ByName("RequestAgentRestoration"),
+			Procedure:  AgentServiceRequestAgentRestorationProcedure,
+		}
+	})
 )
 
 // AgentServiceClient is a client for the pantherclaw.v1.AgentService service.
@@ -154,7 +164,7 @@ type AgentServiceClient interface {
 	ClaimAgent(context.Context, *v1.ClaimAgentRequest) (*v1.ClaimAgentResponse, error)
 	// SuspendAgent suspends an agent: its instances get no workload tokens and
 	// its runs are denied. Outstanding permits fail BeginDispatch. Resuming
-	// needs a RESTORATION entry (M5).
+	// needs an approved restoration (RequestAgentRestoration).
 	// permission: agent.manage
 	SuspendAgent(context.Context, *v1.SuspendAgentRequest) (*v1.SuspendAgentResponse, error)
 	// RetireAgent retires an agent for good: it revokes its instances and
@@ -171,6 +181,13 @@ type AgentServiceClient interface {
 	// and grant nothing; credentials never leave the scanning machine.
 	// permission: agent.manage
 	SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error)
+	// RequestAgentRestoration asks for a suspended agent to return to the
+	// state it was suspended from (F563). It creates a RESTORATION approval
+	// request and waitlist entry, decided on the approval page with a
+	// security key by an agent.restore holder other than the requester (G0 M5
+	// part 2 decision 11, HR-176). Only a person may ask, with a reason.
+	// permission: agent.manage
+	RequestAgentRestoration(context.Context, *v1.RequestAgentRestorationRequest) (*v1.RequestAgentRestorationResponse, error)
 }
 
 // NewAgentServiceClient constructs a client for the pantherclaw.v1.AgentService service. Multiple
@@ -205,7 +222,7 @@ type AgentServiceHandler interface {
 	ClaimAgent(context.Context, *v1.ClaimAgentRequest) (*v1.ClaimAgentResponse, error)
 	// SuspendAgent suspends an agent: its instances get no workload tokens and
 	// its runs are denied. Outstanding permits fail BeginDispatch. Resuming
-	// needs a RESTORATION entry (M5).
+	// needs an approved restoration (RequestAgentRestoration).
 	// permission: agent.manage
 	SuspendAgent(context.Context, *v1.SuspendAgentRequest) (*v1.SuspendAgentResponse, error)
 	// RetireAgent retires an agent for good: it revokes its instances and
@@ -222,6 +239,13 @@ type AgentServiceHandler interface {
 	// and grant nothing; credentials never leave the scanning machine.
 	// permission: agent.manage
 	SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error)
+	// RequestAgentRestoration asks for a suspended agent to return to the
+	// state it was suspended from (F563). It creates a RESTORATION approval
+	// request and waitlist entry, decided on the approval page with a
+	// security key by an agent.restore holder other than the requester (G0 M5
+	// part 2 decision 11, HR-176). Only a person may ask, with a reason.
+	// permission: agent.manage
+	RequestAgentRestoration(context.Context, *v1.RequestAgentRestorationRequest) (*v1.RequestAgentRestorationResponse, error)
 }
 
 // RegisterAgentServiceHandler registers svc as the pantherclaw.v1.AgentService implementation on
@@ -239,6 +263,7 @@ func RegisterAgentServiceHandler(server *connect.Server, svc AgentServiceHandler
 		connect.Method{Spec: agentServiceRetireAgentSpec(), Handler: adapter.retireAgent},
 		connect.Method{Spec: agentServiceListAgentChangesSpec(), Handler: adapter.listAgentChanges},
 		connect.Method{Spec: agentServiceSubmitScanFindingsSpec(), Handler: adapter.submitScanFindings},
+		connect.Method{Spec: agentServiceRequestAgentRestorationSpec(), Handler: adapter.requestAgentRestoration},
 	)
 }
 
@@ -283,6 +308,10 @@ func (UnimplementedAgentServiceHandler) ListAgentChanges(context.Context, *v1.Li
 
 func (UnimplementedAgentServiceHandler) SubmitScanFindings(context.Context, *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AgentService.SubmitScanFindings is not implemented")
+}
+
+func (UnimplementedAgentServiceHandler) RequestAgentRestoration(context.Context, *v1.RequestAgentRestorationRequest) (*v1.RequestAgentRestorationResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.AgentService.RequestAgentRestoration is not implemented")
 }
 
 type agentServiceClient struct {
@@ -364,6 +393,14 @@ func (c *agentServiceClient) ListAgentChanges(ctx context.Context, req *v1.ListA
 func (c *agentServiceClient) SubmitScanFindings(ctx context.Context, req *v1.SubmitScanFindingsRequest) (*v1.SubmitScanFindingsResponse, error) {
 	var res v1.SubmitScanFindingsResponse
 	if err := c.client.CallUnary(ctx, agentServiceSubmitScanFindingsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentServiceClient) RequestAgentRestoration(ctx context.Context, req *v1.RequestAgentRestorationRequest) (*v1.RequestAgentRestorationResponse, error) {
+	var res v1.RequestAgentRestorationResponse
+	if err := c.client.CallUnary(ctx, agentServiceRequestAgentRestorationSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -485,6 +522,18 @@ func (h agentServiceHandler) submitScanFindings(ctx context.Context, _ connect.S
 		return err
 	}
 	res, err := h.svc.SubmitScanFindings(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentServiceHandler) requestAgentRestoration(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RequestAgentRestorationRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestAgentRestoration(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -42,7 +42,7 @@ service AgentService {
   rpc ClaimAgent(ClaimAgentRequest) returns (ClaimAgentResponse);
   // SuspendAgent suspends an agent: its instances get no workload tokens and
   // its runs are denied. Outstanding permits fail BeginDispatch. Resuming
-  // needs a RESTORATION entry (M5).
+  // needs an approved restoration (RequestAgentRestoration).
   // permission: agent.manage
   rpc SuspendAgent(SuspendAgentRequest) returns (SuspendAgentResponse);
   // RetireAgent retires an agent for good: it revokes its instances and
@@ -61,6 +61,13 @@ service AgentService {
   // and grant nothing; credentials never leave the scanning machine.
   // permission: agent.manage
   rpc SubmitScanFindings(SubmitScanFindingsRequest) returns (SubmitScanFindingsResponse);
+  // RequestAgentRestoration asks for a suspended agent to return to the
+  // state it was suspended from (F563). It creates a RESTORATION approval
+  // request and waitlist entry, decided on the approval page with a
+  // security key by an agent.restore holder other than the requester (G0 M5
+  // part 2 decision 11, HR-176). Only a person may ask, with a reason.
+  // permission: agent.manage
+  rpc RequestAgentRestoration(RequestAgentRestorationRequest) returns (RequestAgentRestorationResponse);
 }
 
 // AgentState is the lifecycle state (F020).
@@ -485,4 +492,26 @@ message SubmitScanFindingsResponse {
   int32 counted = 2;
   // Findings dropped because the org already has 200 open discoveries.
   int32 dropped = 3;
+}
+
+// RequestAgentRestorationRequest asks to restore a suspended agent.
+message RequestAgentRestorationRequest {
+  // Agent id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // Why it should be restored, shown to the deciders and recorded in the
+  // history.
+  string reason = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1000
+  }];
+}
+
+// RequestAgentRestorationResponse names the approval request.
+message RequestAgentRestorationResponse {
+  // The RESTORATION approval request, decided at /approvals/{id}.
+  string approval_request_id = 1;
+  // Its waitlist entry.
+  string waitlist_entry_id = 2;
+  // Without approval by then, the agent stays suspended.
+  google.protobuf.Timestamp deadline_time = 3;
 }
