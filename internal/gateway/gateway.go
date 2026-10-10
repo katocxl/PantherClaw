@@ -20,6 +20,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gateway/mcp"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
 // PAP/1 request headers, for clients of the gateway (dispatch).
@@ -50,6 +51,11 @@ type Gateway struct {
 	engine      *dispatch.Engine
 	http        *httpproxy.Handler
 	mcp         *mcp.Handler
+	log         *slog.Logger
+	// reportDrift, driftEvery and driftPoll drive the drift checks
+	// (drift.go).
+	reportDrift           DriftReporter
+	driftEvery, driftPoll time.Duration
 }
 
 // Handler returns the gateway's agent-facing HTTP handler: `/{connection}/…`
@@ -83,6 +89,9 @@ type Deps struct {
 	// ReportCircuit tells the server a connection's circuit opened
 	// (HR-078); nil reports nothing.
 	ReportCircuit dispatch.Reporter
+	// ReportDrift tells the server an upstream MCP tool drifted (HR-081);
+	// nil reports nothing.
+	ReportDrift DriftReporter
 	// Run is background work (certificate renewal, the containment stream,
 	// configuration sync); nil for none.
 	Run []func(ctx context.Context) error
@@ -112,6 +121,12 @@ func New(ctx context.Context, cfg *Config, id *control.Identity, log *slog.Logge
 		Containment: k, Configuration: store, Run: []func(context.Context) error{ctl.Run, k.Run, store.Run},
 		ReportCircuit: func(ctx context.Context, conn string, unknown, total int32) error {
 			_, err := ctl.Gateway.ReportCircuit(ctx, &pb.ReportCircuitRequest{ConnectionId: conn, UnknownCount: unknown, TotalCount: total})
+			return err
+		},
+		ReportDrift: func(ctx context.Context, conn string, d dispatch.Drift) error {
+			_, err := ctl.Gateway.ReportDrift(ctx, &pb.ReportDriftRequest{
+				ConnectionId: conn, Tool: d.Tool, ExpectedDigest: d.Expected, ObservedDigest: d.Observed,
+			})
 			return err
 		},
 	}
@@ -148,10 +163,14 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	if log == nil {
+		log = pclog.Discard()
+	}
 	return &Gateway{
 		run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker, engine: engine,
 		http: httpproxy.New(engine, d.Configuration, cfg.PublicURL, log),
 		mcp:  mcp.New(engine, d.Configuration, cfg.PublicURL, log),
+		log:  log, reportDrift: d.ReportDrift, driftEvery: DriftEvery, driftPoll: driftPoll,
 	}, nil
 }
 
@@ -161,6 +180,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	for _, f := range g.run {
 		eg.Go(func() error { return f(ctx) })
 	}
+	eg.Go(func() error { return g.watchDrift(ctx) })
 	eg.Go(func() error { <-ctx.Done(); return nil })
 	return eg.Wait()
 }

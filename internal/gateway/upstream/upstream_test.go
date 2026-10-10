@@ -177,3 +177,42 @@ func TestHR080_ToolNamesAreEncodedForHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestHR081_ListToolsReadsEveryPage: the tool list is read page by page in
+// either version, exactly as the server defines the tools.
+func TestHR081_ListToolsReadsEveryPage(t *testing.T) {
+	for name, f := range map[string]mcpsim.Faults{
+		"2026-07-28":            {PageSize: 1},
+		"2025-11-25":            {Legacy: true, PageSize: 1},
+		"2025-11-25, one gone":  {Legacy: true, Hide: []string{"get_refund"}},
+		"2026-07-28, one page":  {},
+		"2026-07-28, drifted":   {Description: "changed"},
+		"2025-11-25, with auth": {Legacy: true, Token: "sim-token", PageSize: 1},
+	} {
+		sim, c := simClient(t, f, 1<<20)
+		got, err := c.ListTools(context.Background(), func(r *http.Request) error {
+			if f.Token != "" {
+				r.Header.Set("Authorization", "Bearer "+f.Token)
+			}
+			return nil
+		})
+		want := sim.Tools()
+		if err != nil || len(got) != len(want) {
+			t.Fatalf("%s: %d tools %v, want %d", name, len(got), err, len(want))
+		}
+		for i := range want {
+			if a, b := mustDigest(t, got[i]), mustDigest(t, want[i]); a != b {
+				t.Errorf("%s: tool %d digest %s, want %s", name, i, a, b)
+			}
+		}
+	}
+}
+
+func mustDigest(t *testing.T, v jsontext.Value) string {
+	t.Helper()
+	d, err := ToolDigest(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}

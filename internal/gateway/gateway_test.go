@@ -31,6 +31,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/definitions/mapping"
 	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
+	"github.com/katocxl/pantherclaw/internal/gateway/dispatch"
 	"github.com/katocxl/pantherclaw/internal/gateway/httpproxy"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
@@ -378,8 +379,10 @@ type harness struct {
 	// circuits records the gateway's circuit reports.
 	circuitMu sync.Mutex
 	circuits  []string
-	gw        *Gateway
-	url       string
+	// drifts records the gateway's drift reports (under circuitMu).
+	drifts []string
+	gw     *Gateway
+	url    string
 }
 
 // compile decodes and compiles the mock-payments package.
@@ -468,6 +471,12 @@ func setup(t *testing.T, opts ...func(*harness)) *harness {
 			h.circuitMu.Lock()
 			defer h.circuitMu.Unlock()
 			h.circuits = append(h.circuits, fmt.Sprintf("%s %d/%d", conn, unknown, total))
+			return nil
+		},
+		ReportDrift: func(_ context.Context, conn string, d dispatch.Drift) error {
+			h.circuitMu.Lock()
+			defer h.circuitMu.Unlock()
+			h.drifts = append(h.drifts, fmt.Sprintf("%s %s %s %s", conn, d.Tool, d.Expected, d.Observed))
 			return nil
 		},
 	}, pclog.Discard())

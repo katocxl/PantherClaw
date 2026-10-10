@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ type Faults struct {
 	// Description, when set, replaces get_refund's description: the drift
 	// a reviewed package must catch.
 	Description string
+	// Hide leaves these tools out of tools/list (a tool that disappeared).
+	Hide []string
+	// PageSize, when set, lists tools that many per page.
+	PageSize int
 	// Token, when set, is the bearer token every request must carry.
 	Token string
 }
@@ -106,6 +111,39 @@ func (s *Server) Answers() []string {
 
 // Tools are the tool definitions the server lists.
 func (s *Server) Tools() []jsontext.Value {
+	var out []jsontext.Value
+	for _, t := range s.tools() {
+		var n struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(t, &n) == nil && !slices.Contains(s.f.Hide, n.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// page is one page of the tool list from cursor (an index).
+func (s *Server) page(params jsontext.Value) map[string]any {
+	tools := s.Tools()
+	var p struct {
+		Cursor string `json:"cursor"`
+	}
+	_ = json.Unmarshal(params, &p)
+	from, _ := strconv.Atoi(p.Cursor)
+	from = min(max(from, 0), len(tools))
+	to := len(tools)
+	if s.f.PageSize > 0 {
+		to = min(from+s.f.PageSize, len(tools))
+	}
+	out := map[string]any{"tools": append([]jsontext.Value{}, tools[from:to]...)}
+	if to < len(tools) {
+		out["nextCursor"] = strconv.Itoa(to)
+	}
+	return out
+}
+
+func (s *Server) tools() []jsontext.Value {
 	get := "Read one simulated refund by its id."
 	if s.f.Description != "" {
 		get = s.f.Description
@@ -181,7 +219,9 @@ func (s *Server) modern(w http.ResponseWriter, r *http.Request, m message) {
 			"resultType": "complete", "supportedVersions": []string{Modern}, "capabilities": map[string]any{"tools": map[string]any{}},
 		}, nil))
 	case "tools/list":
-		writeJSON(w, http.StatusOK, reply(m.ID, map[string]any{"resultType": "complete", "tools": s.Tools()}, nil))
+		page := s.page(m.Params)
+		page["resultType"] = "complete"
+		writeJSON(w, http.StatusOK, reply(m.ID, page, nil))
 	case "tools/call":
 		if r.Header.Get("Mcp-Name") != p.Name {
 			writeJSON(w, http.StatusBadRequest, reply(m.ID, nil, rpcError(-32020, "Header mismatch")))
@@ -254,7 +294,7 @@ func (s *Server) legacy(w http.ResponseWriter, r *http.Request, m message) {
 	}
 	switch m.Method {
 	case "tools/list":
-		writeJSON(w, http.StatusOK, reply(m.ID, map[string]any{"tools": s.Tools()}, nil))
+		writeJSON(w, http.StatusOK, reply(m.ID, s.page(m.Params), nil))
 	case "tools/call":
 		result, rpcErr := s.call(m.Params)
 		s.answer(w, m.ID, result, rpcErr, s.f.Ask)

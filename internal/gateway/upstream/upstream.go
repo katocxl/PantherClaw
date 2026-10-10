@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"slices"
@@ -145,37 +146,89 @@ func Params(tool string, args jsontext.Value) ([]byte, error) {
 // wrapping ErrNotSent means the call never left the gateway; any other
 // error may have left it, and its outcome is unknown.
 func (c *Client) Call(ctx context.Context, tool string, args jsontext.Value, decorate Decorate) (Result, error) {
+	ex, err := c.do(ctx, "tools/call", tool, map[string]any{"name": tool, "arguments": args}, decorate)
+	if err != nil {
+		return Result{}, err
+	}
+	return ex.result(), nil
+}
+
+// Bounds on a tool list.
+const (
+	maxPages = 20
+	maxTools = 1000
+)
+
+// ListTools lists the server's tools as it defines them (tools/list,
+// every page): what the gateway compares with the reviewed definitions
+// (HR-081).
+func (c *Client) ListTools(ctx context.Context, decorate Decorate) ([]jsontext.Value, error) {
+	var out []jsontext.Value
+	cursor := ""
+	for range maxPages {
+		p := map[string]any{}
+		if cursor != "" {
+			p["cursor"] = cursor
+		}
+		ex, err := c.do(ctx, "tools/list", "", p, decorate)
+		if err != nil {
+			return nil, err
+		}
+		if ex.reply == nil || ex.reply.Error != nil || ex.status != http.StatusOK {
+			return nil, fmt.Errorf("%w: tools/list answered HTTP %d", ErrProtocol, ex.status)
+		}
+		var page struct {
+			Tools []jsontext.Value `json:"tools"`
+			Next  string           `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(ex.reply.Result, &page); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrProtocol, err)
+		}
+		out = append(out, page.Tools...)
+		if len(out) > maxTools {
+			return nil, fmt.Errorf("%w: more than %d tools", ErrProtocol, maxTools)
+		}
+		if page.Next == "" {
+			return out, nil
+		}
+		cursor = page.Next
+	}
+	return nil, fmt.Errorf("%w: more than %d pages of tools", ErrProtocol, maxPages)
+}
+
+// do sends one request in the server's version: in 2025-11-25 in the
+// session, opening a new one once when the server ended it (it then ran
+// nothing). An error wrapping ErrNotSent means the request never left.
+func (c *Client) do(ctx context.Context, method, name string, params map[string]any, decorate Decorate) (exchanged, error) {
 	v, err := c.negotiate(ctx, decorate)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+		return exchanged{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	for attempt := 0; ; attempt++ {
 		session := ""
 		if v == Legacy {
 			if session, err = c.ensureSession(ctx, decorate); err != nil {
-				return Result{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+				return exchanged{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 			}
 		}
 		id := c.newID()
-		p := map[string]any{"name": tool, "arguments": args}
+		p := maps.Clone(params)
 		if v == Modern {
 			p["_meta"] = modernMeta()
 		}
-		body, err := request(id, "tools/call", p)
+		body, err := request(id, method, p)
 		if err != nil {
-			return Result{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+			return exchanged{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 		}
-		ex, err := c.exchange(ctx, v, session, "tools/call", tool, id, body, decorate)
+		ex, err := c.exchange(ctx, v, session, method, name, id, body, decorate)
 		if err != nil {
-			return Result{}, err
+			return ex, err
 		}
 		if v == Legacy && session != "" && ex.status == http.StatusNotFound && attempt == 0 {
-			// The server ended the session, so it ran nothing: once more
-			// in a new one.
 			c.dropSession(session)
 			continue
 		}
-		return ex.result(), nil
+		return ex, nil
 	}
 }
 
