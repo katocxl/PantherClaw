@@ -1,17 +1,23 @@
 -- SPDX-License-Identifier: BUSL-1.1
 -- Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 --
--- Agent Waitlist reads (M3: ADMISSION entries; PN-004.1). Entries are
+-- Agent Waitlist reads (PN-004.1), by priority and then deadline. Entries are
 -- decided by the service that owns their subject. evidence holds two
 -- objects, "trusted" (established by PantherClaw) and "untrusted" (reported
 -- by a workload or observed at a gateway), which are never mixed.
 
 -- name: ListWaitlistEntries :many
-SELECT * FROM pc.waitlist_entries
-WHERE org_id = sqlc.arg(org_id) AND id > coalesce(sqlc.arg(after)::uuid, '00000000-0000-0000-0000-000000000000')
-  AND state = ANY (sqlc.arg(states)::text[])
-  AND (sqlc.narg(agent_id)::uuid IS NULL OR agent_id = sqlc.narg(agent_id)::uuid)
-ORDER BY id
+SELECT e.* FROM pc.waitlist_entries e
+WHERE e.org_id = sqlc.arg(org_id) AND e.state = ANY (sqlc.arg(states)::text[])
+  AND (sqlc.narg(agent_id)::uuid IS NULL OR e.agent_id = sqlc.narg(agent_id)::uuid)
+  AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR e.kind = ANY (sqlc.arg(kinds)::text[]))
+  AND (cardinality(sqlc.arg(priorities)::smallint[]) = 0 OR e.priority = ANY (sqlc.arg(priorities)::smallint[]))
+  AND (sqlc.narg(assignee)::uuid IS NULL OR e.assignee_user_id = sqlc.narg(assignee)::uuid)
+  AND (NOT sqlc.arg(overdue)::boolean
+       OR (e.state = 'OPEN' AND (e.next_step_at <= now() OR e.deadline_at - now() <= (e.deadline_at - e.created_at) / 10)))
+  AND (sqlc.narg(after)::uuid IS NULL OR (e.priority, e.deadline_at, e.id) >
+       (SELECT a.priority, a.deadline_at, a.id FROM pc.waitlist_entries a WHERE a.org_id = e.org_id AND a.id = sqlc.narg(after)::uuid))
+ORDER BY e.priority, e.deadline_at, e.id
 LIMIT sqlc.arg(page_limit);
 
 -- name: GetWaitlistEntry :one
@@ -170,3 +176,23 @@ LIMIT 500;
 UPDATE pc.waitlist_entries SET routing_health = 'DELIVERY_FAILING'
 WHERE org_id = sqlc.arg(org_id) AND id = ANY (sqlc.arg(entry_ids)::uuid[]) AND state = 'OPEN' AND routing_health = 'OK'
 RETURNING id;
+
+-- Settings (slice 213): one row per org; NULL means the default. The
+-- schema keeps each value within its decision-6 and decision-7 bounds.
+-- name: UpsertWaitlistSettings :exec
+INSERT INTO pc.waitlist_settings (org_id, batch_ceilings, hold_deadline_s, consume_window_s, access_request_deadline_s,
+    tool_review_deadline_s, restoration_deadline_s, reconciliation_deadline_s, max_holds_per_grant, max_holds_per_run,
+    min_account_age_s, min_role_age_s, min_credential_age_s, self_grant_delay_s, updated_by)
+VALUES (sqlc.arg(org_id), sqlc.arg(batch_ceilings), sqlc.narg(hold_deadline_s), sqlc.narg(consume_window_s),
+    sqlc.narg(access_request_deadline_s), sqlc.narg(tool_review_deadline_s), sqlc.narg(restoration_deadline_s),
+    sqlc.narg(reconciliation_deadline_s), sqlc.narg(max_holds_per_grant), sqlc.narg(max_holds_per_run),
+    sqlc.narg(min_account_age_s), sqlc.narg(min_role_age_s), sqlc.narg(min_credential_age_s), sqlc.narg(self_grant_delay_s),
+    sqlc.arg(updated_by))
+ON CONFLICT (org_id) DO UPDATE SET
+    batch_ceilings = EXCLUDED.batch_ceilings, hold_deadline_s = EXCLUDED.hold_deadline_s,
+    consume_window_s = EXCLUDED.consume_window_s, access_request_deadline_s = EXCLUDED.access_request_deadline_s,
+    tool_review_deadline_s = EXCLUDED.tool_review_deadline_s, restoration_deadline_s = EXCLUDED.restoration_deadline_s,
+    reconciliation_deadline_s = EXCLUDED.reconciliation_deadline_s, max_holds_per_grant = EXCLUDED.max_holds_per_grant,
+    max_holds_per_run = EXCLUDED.max_holds_per_run, min_account_age_s = EXCLUDED.min_account_age_s,
+    min_role_age_s = EXCLUDED.min_role_age_s, min_credential_age_s = EXCLUDED.min_credential_age_s,
+    self_grant_delay_s = EXCLUDED.self_grant_delay_s, updated_by = EXCLUDED.updated_by, updated_at = now();

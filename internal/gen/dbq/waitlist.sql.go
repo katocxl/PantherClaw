@@ -12,6 +12,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
 
@@ -425,35 +426,49 @@ func (q *Queries) InsertWaitlistRoute(ctx context.Context, arg InsertWaitlistRou
 
 const listWaitlistEntries = `-- name: ListWaitlistEntries :many
 
-SELECT org_id, id, kind, subject_type, subject_id, agent_id, state, evidence, deadline_at, decided_by, decided_at, decision_reason, created_at, priority, run_id, transaction_id, requested_by, routing_health, escalation_step, next_step_at, assignee_user_id, assigned_at, first_response_at FROM pc.waitlist_entries
-WHERE org_id = $1 AND id > coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
-  AND state = ANY ($3::text[])
-  AND ($4::uuid IS NULL OR agent_id = $4::uuid)
-ORDER BY id
-LIMIT $5
+SELECT e.org_id, e.id, e.kind, e.subject_type, e.subject_id, e.agent_id, e.state, e.evidence, e.deadline_at, e.decided_by, e.decided_at, e.decision_reason, e.created_at, e.priority, e.run_id, e.transaction_id, e.requested_by, e.routing_health, e.escalation_step, e.next_step_at, e.assignee_user_id, e.assigned_at, e.first_response_at FROM pc.waitlist_entries e
+WHERE e.org_id = $1 AND e.state = ANY ($2::text[])
+  AND ($3::uuid IS NULL OR e.agent_id = $3::uuid)
+  AND (cardinality($4::text[]) = 0 OR e.kind = ANY ($4::text[]))
+  AND (cardinality($5::smallint[]) = 0 OR e.priority = ANY ($5::smallint[]))
+  AND ($6::uuid IS NULL OR e.assignee_user_id = $6::uuid)
+  AND (NOT $7::boolean
+       OR (e.state = 'OPEN' AND (e.next_step_at <= now() OR e.deadline_at - now() <= (e.deadline_at - e.created_at) / 10)))
+  AND ($8::uuid IS NULL OR (e.priority, e.deadline_at, e.id) >
+       (SELECT a.priority, a.deadline_at, a.id FROM pc.waitlist_entries a WHERE a.org_id = e.org_id AND a.id = $8::uuid))
+ORDER BY e.priority, e.deadline_at, e.id
+LIMIT $9
 `
 
 type ListWaitlistEntriesParams struct {
-	OrgID     ids.OrgID
-	After     ids.UUID
-	States    []string
-	AgentID   *ids.UUID
-	PageLimit int32
+	OrgID      ids.OrgID
+	States     []string
+	AgentID    *ids.UUID
+	Kinds      []string
+	Priorities []int16
+	Assignee   *ids.UUID
+	Overdue    bool
+	After      *ids.UUID
+	PageLimit  int32
 }
 
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 //
-// Agent Waitlist reads (M3: ADMISSION entries; PN-004.1). Entries are
+// Agent Waitlist reads (PN-004.1), by priority and then deadline. Entries are
 // decided by the service that owns their subject. evidence holds two
 // objects, "trusted" (established by PantherClaw) and "untrusted" (reported
 // by a workload or observed at a gateway), which are never mixed.
 func (q *Queries) ListWaitlistEntries(ctx context.Context, arg ListWaitlistEntriesParams) ([]PcWaitlistEntry, error) {
 	rows, err := q.db.Query(ctx, listWaitlistEntries,
 		arg.OrgID,
-		arg.After,
 		arg.States,
 		arg.AgentID,
+		arg.Kinds,
+		arg.Priorities,
+		arg.Assignee,
+		arg.Overdue,
+		arg.After,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -744,4 +759,64 @@ func (q *Queries) UnroutedEntries(ctx context.Context, orgID ids.OrgID, lim int3
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertWaitlistSettings = `-- name: UpsertWaitlistSettings :exec
+INSERT INTO pc.waitlist_settings (org_id, batch_ceilings, hold_deadline_s, consume_window_s, access_request_deadline_s,
+    tool_review_deadline_s, restoration_deadline_s, reconciliation_deadline_s, max_holds_per_grant, max_holds_per_run,
+    min_account_age_s, min_role_age_s, min_credential_age_s, self_grant_delay_s, updated_by)
+VALUES ($1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, $12, $13, $14,
+    $15)
+ON CONFLICT (org_id) DO UPDATE SET
+    batch_ceilings = EXCLUDED.batch_ceilings, hold_deadline_s = EXCLUDED.hold_deadline_s,
+    consume_window_s = EXCLUDED.consume_window_s, access_request_deadline_s = EXCLUDED.access_request_deadline_s,
+    tool_review_deadline_s = EXCLUDED.tool_review_deadline_s, restoration_deadline_s = EXCLUDED.restoration_deadline_s,
+    reconciliation_deadline_s = EXCLUDED.reconciliation_deadline_s, max_holds_per_grant = EXCLUDED.max_holds_per_grant,
+    max_holds_per_run = EXCLUDED.max_holds_per_run, min_account_age_s = EXCLUDED.min_account_age_s,
+    min_role_age_s = EXCLUDED.min_role_age_s, min_credential_age_s = EXCLUDED.min_credential_age_s,
+    self_grant_delay_s = EXCLUDED.self_grant_delay_s, updated_by = EXCLUDED.updated_by, updated_at = now()
+`
+
+type UpsertWaitlistSettingsParams struct {
+	OrgID                   ids.OrgID
+	BatchCeilings           []byte
+	HoldDeadlineS           *int32
+	ConsumeWindowS          *int32
+	AccessRequestDeadlineS  *int32
+	ToolReviewDeadlineS     *int32
+	RestorationDeadlineS    *int32
+	ReconciliationDeadlineS *int32
+	MaxHoldsPerGrant        pgtype.Int2
+	MaxHoldsPerRun          pgtype.Int2
+	MinAccountAgeS          *int32
+	MinRoleAgeS             *int32
+	MinCredentialAgeS       *int32
+	SelfGrantDelayS         *int32
+	UpdatedBy               string
+}
+
+// Settings (slice 213): one row per org; NULL means the default. The
+// schema keeps each value within its decision-6 and decision-7 bounds.
+func (q *Queries) UpsertWaitlistSettings(ctx context.Context, arg UpsertWaitlistSettingsParams) error {
+	_, err := q.db.Exec(ctx, upsertWaitlistSettings,
+		arg.OrgID,
+		arg.BatchCeilings,
+		arg.HoldDeadlineS,
+		arg.ConsumeWindowS,
+		arg.AccessRequestDeadlineS,
+		arg.ToolReviewDeadlineS,
+		arg.RestorationDeadlineS,
+		arg.ReconciliationDeadlineS,
+		arg.MaxHoldsPerGrant,
+		arg.MaxHoldsPerRun,
+		arg.MinAccountAgeS,
+		arg.MinRoleAgeS,
+		arg.MinCredentialAgeS,
+		arg.SelfGrantDelayS,
+		arg.UpdatedBy,
+	)
+	return err
 }
