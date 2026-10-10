@@ -461,3 +461,19 @@ INSERT INTO pc.approval_batches (org_id, id, kind, user_id, session_id, cli_sess
 VALUES (sqlc.arg(org_id), sqlc.arg(id), sqlc.arg(kind), sqlc.arg(user_id), sqlc.narg(session_id), sqlc.narg(cli_session_id),
     sqlc.arg(batch_hash), sqlc.arg(request_ids)::uuid[], sqlc.arg(state),
     CASE WHEN sqlc.arg(state)::text = 'COMPLETED' THEN now() END);
+
+-- A batch approval's BINDING ceremony, consumed once with its responses.
+-- name: ConsumeBatchCeremony :execrows
+UPDATE pc.webauthn_ceremonies SET consumed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND purpose = 'BINDING'
+  AND batch_id = sqlc.arg(batch_id) AND user_id = sqlc.arg(user_id) AND session_id = sqlc.arg(session_id)
+  AND consumed_at IS NULL AND expires_at > now();
+
+-- name: LockApprovalBatch :one
+SELECT * FROM pc.approval_batches
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND kind = 'APPROVE' AND state = 'PENDING'
+FOR UPDATE;
+
+-- name: CompleteApprovalBatch :execrows
+UPDATE pc.approval_batches SET state = 'COMPLETED', completed_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'PENDING';
