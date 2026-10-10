@@ -42,6 +42,14 @@ var m6Templates = []Template{
 		Title: "A PantherClaw connection was quarantined",
 		Body:  "The connection {connection} was quarantined ({reason}). Every action through it is refused until a person restores it.",
 	},
+	// Packages (HR-081): an upstream MCP tool that changed under a reviewed
+	// package stops every connection using that package version.
+	{
+		Type: "security.package_quarantined", Severity: Critical, Params: []string{"package", "version", "reason"},
+		Title: "A PantherClaw package version was quarantined",
+		Body: "The package {package} {version} was quarantined ({reason}). Every action pinned to it is refused " +
+			"until a person reviews the package again.",
+	},
 	{
 		Type: "security.connection_weakened", Severity: Warning, Params: []string{"connection", "user", "change"},
 		Title: "Enforcement on a PantherClaw connection was weakened",
