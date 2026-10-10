@@ -54,7 +54,10 @@ enum Decision {
 
 // Reason explains one checklist outcome.
 message Reason {
-  // Stable machine code, for example GRANT_AMOUNT_EXCEEDED.
+  // Stable machine code, for example GRANT_AMOUNT_EXCEEDED. Holds add
+  // APPROVAL_DECLINED, APPROVAL_EXPIRED, NARROWER_PROPOSED,
+  // HOLD_LIMIT_REACHED, STEP_UP_SUBJECT_NOT_A_PERSON and
+  // REQUIREMENT_INVALID (G0 M5 part 2).
   string code = 1;
   // Pipeline step that produced it.
   string check = 2;
@@ -117,7 +120,9 @@ message AuthorizeResponse {
   // Whether this answer is a stored decision returned for a repeat
   // (HR-005), not a new evaluation.
   bool repeat = 15;
-  // Field 16 is reserved for M5 part 2's wait handle (WaitInfo).
+  // The wait handle of a held action (REQUIRE_APPROVAL, REQUIRE_STEP_UP),
+  // and the state of its approval request (PAP-1 §8, G0 M5 part 2).
+  WaitInfo wait = 16;
   // How the action's route treats this decision (G0 M6, PN-013). In
   // monitor mode the decision is hypothetical: nothing is reserved, and a
   // permit is returned whatever the decision unless identity or containment
@@ -127,6 +132,60 @@ message AuthorizeResponse {
   // Access mode of the action's connection (F416), for the gateway's
   // execution record.
   string access_mode = 18;
+}
+
+// WaitState is the state of a held action's approval request as a waiter
+// sees it (HR-174): states, codes and times only.
+enum WaitState {
+  WAIT_STATE_UNSPECIFIED = 0;
+  // Waiting for deciders.
+  WAIT_STATE_PENDING = 1;
+  // A decider asked for evidence (WorkloadService.SubmitEvidence).
+  WAIT_STATE_EVIDENCE_REQUESTED = 2;
+  // Approved: resubmit the identical action before consume_by_time.
+  WAIT_STATE_READY = 3;
+  // Declined: the action ends as DENY (APPROVAL_DECLINED).
+  WAIT_STATE_DECLINED = 4;
+  // A decider proposed narrower parameters: the action ends as DENY
+  // (NARROWER_PROPOSED); proposed_params may be submitted as a new action.
+  WAIT_STATE_NARROWER_PROPOSED = 5;
+  // The deadline, the evidence deadline or the consume-by time passed: the
+  // action ends as DENY (APPROVAL_EXPIRED).
+  WAIT_STATE_EXPIRED = 6;
+  // The binding changed; resubmitting decides again.
+  WAIT_STATE_SUPERSEDED = 7;
+  // Something material changed (a revoked grant, a suspended agent, the
+  // kill switch); resubmitting decides again.
+  WAIT_STATE_INVALIDATED = 8;
+  // The approval was used by a resubmission that received its permit.
+  WAIT_STATE_CONSUMED = 9;
+}
+
+// WaitInfo is a wait handle (PAP-1 §7.1, §8). The handle is the
+// transaction id (design decision 15): not a secret, because waiting needs
+// PAP/1 authentication as the transaction's run and instance. Waiting never
+// extends a deadline or dispatches anything (HR-174).
+message WaitInfo {
+  // The handle: the transaction id.
+  string handle = 1;
+  // Seconds to wait before waiting again or resubmitting.
+  int32 retry_after_seconds = 2;
+  // The hold's deadline.
+  google.protobuf.Timestamp deadline_time = 3;
+  // The state.
+  WaitState state = 4;
+  // READY: resubmit before this time.
+  google.protobuf.Timestamp consume_by_time = 5;
+  // The approval request, for the link people open (/approvals/{id}).
+  string approval_request_id = 6;
+  // A stable code: why the request ended (APPROVAL_DECLINED,
+  // APPROVAL_EXPIRED, NARROWER_PROPOSED, BINDING_CHANGED, GRANT_REVOKED, …),
+  // or the evidence question (EVIDENCE_REQUESTED). Never a decider's note.
+  string code = 7;
+  // EVIDENCE_REQUESTED: when the evidence is due.
+  google.protobuf.Timestamp evidence_deadline_time = 8;
+  // NARROWER_PROPOSED: the proposed canonical parameters (JSON).
+  bytes proposed_params = 9;
 }
 
 // DispatchMode is how a route treats decisions (PN-013).

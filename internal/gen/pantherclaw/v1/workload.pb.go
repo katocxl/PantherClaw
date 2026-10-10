@@ -714,11 +714,381 @@ func (x *DelegateGrantResponse) GetGrant() *Grant {
 	return nil
 }
 
+// WaitRequest waits on a held transaction.
+type WaitRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The caller's run; it must be bound to the caller's instance.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// The wait handle (the transaction id).
+	Handle string `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Answer at once when the state differs from this one (unspecified:
+	// answer at once).
+	KnownState WaitState `protobuf:"varint,3,opt,name=known_state,json=knownState,proto3,enum=pantherclaw.v1.WaitState" json:"known_state,omitempty"`
+	// How long to wait at most, in seconds (default and maximum 30).
+	TimeoutSeconds int32 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *WaitRequest) Reset() {
+	*x = WaitRequest{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitRequest) ProtoMessage() {}
+
+func (x *WaitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitRequest.ProtoReflect.Descriptor instead.
+func (*WaitRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *WaitRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *WaitRequest) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *WaitRequest) GetKnownState() WaitState {
+	if x != nil {
+		return x.KnownState
+	}
+	return WaitState_WAIT_STATE_UNSPECIFIED
+}
+
+func (x *WaitRequest) GetTimeoutSeconds() int32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+// WaitResponse returns the state.
+type WaitResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The wait handle with the current state.
+	Wait *WaitInfo `protobuf:"bytes,1,opt,name=wait,proto3" json:"wait,omitempty"`
+	// Whether the wait ended because the timeout passed, not because the
+	// state changed.
+	TimedOut      bool `protobuf:"varint,2,opt,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WaitResponse) Reset() {
+	*x = WaitResponse{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitResponse) ProtoMessage() {}
+
+func (x *WaitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitResponse.ProtoReflect.Descriptor instead.
+func (*WaitResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *WaitResponse) GetWait() *WaitInfo {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+func (x *WaitResponse) GetTimedOut() bool {
+	if x != nil {
+		return x.TimedOut
+	}
+	return false
+}
+
+// SubmitEvidenceRequest adds evidence from the workload.
+type SubmitEvidenceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The caller's run; it must be bound to the caller's instance.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// The wait handle (the transaction id).
+	Handle string `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
+	// The note (UNTRUSTED, at most 4 KiB).
+	Note          string `protobuf:"bytes,3,opt,name=note,proto3" json:"note,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitEvidenceRequest) Reset() {
+	*x = SubmitEvidenceRequest{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitEvidenceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitEvidenceRequest) ProtoMessage() {}
+
+func (x *SubmitEvidenceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitEvidenceRequest.ProtoReflect.Descriptor instead.
+func (*SubmitEvidenceRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SubmitEvidenceRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *SubmitEvidenceRequest) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *SubmitEvidenceRequest) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+// SubmitEvidenceResponse returns the state.
+type SubmitEvidenceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The evidence id.
+	EvidenceId string `protobuf:"bytes,1,opt,name=evidence_id,json=evidenceId,proto3" json:"evidence_id,omitempty"`
+	// The wait handle with the current state.
+	Wait          *WaitInfo `protobuf:"bytes,2,opt,name=wait,proto3" json:"wait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitEvidenceResponse) Reset() {
+	*x = SubmitEvidenceResponse{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitEvidenceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitEvidenceResponse) ProtoMessage() {}
+
+func (x *SubmitEvidenceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitEvidenceResponse.ProtoReflect.Descriptor instead.
+func (*SubmitEvidenceResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SubmitEvidenceResponse) GetEvidenceId() string {
+	if x != nil {
+		return x.EvidenceId
+	}
+	return ""
+}
+
+func (x *SubmitEvidenceResponse) GetWait() *WaitInfo {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+// WorkloadServiceRequestAccessRequest files an access request from the
+// workload.
+type WorkloadServiceRequestAccessRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The caller's run; it must be bound to the caller's instance.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// A transaction of the run that was denied for scope.
+	TransactionId string `protobuf:"bytes,2,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	// What is needed and why: UNTRUSTED (at most 4 KiB).
+	Note          string `protobuf:"bytes,3,opt,name=note,proto3" json:"note,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkloadServiceRequestAccessRequest) Reset() {
+	*x = WorkloadServiceRequestAccessRequest{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkloadServiceRequestAccessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkloadServiceRequestAccessRequest) ProtoMessage() {}
+
+func (x *WorkloadServiceRequestAccessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkloadServiceRequestAccessRequest.ProtoReflect.Descriptor instead.
+func (*WorkloadServiceRequestAccessRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *WorkloadServiceRequestAccessRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *WorkloadServiceRequestAccessRequest) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *WorkloadServiceRequestAccessRequest) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+// WorkloadServiceRequestAccessResponse returns the waitlist entry's id.
+type WorkloadServiceRequestAccessResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The ACCESS_REQUEST entry (an open one for the same grant is returned
+	// instead of a new one).
+	EntryId string `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	// Its deadline.
+	DeadlineTime  *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=deadline_time,json=deadlineTime,proto3" json:"deadline_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkloadServiceRequestAccessResponse) Reset() {
+	*x = WorkloadServiceRequestAccessResponse{}
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkloadServiceRequestAccessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkloadServiceRequestAccessResponse) ProtoMessage() {}
+
+func (x *WorkloadServiceRequestAccessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_workload_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkloadServiceRequestAccessResponse.ProtoReflect.Descriptor instead.
+func (*WorkloadServiceRequestAccessResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_workload_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *WorkloadServiceRequestAccessResponse) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *WorkloadServiceRequestAccessResponse) GetDeadlineTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DeadlineTime
+	}
+	return nil
+}
+
 var File_pantherclaw_v1_workload_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_workload_proto_rawDesc = "" +
 	"\n" +
-	"\x1dpantherclaw/v1/workload.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bpantherclaw/v1/grants.proto\x1a\x1dpantherclaw/v1/identity.proto\x1a\x19pantherclaw/v1/runs.proto\"q\n" +
+	"\x1dpantherclaw/v1/workload.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1epantherclaw/v1/authority.proto\x1a\x1bpantherclaw/v1/grants.proto\x1a\x1dpantherclaw/v1/identity.proto\x1a\x19pantherclaw/v1/runs.proto\"q\n" +
 	"\vAttestation\x12?\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1f.pantherclaw.v1.AttestationKindB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12!\n" +
@@ -778,17 +1148,46 @@ const file_pantherclaw_v1_workload_proto_rawDesc = "" +
 	"delegation\x12=\n" +
 	"\x15min_attestation_level\x18\t \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x02(\x00R\x13minAttestationLevel\"D\n" +
 	"\x15DelegateGrantResponse\x12+\n" +
-	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant*y\n" +
+	"\x05grant\x18\x01 \x01(\v2\x15.pantherclaw.v1.GrantR\x05grant\"\xca\x01\n" +
+	"\vWaitRequest\x12\x1f\n" +
+	"\x06run_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x05runId\x12 \n" +
+	"\x06handle\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x06handle\x12D\n" +
+	"\vknown_state\x18\x03 \x01(\x0e2\x19.pantherclaw.v1.WaitStateB\b\xbaH\x05\x82\x01\x02\x10\x01R\n" +
+	"knownState\x122\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x1e(\x00R\x0etimeoutSeconds\"Y\n" +
+	"\fWaitResponse\x12,\n" +
+	"\x04wait\x18\x01 \x01(\v2\x18.pantherclaw.v1.WaitInfoR\x04wait\x12\x1b\n" +
+	"\ttimed_out\x18\x02 \x01(\bR\btimedOut\"z\n" +
+	"\x15SubmitEvidenceRequest\x12\x1f\n" +
+	"\x06run_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x05runId\x12 \n" +
+	"\x06handle\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x06handle\x12\x1e\n" +
+	"\x04note\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01(\x80 R\x04note\"g\n" +
+	"\x16SubmitEvidenceResponse\x12\x1f\n" +
+	"\vevidence_id\x18\x01 \x01(\tR\n" +
+	"evidenceId\x12,\n" +
+	"\x04wait\x18\x02 \x01(\v2\x18.pantherclaw.v1.WaitInfoR\x04wait\"\x97\x01\n" +
+	"#WorkloadServiceRequestAccessRequest\x12\x1f\n" +
+	"\x06run_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x05runId\x12/\n" +
+	"\x0etransaction_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\rtransactionId\x12\x1e\n" +
+	"\x04note\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01(\x80 R\x04note\"\x82\x01\n" +
+	"$WorkloadServiceRequestAccessResponse\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12?\n" +
+	"\rdeadline_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\fdeadlineTime*y\n" +
 	"\x0fAttestationKind\x12 \n" +
 	"\x1cATTESTATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fATTESTATION_KIND_GITHUB_ACTIONS\x10\x01\x12\x1f\n" +
-	"\x1bATTESTATION_KIND_KUBERNETES\x10\x022\xeb\x02\n" +
+	"\x1bATTESTATION_KIND_KUBERNETES\x10\x022\x8b\x05\n" +
 	"\x0fWorkloadService\x12G\n" +
 	"\x06Enroll\x12\x1d.pantherclaw.v1.EnrollRequest\x1a\x1e.pantherclaw.v1.EnrollResponse\x12S\n" +
 	"\n" +
 	"IssueToken\x12!.pantherclaw.v1.IssueTokenRequest\x1a\".pantherclaw.v1.IssueTokenResponse\x12\\\n" +
 	"\rStartChildRun\x12$.pantherclaw.v1.StartChildRunRequest\x1a%.pantherclaw.v1.StartChildRunResponse\x12\\\n" +
-	"\rDelegateGrant\x12$.pantherclaw.v1.DelegateGrantRequest\x1a%.pantherclaw.v1.DelegateGrantResponseB\xc6\x01\n" +
+	"\rDelegateGrant\x12$.pantherclaw.v1.DelegateGrantRequest\x1a%.pantherclaw.v1.DelegateGrantResponse\x12A\n" +
+	"\x04Wait\x12\x1b.pantherclaw.v1.WaitRequest\x1a\x1c.pantherclaw.v1.WaitResponse\x12_\n" +
+	"\x0eSubmitEvidence\x12%.pantherclaw.v1.SubmitEvidenceRequest\x1a&.pantherclaw.v1.SubmitEvidenceResponse\x12z\n" +
+	"\rRequestAccess\x123.pantherclaw.v1.WorkloadServiceRequestAccessRequest\x1a4.pantherclaw.v1.WorkloadServiceRequestAccessResponseB\xc6\x01\n" +
 	"\x12com.pantherclaw.v1B\rWorkloadProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -804,47 +1203,65 @@ func file_pantherclaw_v1_workload_proto_rawDescGZIP() []byte {
 }
 
 var file_pantherclaw_v1_workload_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pantherclaw_v1_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_pantherclaw_v1_workload_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_pantherclaw_v1_workload_proto_goTypes = []any{
-	(AttestationKind)(0),          // 0: pantherclaw.v1.AttestationKind
-	(*Attestation)(nil),           // 1: pantherclaw.v1.Attestation
-	(*EnrollRequest)(nil),         // 2: pantherclaw.v1.EnrollRequest
-	(*EnrollResponse)(nil),        // 3: pantherclaw.v1.EnrollResponse
-	(*IssueTokenRequest)(nil),     // 4: pantherclaw.v1.IssueTokenRequest
-	(*IssueTokenResponse)(nil),    // 5: pantherclaw.v1.IssueTokenResponse
-	(*StartChildRunRequest)(nil),  // 6: pantherclaw.v1.StartChildRunRequest
-	(*StartChildRunResponse)(nil), // 7: pantherclaw.v1.StartChildRunResponse
-	(*DelegateGrantRequest)(nil),  // 8: pantherclaw.v1.DelegateGrantRequest
-	(*DelegateGrantResponse)(nil), // 9: pantherclaw.v1.DelegateGrantResponse
-	(InstanceState)(0),            // 10: pantherclaw.v1.InstanceState
-	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
-	(*Run)(nil),                   // 12: pantherclaw.v1.Run
-	(*GrantDelegation)(nil),       // 13: pantherclaw.v1.GrantDelegation
-	(*Grant)(nil),                 // 14: pantherclaw.v1.Grant
+	(AttestationKind)(0),                         // 0: pantherclaw.v1.AttestationKind
+	(*Attestation)(nil),                          // 1: pantherclaw.v1.Attestation
+	(*EnrollRequest)(nil),                        // 2: pantherclaw.v1.EnrollRequest
+	(*EnrollResponse)(nil),                       // 3: pantherclaw.v1.EnrollResponse
+	(*IssueTokenRequest)(nil),                    // 4: pantherclaw.v1.IssueTokenRequest
+	(*IssueTokenResponse)(nil),                   // 5: pantherclaw.v1.IssueTokenResponse
+	(*StartChildRunRequest)(nil),                 // 6: pantherclaw.v1.StartChildRunRequest
+	(*StartChildRunResponse)(nil),                // 7: pantherclaw.v1.StartChildRunResponse
+	(*DelegateGrantRequest)(nil),                 // 8: pantherclaw.v1.DelegateGrantRequest
+	(*DelegateGrantResponse)(nil),                // 9: pantherclaw.v1.DelegateGrantResponse
+	(*WaitRequest)(nil),                          // 10: pantherclaw.v1.WaitRequest
+	(*WaitResponse)(nil),                         // 11: pantherclaw.v1.WaitResponse
+	(*SubmitEvidenceRequest)(nil),                // 12: pantherclaw.v1.SubmitEvidenceRequest
+	(*SubmitEvidenceResponse)(nil),               // 13: pantherclaw.v1.SubmitEvidenceResponse
+	(*WorkloadServiceRequestAccessRequest)(nil),  // 14: pantherclaw.v1.WorkloadServiceRequestAccessRequest
+	(*WorkloadServiceRequestAccessResponse)(nil), // 15: pantherclaw.v1.WorkloadServiceRequestAccessResponse
+	(InstanceState)(0),                           // 16: pantherclaw.v1.InstanceState
+	(*timestamppb.Timestamp)(nil),                // 17: google.protobuf.Timestamp
+	(*Run)(nil),                                  // 18: pantherclaw.v1.Run
+	(*GrantDelegation)(nil),                      // 19: pantherclaw.v1.GrantDelegation
+	(*Grant)(nil),                                // 20: pantherclaw.v1.Grant
+	(WaitState)(0),                               // 21: pantherclaw.v1.WaitState
+	(*WaitInfo)(nil),                             // 22: pantherclaw.v1.WaitInfo
 }
 var file_pantherclaw_v1_workload_proto_depIdxs = []int32{
 	0,  // 0: pantherclaw.v1.Attestation.kind:type_name -> pantherclaw.v1.AttestationKind
 	1,  // 1: pantherclaw.v1.EnrollRequest.attestation:type_name -> pantherclaw.v1.Attestation
-	10, // 2: pantherclaw.v1.EnrollResponse.state:type_name -> pantherclaw.v1.InstanceState
+	16, // 2: pantherclaw.v1.EnrollResponse.state:type_name -> pantherclaw.v1.InstanceState
 	1,  // 3: pantherclaw.v1.IssueTokenRequest.attestation:type_name -> pantherclaw.v1.Attestation
-	11, // 4: pantherclaw.v1.IssueTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
-	12, // 5: pantherclaw.v1.StartChildRunResponse.run:type_name -> pantherclaw.v1.Run
-	11, // 6: pantherclaw.v1.DelegateGrantRequest.expire_time:type_name -> google.protobuf.Timestamp
-	13, // 7: pantherclaw.v1.DelegateGrantRequest.delegation:type_name -> pantherclaw.v1.GrantDelegation
-	14, // 8: pantherclaw.v1.DelegateGrantResponse.grant:type_name -> pantherclaw.v1.Grant
-	2,  // 9: pantherclaw.v1.WorkloadService.Enroll:input_type -> pantherclaw.v1.EnrollRequest
-	4,  // 10: pantherclaw.v1.WorkloadService.IssueToken:input_type -> pantherclaw.v1.IssueTokenRequest
-	6,  // 11: pantherclaw.v1.WorkloadService.StartChildRun:input_type -> pantherclaw.v1.StartChildRunRequest
-	8,  // 12: pantherclaw.v1.WorkloadService.DelegateGrant:input_type -> pantherclaw.v1.DelegateGrantRequest
-	3,  // 13: pantherclaw.v1.WorkloadService.Enroll:output_type -> pantherclaw.v1.EnrollResponse
-	5,  // 14: pantherclaw.v1.WorkloadService.IssueToken:output_type -> pantherclaw.v1.IssueTokenResponse
-	7,  // 15: pantherclaw.v1.WorkloadService.StartChildRun:output_type -> pantherclaw.v1.StartChildRunResponse
-	9,  // 16: pantherclaw.v1.WorkloadService.DelegateGrant:output_type -> pantherclaw.v1.DelegateGrantResponse
-	13, // [13:17] is the sub-list for method output_type
-	9,  // [9:13] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	17, // 4: pantherclaw.v1.IssueTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
+	18, // 5: pantherclaw.v1.StartChildRunResponse.run:type_name -> pantherclaw.v1.Run
+	17, // 6: pantherclaw.v1.DelegateGrantRequest.expire_time:type_name -> google.protobuf.Timestamp
+	19, // 7: pantherclaw.v1.DelegateGrantRequest.delegation:type_name -> pantherclaw.v1.GrantDelegation
+	20, // 8: pantherclaw.v1.DelegateGrantResponse.grant:type_name -> pantherclaw.v1.Grant
+	21, // 9: pantherclaw.v1.WaitRequest.known_state:type_name -> pantherclaw.v1.WaitState
+	22, // 10: pantherclaw.v1.WaitResponse.wait:type_name -> pantherclaw.v1.WaitInfo
+	22, // 11: pantherclaw.v1.SubmitEvidenceResponse.wait:type_name -> pantherclaw.v1.WaitInfo
+	17, // 12: pantherclaw.v1.WorkloadServiceRequestAccessResponse.deadline_time:type_name -> google.protobuf.Timestamp
+	2,  // 13: pantherclaw.v1.WorkloadService.Enroll:input_type -> pantherclaw.v1.EnrollRequest
+	4,  // 14: pantherclaw.v1.WorkloadService.IssueToken:input_type -> pantherclaw.v1.IssueTokenRequest
+	6,  // 15: pantherclaw.v1.WorkloadService.StartChildRun:input_type -> pantherclaw.v1.StartChildRunRequest
+	8,  // 16: pantherclaw.v1.WorkloadService.DelegateGrant:input_type -> pantherclaw.v1.DelegateGrantRequest
+	10, // 17: pantherclaw.v1.WorkloadService.Wait:input_type -> pantherclaw.v1.WaitRequest
+	12, // 18: pantherclaw.v1.WorkloadService.SubmitEvidence:input_type -> pantherclaw.v1.SubmitEvidenceRequest
+	14, // 19: pantherclaw.v1.WorkloadService.RequestAccess:input_type -> pantherclaw.v1.WorkloadServiceRequestAccessRequest
+	3,  // 20: pantherclaw.v1.WorkloadService.Enroll:output_type -> pantherclaw.v1.EnrollResponse
+	5,  // 21: pantherclaw.v1.WorkloadService.IssueToken:output_type -> pantherclaw.v1.IssueTokenResponse
+	7,  // 22: pantherclaw.v1.WorkloadService.StartChildRun:output_type -> pantherclaw.v1.StartChildRunResponse
+	9,  // 23: pantherclaw.v1.WorkloadService.DelegateGrant:output_type -> pantherclaw.v1.DelegateGrantResponse
+	11, // 24: pantherclaw.v1.WorkloadService.Wait:output_type -> pantherclaw.v1.WaitResponse
+	13, // 25: pantherclaw.v1.WorkloadService.SubmitEvidence:output_type -> pantherclaw.v1.SubmitEvidenceResponse
+	15, // 26: pantherclaw.v1.WorkloadService.RequestAccess:output_type -> pantherclaw.v1.WorkloadServiceRequestAccessResponse
+	20, // [20:27] is the sub-list for method output_type
+	13, // [13:20] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_workload_proto_init() }
@@ -852,6 +1269,7 @@ func file_pantherclaw_v1_workload_proto_init() {
 	if File_pantherclaw_v1_workload_proto != nil {
 		return
 	}
+	file_pantherclaw_v1_authority_proto_init()
 	file_pantherclaw_v1_grants_proto_init()
 	file_pantherclaw_v1_identity_proto_init()
 	file_pantherclaw_v1_runs_proto_init()
@@ -862,7 +1280,7 @@ func file_pantherclaw_v1_workload_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_workload_proto_rawDesc), len(file_pantherclaw_v1_workload_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

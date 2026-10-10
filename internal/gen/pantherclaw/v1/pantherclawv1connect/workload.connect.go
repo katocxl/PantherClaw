@@ -37,6 +37,14 @@ const (
 	// WorkloadServiceDelegateGrantProcedure is the procedure name of the WorkloadService's
 	// DelegateGrant RPC.
 	WorkloadServiceDelegateGrantProcedure = "/pantherclaw.v1.WorkloadService/DelegateGrant"
+	// WorkloadServiceWaitProcedure is the procedure name of the WorkloadService's Wait RPC.
+	WorkloadServiceWaitProcedure = "/pantherclaw.v1.WorkloadService/Wait"
+	// WorkloadServiceSubmitEvidenceProcedure is the procedure name of the WorkloadService's
+	// SubmitEvidence RPC.
+	WorkloadServiceSubmitEvidenceProcedure = "/pantherclaw.v1.WorkloadService/SubmitEvidence"
+	// WorkloadServiceRequestAccessProcedure is the procedure name of the WorkloadService's
+	// RequestAccess RPC.
+	WorkloadServiceRequestAccessProcedure = "/pantherclaw.v1.WorkloadService/RequestAccess"
 )
 
 var (
@@ -68,6 +76,27 @@ var (
 			Procedure:  WorkloadServiceDelegateGrantProcedure,
 		}
 	})
+	workloadServiceWaitSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_workload_proto.Services().ByName("WorkloadService").Methods().ByName("Wait"),
+			Procedure:  WorkloadServiceWaitProcedure,
+		}
+	})
+	workloadServiceSubmitEvidenceSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_workload_proto.Services().ByName("WorkloadService").Methods().ByName("SubmitEvidence"),
+			Procedure:  WorkloadServiceSubmitEvidenceProcedure,
+		}
+	})
+	workloadServiceRequestAccessSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_workload_proto.Services().ByName("WorkloadService").Methods().ByName("RequestAccess"),
+			Procedure:  WorkloadServiceRequestAccessProcedure,
+		}
+	})
 )
 
 // WorkloadServiceClient is a client for the pantherclaw.v1.WorkloadService service.
@@ -93,6 +122,27 @@ type WorkloadServiceClient interface {
 	// shares its ancestors' budgets and may set smaller limits of its own.
 	// permission: workload.delegate
 	DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error)
+	// Wait long-polls a held transaction of the caller's run (the wait handle
+	// is the transaction id, G0 M5 part 2 design decision 15). It answers as
+	// soon as the state differs from known_state, or after at most 30
+	// seconds, with states, codes and times only: never approver identities,
+	// notes or the display (HR-174). Waiting never extends a deadline or
+	// dispatches anything; on READY the agent resubmits the identical action.
+	// At most 4 waits per instance and 1,000 per server run at once
+	// (ResourceExhausted with a retry time beyond them).
+	// permission: workload.run
+	Wait(context.Context, *v1.WaitRequest) (*v1.WaitResponse, error)
+	// SubmitEvidence adds an UNTRUSTED note to the open approval request of a
+	// held transaction of the caller's run (HR-172). It never changes the
+	// binding; an EVIDENCE_REQUESTED request returns to PENDING.
+	// permission: workload.run
+	SubmitEvidence(context.Context, *v1.SubmitEvidenceRequest) (*v1.SubmitEvidenceResponse, error)
+	// RequestAccess files an access request for the caller's run's grant,
+	// citing one of the run's denials whose decisive reason is about scope
+	// (decision 10). At most 3 per run; the note is UNTRUSTED. It grants
+	// nothing (HR-176).
+	// permission: workload.run
+	RequestAccess(context.Context, *v1.WorkloadServiceRequestAccessRequest) (*v1.WorkloadServiceRequestAccessResponse, error)
 }
 
 // NewWorkloadServiceClient constructs a client for the pantherclaw.v1.WorkloadService service.
@@ -124,6 +174,27 @@ type WorkloadServiceHandler interface {
 	// shares its ancestors' budgets and may set smaller limits of its own.
 	// permission: workload.delegate
 	DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error)
+	// Wait long-polls a held transaction of the caller's run (the wait handle
+	// is the transaction id, G0 M5 part 2 design decision 15). It answers as
+	// soon as the state differs from known_state, or after at most 30
+	// seconds, with states, codes and times only: never approver identities,
+	// notes or the display (HR-174). Waiting never extends a deadline or
+	// dispatches anything; on READY the agent resubmits the identical action.
+	// At most 4 waits per instance and 1,000 per server run at once
+	// (ResourceExhausted with a retry time beyond them).
+	// permission: workload.run
+	Wait(context.Context, *v1.WaitRequest) (*v1.WaitResponse, error)
+	// SubmitEvidence adds an UNTRUSTED note to the open approval request of a
+	// held transaction of the caller's run (HR-172). It never changes the
+	// binding; an EVIDENCE_REQUESTED request returns to PENDING.
+	// permission: workload.run
+	SubmitEvidence(context.Context, *v1.SubmitEvidenceRequest) (*v1.SubmitEvidenceResponse, error)
+	// RequestAccess files an access request for the caller's run's grant,
+	// citing one of the run's denials whose decisive reason is about scope
+	// (decision 10). At most 3 per run; the note is UNTRUSTED. It grants
+	// nothing (HR-176).
+	// permission: workload.run
+	RequestAccess(context.Context, *v1.WorkloadServiceRequestAccessRequest) (*v1.WorkloadServiceRequestAccessResponse, error)
 }
 
 // RegisterWorkloadServiceHandler registers svc as the pantherclaw.v1.WorkloadService implementation
@@ -135,6 +206,9 @@ func RegisterWorkloadServiceHandler(server *connect.Server, svc WorkloadServiceH
 		connect.Method{Spec: workloadServiceIssueTokenSpec(), Handler: adapter.issueToken},
 		connect.Method{Spec: workloadServiceStartChildRunSpec(), Handler: adapter.startChildRun},
 		connect.Method{Spec: workloadServiceDelegateGrantSpec(), Handler: adapter.delegateGrant},
+		connect.Method{Spec: workloadServiceWaitSpec(), Handler: adapter.wait},
+		connect.Method{Spec: workloadServiceSubmitEvidenceSpec(), Handler: adapter.submitEvidence},
+		connect.Method{Spec: workloadServiceRequestAccessSpec(), Handler: adapter.requestAccess},
 	)
 }
 
@@ -155,6 +229,18 @@ func (UnimplementedWorkloadServiceHandler) StartChildRun(context.Context, *v1.St
 
 func (UnimplementedWorkloadServiceHandler) DelegateGrant(context.Context, *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.DelegateGrant is not implemented")
+}
+
+func (UnimplementedWorkloadServiceHandler) Wait(context.Context, *v1.WaitRequest) (*v1.WaitResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.Wait is not implemented")
+}
+
+func (UnimplementedWorkloadServiceHandler) SubmitEvidence(context.Context, *v1.SubmitEvidenceRequest) (*v1.SubmitEvidenceResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.SubmitEvidence is not implemented")
+}
+
+func (UnimplementedWorkloadServiceHandler) RequestAccess(context.Context, *v1.WorkloadServiceRequestAccessRequest) (*v1.WorkloadServiceRequestAccessResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.WorkloadService.RequestAccess is not implemented")
 }
 
 type workloadServiceClient struct {
@@ -188,6 +274,30 @@ func (c *workloadServiceClient) StartChildRun(ctx context.Context, req *v1.Start
 func (c *workloadServiceClient) DelegateGrant(ctx context.Context, req *v1.DelegateGrantRequest) (*v1.DelegateGrantResponse, error) {
 	var res v1.DelegateGrantResponse
 	if err := c.client.CallUnary(ctx, workloadServiceDelegateGrantSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workloadServiceClient) Wait(ctx context.Context, req *v1.WaitRequest) (*v1.WaitResponse, error) {
+	var res v1.WaitResponse
+	if err := c.client.CallUnary(ctx, workloadServiceWaitSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workloadServiceClient) SubmitEvidence(ctx context.Context, req *v1.SubmitEvidenceRequest) (*v1.SubmitEvidenceResponse, error) {
+	var res v1.SubmitEvidenceResponse
+	if err := c.client.CallUnary(ctx, workloadServiceSubmitEvidenceSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *workloadServiceClient) RequestAccess(ctx context.Context, req *v1.WorkloadServiceRequestAccessRequest) (*v1.WorkloadServiceRequestAccessResponse, error) {
+	var res v1.WorkloadServiceRequestAccessResponse
+	if err := c.client.CallUnary(ctx, workloadServiceRequestAccessSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -237,6 +347,42 @@ func (h workloadServiceHandler) delegateGrant(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.DelegateGrant(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workloadServiceHandler) wait(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WaitRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Wait(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workloadServiceHandler) submitEvidence(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.SubmitEvidenceRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.SubmitEvidence(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h workloadServiceHandler) requestAccess(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.WorkloadServiceRequestAccessRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestAccess(ctx, &req)
 	if err != nil {
 		return err
 	}

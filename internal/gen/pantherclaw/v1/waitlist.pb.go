@@ -26,13 +26,24 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// WaitlistKind is the type of decision an entry waits for.
+// WaitlistKind is the type of decision an entry waits for (design
+// decision 12).
 type WaitlistKind int32
 
 const (
 	WaitlistKind_WAITLIST_KIND_UNSPECIFIED WaitlistKind = 0
 	// Admit an instance's key, or claim a discovered agent.
 	WaitlistKind_WAITLIST_KIND_ADMISSION WaitlistKind = 1
+	// A run asks for more authority on its grant (F051).
+	WaitlistKind_WAITLIST_KIND_ACCESS_REQUEST WaitlistKind = 2
+	// A held action waits for approval or step-up.
+	WaitlistKind_WAITLIST_KIND_ACTION_HOLD WaitlistKind = 3
+	// An imported tool package version waits for activation.
+	WaitlistKind_WAITLIST_KIND_TOOL_REVIEW WaitlistKind = 4
+	// A suspended agent waits for restoration (F563).
+	WaitlistKind_WAITLIST_KIND_RESTORATION WaitlistKind = 5
+	// A transaction whose outcome is UNKNOWN waits for reconciliation (M7).
+	WaitlistKind_WAITLIST_KIND_RECONCILIATION WaitlistKind = 6
 )
 
 // Enum value maps for WaitlistKind.
@@ -40,10 +51,20 @@ var (
 	WaitlistKind_name = map[int32]string{
 		0: "WAITLIST_KIND_UNSPECIFIED",
 		1: "WAITLIST_KIND_ADMISSION",
+		2: "WAITLIST_KIND_ACCESS_REQUEST",
+		3: "WAITLIST_KIND_ACTION_HOLD",
+		4: "WAITLIST_KIND_TOOL_REVIEW",
+		5: "WAITLIST_KIND_RESTORATION",
+		6: "WAITLIST_KIND_RECONCILIATION",
 	}
 	WaitlistKind_value = map[string]int32{
-		"WAITLIST_KIND_UNSPECIFIED": 0,
-		"WAITLIST_KIND_ADMISSION":   1,
+		"WAITLIST_KIND_UNSPECIFIED":    0,
+		"WAITLIST_KIND_ADMISSION":      1,
+		"WAITLIST_KIND_ACCESS_REQUEST": 2,
+		"WAITLIST_KIND_ACTION_HOLD":    3,
+		"WAITLIST_KIND_TOOL_REVIEW":    4,
+		"WAITLIST_KIND_RESTORATION":    5,
+		"WAITLIST_KIND_RECONCILIATION": 6,
 	}
 )
 
@@ -74,8 +95,8 @@ func (WaitlistKind) EnumDescriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{0}
 }
 
-// WaitlistState is an entry's state; expiry resolves to rejection, never to
-// approval (PN-004.2).
+// WaitlistState is an entry's state; expiry resolves to "not done", never
+// to approval (PN-004.2).
 type WaitlistState int32
 
 const (
@@ -134,6 +155,117 @@ func (WaitlistState) EnumDescriptor() ([]byte, []int) {
 	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{1}
 }
 
+// RoutingHealth says whether an entry reaches its deciders (F626, HR-173).
+type RoutingHealth int32
+
+const (
+	RoutingHealth_ROUTING_HEALTH_UNSPECIFIED RoutingHealth = 0
+	RoutingHealth_ROUTING_HEALTH_OK          RoutingHealth = 1
+	// Nobody is eligible to decide; the entry still resolves at its deadline.
+	RoutingHealth_ROUTING_HEALTH_NO_ELIGIBLE_DECIDER RoutingHealth = 2
+	// Notifications to its deciders are failing; failures never decide.
+	RoutingHealth_ROUTING_HEALTH_DELIVERY_FAILING RoutingHealth = 3
+)
+
+// Enum value maps for RoutingHealth.
+var (
+	RoutingHealth_name = map[int32]string{
+		0: "ROUTING_HEALTH_UNSPECIFIED",
+		1: "ROUTING_HEALTH_OK",
+		2: "ROUTING_HEALTH_NO_ELIGIBLE_DECIDER",
+		3: "ROUTING_HEALTH_DELIVERY_FAILING",
+	}
+	RoutingHealth_value = map[string]int32{
+		"ROUTING_HEALTH_UNSPECIFIED":         0,
+		"ROUTING_HEALTH_OK":                  1,
+		"ROUTING_HEALTH_NO_ELIGIBLE_DECIDER": 2,
+		"ROUTING_HEALTH_DELIVERY_FAILING":    3,
+	}
+)
+
+func (x RoutingHealth) Enum() *RoutingHealth {
+	p := new(RoutingHealth)
+	*p = x
+	return p
+}
+
+func (x RoutingHealth) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RoutingHealth) Descriptor() protoreflect.EnumDescriptor {
+	return file_pantherclaw_v1_waitlist_proto_enumTypes[2].Descriptor()
+}
+
+func (RoutingHealth) Type() protoreflect.EnumType {
+	return &file_pantherclaw_v1_waitlist_proto_enumTypes[2]
+}
+
+func (x RoutingHealth) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RoutingHealth.Descriptor instead.
+func (RoutingHealth) EnumDescriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{2}
+}
+
+// EscalationScope is how far a step reaches for deciders.
+type EscalationScope int32
+
+const (
+	EscalationScope_ESCALATION_SCOPE_UNSPECIFIED EscalationScope = 0
+	// Environment and team bindings (or the next wider scope if none).
+	EscalationScope_ESCALATION_SCOPE_NEAREST EscalationScope = 1
+	// Also business-unit bindings.
+	EscalationScope_ESCALATION_SCOPE_BUSINESS_UNIT EscalationScope = 2
+	// Also org-scope bindings.
+	EscalationScope_ESCALATION_SCOPE_ORG EscalationScope = 3
+)
+
+// Enum value maps for EscalationScope.
+var (
+	EscalationScope_name = map[int32]string{
+		0: "ESCALATION_SCOPE_UNSPECIFIED",
+		1: "ESCALATION_SCOPE_NEAREST",
+		2: "ESCALATION_SCOPE_BUSINESS_UNIT",
+		3: "ESCALATION_SCOPE_ORG",
+	}
+	EscalationScope_value = map[string]int32{
+		"ESCALATION_SCOPE_UNSPECIFIED":   0,
+		"ESCALATION_SCOPE_NEAREST":       1,
+		"ESCALATION_SCOPE_BUSINESS_UNIT": 2,
+		"ESCALATION_SCOPE_ORG":           3,
+	}
+)
+
+func (x EscalationScope) Enum() *EscalationScope {
+	p := new(EscalationScope)
+	*p = x
+	return p
+}
+
+func (x EscalationScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EscalationScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_pantherclaw_v1_waitlist_proto_enumTypes[3].Descriptor()
+}
+
+func (EscalationScope) Type() protoreflect.EnumType {
+	return &file_pantherclaw_v1_waitlist_proto_enumTypes[3]
+}
+
+func (x EscalationScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EscalationScope.Descriptor instead.
+func (EscalationScope) EnumDescriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{3}
+}
+
 // WaitlistEntry is one pending or decided entry.
 type WaitlistEntry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -141,11 +273,12 @@ type WaitlistEntry struct {
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Kind.
 	Kind WaitlistKind `protobuf:"varint,2,opt,name=kind,proto3,enum=pantherclaw.v1.WaitlistKind" json:"kind,omitempty"`
-	// "agent" or "instance".
+	// "agent", "instance", "approval_request", "grant", "package_version" or
+	// "transaction".
 	SubjectType string `protobuf:"bytes,3,opt,name=subject_type,json=subjectType,proto3" json:"subject_type,omitempty"`
 	// Subject id.
 	SubjectId string `protobuf:"bytes,4,opt,name=subject_id,json=subjectId,proto3" json:"subject_id,omitempty"`
-	// The agent concerned.
+	// The agent concerned (empty for a tool review).
 	AgentId string `protobuf:"bytes,5,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	// State.
 	State WaitlistState `protobuf:"varint,6,opt,name=state,proto3,enum=pantherclaw.v1.WaitlistState" json:"state,omitempty"`
@@ -155,7 +288,7 @@ type WaitlistEntry struct {
 	// UNTRUSTED evidence reported by the workload or observed at a gateway,
 	// shown separately and never used to decide.
 	UntrustedEvidence map[string]string `protobuf:"bytes,8,rep,name=untrusted_evidence,json=untrustedEvidence,proto3" json:"untrusted_evidence,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Deadline; an open entry past it is expired.
+	// Deadline; an open entry past it resolves to "not done".
 	DeadlineTime *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=deadline_time,json=deadlineTime,proto3" json:"deadline_time,omitempty"`
 	// Who decided ("user:<id>" or "system").
 	DecidedBy string `protobuf:"bytes,10,opt,name=decided_by,json=decidedBy,proto3" json:"decided_by,omitempty"`
@@ -164,9 +297,31 @@ type WaitlistEntry struct {
 	// Reason given with the decision.
 	DecisionReason string `protobuf:"bytes,12,opt,name=decision_reason,json=decisionReason,proto3" json:"decision_reason,omitempty"`
 	// Creation time.
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// Priority, 1 (most urgent) to 4, from the kind, the definition's
+	// reversibility and the deadline.
+	Priority int32 `protobuf:"varint,14,opt,name=priority,proto3" json:"priority,omitempty"`
+	// The run concerned, if any.
+	RunId string `protobuf:"bytes,15,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// The transaction concerned, if any.
+	TransactionId string `protobuf:"bytes,16,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	// Who filed it ("user:<id>", "instance:<id>"), for access requests and
+	// restorations.
+	RequestedBy string `protobuf:"bytes,17,opt,name=requested_by,json=requestedBy,proto3" json:"requested_by,omitempty"`
+	// Routing health.
+	RoutingHealth RoutingHealth `protobuf:"varint,18,opt,name=routing_health,json=routingHealth,proto3,enum=pantherclaw.v1.RoutingHealth" json:"routing_health,omitempty"`
+	// Escalation steps taken so far (0 at creation).
+	EscalationStep int32 `protobuf:"varint,19,opt,name=escalation_step,json=escalationStep,proto3" json:"escalation_step,omitempty"`
+	// When the next escalation step is due.
+	NextStepTime *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=next_step_time,json=nextStepTime,proto3" json:"next_step_time,omitempty"`
+	// Who is working on it.
+	AssigneeUserId string `protobuf:"bytes,21,opt,name=assignee_user_id,json=assigneeUserId,proto3" json:"assignee_user_id,omitempty"`
+	// When it was assigned.
+	AssignTime *timestamppb.Timestamp `protobuf:"bytes,22,opt,name=assign_time,json=assignTime,proto3" json:"assign_time,omitempty"`
+	// When a decider first responded.
+	FirstResponseTime *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=first_response_time,json=firstResponseTime,proto3" json:"first_response_time,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WaitlistEntry) Reset() {
@@ -290,6 +445,76 @@ func (x *WaitlistEntry) GetCreateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *WaitlistEntry) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *WaitlistEntry) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *WaitlistEntry) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *WaitlistEntry) GetRequestedBy() string {
+	if x != nil {
+		return x.RequestedBy
+	}
+	return ""
+}
+
+func (x *WaitlistEntry) GetRoutingHealth() RoutingHealth {
+	if x != nil {
+		return x.RoutingHealth
+	}
+	return RoutingHealth_ROUTING_HEALTH_UNSPECIFIED
+}
+
+func (x *WaitlistEntry) GetEscalationStep() int32 {
+	if x != nil {
+		return x.EscalationStep
+	}
+	return 0
+}
+
+func (x *WaitlistEntry) GetNextStepTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextStepTime
+	}
+	return nil
+}
+
+func (x *WaitlistEntry) GetAssigneeUserId() string {
+	if x != nil {
+		return x.AssigneeUserId
+	}
+	return ""
+}
+
+func (x *WaitlistEntry) GetAssignTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AssignTime
+	}
+	return nil
+}
+
+func (x *WaitlistEntry) GetFirstResponseTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FirstResponseTime
+	}
+	return nil
+}
+
 // ListWaitlistEntriesRequest pages through entries.
 type ListWaitlistEntriesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -300,7 +525,16 @@ type ListWaitlistEntriesRequest struct {
 	// Only entries in these states (open entries when empty).
 	States []WaitlistState `protobuf:"varint,3,rep,packed,name=states,proto3,enum=pantherclaw.v1.WaitlistState" json:"states,omitempty"`
 	// Only entries about this agent.
-	AgentId       *string `protobuf:"bytes,4,opt,name=agent_id,json=agentId,proto3,oneof" json:"agent_id,omitempty"`
+	AgentId *string `protobuf:"bytes,4,opt,name=agent_id,json=agentId,proto3,oneof" json:"agent_id,omitempty"`
+	// Only entries of these kinds.
+	Kinds []WaitlistKind `protobuf:"varint,5,rep,packed,name=kinds,proto3,enum=pantherclaw.v1.WaitlistKind" json:"kinds,omitempty"`
+	// Only entries of these priorities (1-4).
+	Priorities []int32 `protobuf:"varint,6,rep,packed,name=priorities,proto3" json:"priorities,omitempty"`
+	// Only entries assigned to the caller.
+	AssignedToMe bool `protobuf:"varint,7,opt,name=assigned_to_me,json=assignedToMe,proto3" json:"assigned_to_me,omitempty"`
+	// Only open entries past their next escalation step or within a tenth of
+	// their deadline.
+	Overdue       bool `protobuf:"varint,8,opt,name=overdue,proto3" json:"overdue,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -363,13 +597,44 @@ func (x *ListWaitlistEntriesRequest) GetAgentId() string {
 	return ""
 }
 
+func (x *ListWaitlistEntriesRequest) GetKinds() []WaitlistKind {
+	if x != nil {
+		return x.Kinds
+	}
+	return nil
+}
+
+func (x *ListWaitlistEntriesRequest) GetPriorities() []int32 {
+	if x != nil {
+		return x.Priorities
+	}
+	return nil
+}
+
+func (x *ListWaitlistEntriesRequest) GetAssignedToMe() bool {
+	if x != nil {
+		return x.AssignedToMe
+	}
+	return false
+}
+
+func (x *ListWaitlistEntriesRequest) GetOverdue() bool {
+	if x != nil {
+		return x.Overdue
+	}
+	return false
+}
+
 // ListWaitlistEntriesResponse is one page.
 type ListWaitlistEntriesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Entries, oldest first.
+	// Entries by priority, then deadline.
 	Entries []*WaitlistEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	// Token for the next page; empty on the last page.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	// The scopes where the caller holds waitlist.read, so that an empty list
+	// means "nothing waiting there", not "nothing waiting" (F626).
+	CheckedScopes []string `protobuf:"bytes,3,rep,name=checked_scopes,json=checkedScopes,proto3" json:"checked_scopes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -416,6 +681,13 @@ func (x *ListWaitlistEntriesResponse) GetNextPageToken() string {
 		return x.NextPageToken
 	}
 	return ""
+}
+
+func (x *ListWaitlistEntriesResponse) GetCheckedScopes() []string {
+	if x != nil {
+		return x.CheckedScopes
+	}
+	return nil
 }
 
 // GetWaitlistEntryRequest names an entry.
@@ -510,11 +782,1313 @@ func (x *GetWaitlistEntryResponse) GetEntry() *WaitlistEntry {
 	return nil
 }
 
+// AssignWaitlistEntryRequest assigns the caller.
+type AssignWaitlistEntryRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Entry id.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Clear the assignment instead.
+	Unassign      bool `protobuf:"varint,2,opt,name=unassign,proto3" json:"unassign,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AssignWaitlistEntryRequest) Reset() {
+	*x = AssignWaitlistEntryRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AssignWaitlistEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AssignWaitlistEntryRequest) ProtoMessage() {}
+
+func (x *AssignWaitlistEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AssignWaitlistEntryRequest.ProtoReflect.Descriptor instead.
+func (*AssignWaitlistEntryRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *AssignWaitlistEntryRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AssignWaitlistEntryRequest) GetUnassign() bool {
+	if x != nil {
+		return x.Unassign
+	}
+	return false
+}
+
+// AssignWaitlistEntryResponse returns the entry.
+type AssignWaitlistEntryResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The entry.
+	Entry         *WaitlistEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AssignWaitlistEntryResponse) Reset() {
+	*x = AssignWaitlistEntryResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AssignWaitlistEntryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AssignWaitlistEntryResponse) ProtoMessage() {}
+
+func (x *AssignWaitlistEntryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AssignWaitlistEntryResponse.ProtoReflect.Descriptor instead.
+func (*AssignWaitlistEntryResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *AssignWaitlistEntryResponse) GetEntry() *WaitlistEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+// RequestAccessRequest files an access request.
+type RequestAccessRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run whose grant should change; the caller must be its launcher or
+	// represented principal.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// What is needed and why: UNTRUSTED, shown only to people in the
+	// untrusted block (at most 4 KiB).
+	Note string `protobuf:"bytes,2,opt,name=note,proto3" json:"note,omitempty"`
+	// A denied transaction of the run this is about, if any.
+	TransactionId *string `protobuf:"bytes,3,opt,name=transaction_id,json=transactionId,proto3,oneof" json:"transaction_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestAccessRequest) Reset() {
+	*x = RequestAccessRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestAccessRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestAccessRequest) ProtoMessage() {}
+
+func (x *RequestAccessRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestAccessRequest.ProtoReflect.Descriptor instead.
+func (*RequestAccessRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *RequestAccessRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *RequestAccessRequest) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+func (x *RequestAccessRequest) GetTransactionId() string {
+	if x != nil && x.TransactionId != nil {
+		return *x.TransactionId
+	}
+	return ""
+}
+
+// RequestAccessResponse returns the entry (an open one for the same grant
+// is returned instead of a new one).
+type RequestAccessResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The entry.
+	Entry         *WaitlistEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestAccessResponse) Reset() {
+	*x = RequestAccessResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestAccessResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestAccessResponse) ProtoMessage() {}
+
+func (x *RequestAccessResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestAccessResponse.ProtoReflect.Descriptor instead.
+func (*RequestAccessResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RequestAccessResponse) GetEntry() *WaitlistEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+// DismissAccessRequestRequest dismisses an access request.
+type DismissAccessRequestRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Entry id.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Reason, recorded with the decision.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DismissAccessRequestRequest) Reset() {
+	*x = DismissAccessRequestRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissAccessRequestRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissAccessRequestRequest) ProtoMessage() {}
+
+func (x *DismissAccessRequestRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissAccessRequestRequest.ProtoReflect.Descriptor instead.
+func (*DismissAccessRequestRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *DismissAccessRequestRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DismissAccessRequestRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// DismissAccessRequestResponse returns the entry.
+type DismissAccessRequestResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The entry.
+	Entry         *WaitlistEntry `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DismissAccessRequestResponse) Reset() {
+	*x = DismissAccessRequestResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissAccessRequestResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissAccessRequestResponse) ProtoMessage() {}
+
+func (x *DismissAccessRequestResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissAccessRequestResponse.ProtoReflect.Descriptor instead.
+func (*DismissAccessRequestResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DismissAccessRequestResponse) GetEntry() *WaitlistEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+// EscalationStep is one step of a chain, taken at a fraction of the
+// deadline.
+type EscalationStep struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// When, in percent of the time between creation and deadline (0-99).
+	AtPercent int32 `protobuf:"varint,1,opt,name=at_percent,json=atPercent,proto3" json:"at_percent,omitempty"`
+	// The widest scope whose eligible deciders are notified.
+	Scope EscalationScope `protobuf:"varint,2,opt,name=scope,proto3,enum=pantherclaw.v1.EscalationScope" json:"scope,omitempty"`
+	// Remind deciders already notified.
+	Remind bool `protobuf:"varint,3,opt,name=remind,proto3" json:"remind,omitempty"`
+	// Also notify the agent's owner and backup owner (no vote unless they
+	// are eligible).
+	NotifyOwners bool `protobuf:"varint,4,opt,name=notify_owners,json=notifyOwners,proto3" json:"notify_owners,omitempty"`
+	// Also notify channels subscribed to the entry's event.
+	NotifyChannels bool `protobuf:"varint,5,opt,name=notify_channels,json=notifyChannels,proto3" json:"notify_channels,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *EscalationStep) Reset() {
+	*x = EscalationStep{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EscalationStep) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EscalationStep) ProtoMessage() {}
+
+func (x *EscalationStep) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EscalationStep.ProtoReflect.Descriptor instead.
+func (*EscalationStep) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *EscalationStep) GetAtPercent() int32 {
+	if x != nil {
+		return x.AtPercent
+	}
+	return 0
+}
+
+func (x *EscalationStep) GetScope() EscalationScope {
+	if x != nil {
+		return x.Scope
+	}
+	return EscalationScope_ESCALATION_SCOPE_UNSPECIFIED
+}
+
+func (x *EscalationStep) GetRemind() bool {
+	if x != nil {
+		return x.Remind
+	}
+	return false
+}
+
+func (x *EscalationStep) GetNotifyOwners() bool {
+	if x != nil {
+		return x.NotifyOwners
+	}
+	return false
+}
+
+func (x *EscalationStep) GetNotifyChannels() bool {
+	if x != nil {
+		return x.NotifyChannels
+	}
+	return false
+}
+
+// EscalationChain is the chain of an org or a team.
+type EscalationChain struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The team, or empty for the org's chain.
+	TeamId string `protobuf:"bytes,1,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
+	// Revision (0 for the built-in default).
+	Revision int32 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Steps, by at_percent.
+	Steps []*EscalationStep `protobuf:"bytes,3,rep,name=steps,proto3" json:"steps,omitempty"`
+	// Who set it.
+	CreatedBy string `protobuf:"bytes,4,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
+	// When.
+	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EscalationChain) Reset() {
+	*x = EscalationChain{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EscalationChain) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EscalationChain) ProtoMessage() {}
+
+func (x *EscalationChain) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EscalationChain.ProtoReflect.Descriptor instead.
+func (*EscalationChain) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *EscalationChain) GetTeamId() string {
+	if x != nil {
+		return x.TeamId
+	}
+	return ""
+}
+
+func (x *EscalationChain) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *EscalationChain) GetSteps() []*EscalationStep {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
+func (x *EscalationChain) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *EscalationChain) GetCreateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreateTime
+	}
+	return nil
+}
+
+// GetEscalationChainRequest names a team.
+type GetEscalationChainRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The team (empty: the org's chain).
+	TeamId        *string `protobuf:"bytes,1,opt,name=team_id,json=teamId,proto3,oneof" json:"team_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetEscalationChainRequest) Reset() {
+	*x = GetEscalationChainRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetEscalationChainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetEscalationChainRequest) ProtoMessage() {}
+
+func (x *GetEscalationChainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetEscalationChainRequest.ProtoReflect.Descriptor instead.
+func (*GetEscalationChainRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GetEscalationChainRequest) GetTeamId() string {
+	if x != nil && x.TeamId != nil {
+		return *x.TeamId
+	}
+	return ""
+}
+
+// GetEscalationChainResponse returns the chain in effect.
+type GetEscalationChainResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The chain.
+	Chain         *EscalationChain `protobuf:"bytes,1,opt,name=chain,proto3" json:"chain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetEscalationChainResponse) Reset() {
+	*x = GetEscalationChainResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetEscalationChainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetEscalationChainResponse) ProtoMessage() {}
+
+func (x *GetEscalationChainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetEscalationChainResponse.ProtoReflect.Descriptor instead.
+func (*GetEscalationChainResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetEscalationChainResponse) GetChain() *EscalationChain {
+	if x != nil {
+		return x.Chain
+	}
+	return nil
+}
+
+// SetEscalationChainRequest replaces a chain.
+type SetEscalationChainRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The team (empty: the org's chain).
+	TeamId *string `protobuf:"bytes,1,opt,name=team_id,json=teamId,proto3,oneof" json:"team_id,omitempty"`
+	// Steps (1-5), with increasing at_percent.
+	Steps []*EscalationStep `protobuf:"bytes,2,rep,name=steps,proto3" json:"steps,omitempty"`
+	// The revision being replaced (0 when none is set); a stale one is
+	// refused.
+	Revision      int32 `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetEscalationChainRequest) Reset() {
+	*x = SetEscalationChainRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetEscalationChainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetEscalationChainRequest) ProtoMessage() {}
+
+func (x *SetEscalationChainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetEscalationChainRequest.ProtoReflect.Descriptor instead.
+func (*SetEscalationChainRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *SetEscalationChainRequest) GetTeamId() string {
+	if x != nil && x.TeamId != nil {
+		return *x.TeamId
+	}
+	return ""
+}
+
+func (x *SetEscalationChainRequest) GetSteps() []*EscalationStep {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
+func (x *SetEscalationChainRequest) GetRevision() int32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+// SetEscalationChainResponse returns the new chain.
+type SetEscalationChainResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The chain.
+	Chain         *EscalationChain `protobuf:"bytes,1,opt,name=chain,proto3" json:"chain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetEscalationChainResponse) Reset() {
+	*x = SetEscalationChainResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetEscalationChainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetEscalationChainResponse) ProtoMessage() {}
+
+func (x *SetEscalationChainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetEscalationChainResponse.ProtoReflect.Descriptor instead.
+func (*SetEscalationChainResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *SetEscalationChainResponse) GetChain() *EscalationChain {
+	if x != nil {
+		return x.Chain
+	}
+	return nil
+}
+
+// WaitlistSettings are an org's waitlist settings. A zero or empty value
+// in an update means the default.
+type WaitlistSettings struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Batch approval ceiling per ISO currency code, as a canonical decimal
+	// (for example {"USD": "100.00"}); empty means batch approval is off.
+	BatchCeilings map[string]string `protobuf:"bytes,1,rep,name=batch_ceilings,json=batchCeilings,proto3" json:"batch_ceilings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Default hold deadline in seconds (300-3600; default 3600).
+	HoldDeadlineSeconds int32 `protobuf:"varint,2,opt,name=hold_deadline_seconds,json=holdDeadlineSeconds,proto3" json:"hold_deadline_seconds,omitempty"`
+	// Time to use an approval in seconds (60-900; default 900).
+	ConsumeWindowSeconds int32 `protobuf:"varint,3,opt,name=consume_window_seconds,json=consumeWindowSeconds,proto3" json:"consume_window_seconds,omitempty"`
+	// Access request deadline in seconds (at most 7 days).
+	AccessRequestDeadlineSeconds int32 `protobuf:"varint,4,opt,name=access_request_deadline_seconds,json=accessRequestDeadlineSeconds,proto3" json:"access_request_deadline_seconds,omitempty"`
+	// Tool review deadline in seconds (at most 30 days).
+	ToolReviewDeadlineSeconds int32 `protobuf:"varint,5,opt,name=tool_review_deadline_seconds,json=toolReviewDeadlineSeconds,proto3" json:"tool_review_deadline_seconds,omitempty"`
+	// Restoration deadline in seconds (at most 24 hours).
+	RestorationDeadlineSeconds int32 `protobuf:"varint,6,opt,name=restoration_deadline_seconds,json=restorationDeadlineSeconds,proto3" json:"restoration_deadline_seconds,omitempty"`
+	// Reconciliation escalation deadline in seconds (at most 72 hours).
+	ReconciliationDeadlineSeconds int32 `protobuf:"varint,7,opt,name=reconciliation_deadline_seconds,json=reconciliationDeadlineSeconds,proto3" json:"reconciliation_deadline_seconds,omitempty"`
+	// Pending holds per grant (1-100; default 20).
+	MaxHoldsPerGrant int32 `protobuf:"varint,8,opt,name=max_holds_per_grant,json=maxHoldsPerGrant,proto3" json:"max_holds_per_grant,omitempty"`
+	// Pending holds per run (1-5; default 5).
+	MaxHoldsPerRun int32 `protobuf:"varint,9,opt,name=max_holds_per_run,json=maxHoldsPerRun,proto3" json:"max_holds_per_run,omitempty"`
+	// Minimum account age for multi-person approvals in seconds (at least 7
+	// days).
+	MinAccountAgeSeconds int32 `protobuf:"varint,10,opt,name=min_account_age_seconds,json=minAccountAgeSeconds,proto3" json:"min_account_age_seconds,omitempty"`
+	// Minimum age of the role binding that makes a decider eligible, for
+	// multi-person approvals, in seconds (at least 24 hours).
+	MinRoleAgeSeconds int32 `protobuf:"varint,11,opt,name=min_role_age_seconds,json=minRoleAgeSeconds,proto3" json:"min_role_age_seconds,omitempty"`
+	// Minimum credential age for multi-person approvals in seconds (at least
+	// 24 hours).
+	MinCredentialAgeSeconds int32 `protobuf:"varint,12,opt,name=min_credential_age_seconds,json=minCredentialAgeSeconds,proto3" json:"min_credential_age_seconds,omitempty"`
+	// How long a role a person granted themselves waits before it counts, in
+	// seconds (at least 24 hours).
+	SelfGrantDelaySeconds int32 `protobuf:"varint,13,opt,name=self_grant_delay_seconds,json=selfGrantDelaySeconds,proto3" json:"self_grant_delay_seconds,omitempty"`
+	// Who changed them last (read only).
+	UpdatedBy string `protobuf:"bytes,14,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	// When (read only).
+	UpdateTime    *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=update_time,json=updateTime,proto3" json:"update_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WaitlistSettings) Reset() {
+	*x = WaitlistSettings{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitlistSettings) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitlistSettings) ProtoMessage() {}
+
+func (x *WaitlistSettings) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitlistSettings.ProtoReflect.Descriptor instead.
+func (*WaitlistSettings) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *WaitlistSettings) GetBatchCeilings() map[string]string {
+	if x != nil {
+		return x.BatchCeilings
+	}
+	return nil
+}
+
+func (x *WaitlistSettings) GetHoldDeadlineSeconds() int32 {
+	if x != nil {
+		return x.HoldDeadlineSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetConsumeWindowSeconds() int32 {
+	if x != nil {
+		return x.ConsumeWindowSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetAccessRequestDeadlineSeconds() int32 {
+	if x != nil {
+		return x.AccessRequestDeadlineSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetToolReviewDeadlineSeconds() int32 {
+	if x != nil {
+		return x.ToolReviewDeadlineSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetRestorationDeadlineSeconds() int32 {
+	if x != nil {
+		return x.RestorationDeadlineSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetReconciliationDeadlineSeconds() int32 {
+	if x != nil {
+		return x.ReconciliationDeadlineSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetMaxHoldsPerGrant() int32 {
+	if x != nil {
+		return x.MaxHoldsPerGrant
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetMaxHoldsPerRun() int32 {
+	if x != nil {
+		return x.MaxHoldsPerRun
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetMinAccountAgeSeconds() int32 {
+	if x != nil {
+		return x.MinAccountAgeSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetMinRoleAgeSeconds() int32 {
+	if x != nil {
+		return x.MinRoleAgeSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetMinCredentialAgeSeconds() int32 {
+	if x != nil {
+		return x.MinCredentialAgeSeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetSelfGrantDelaySeconds() int32 {
+	if x != nil {
+		return x.SelfGrantDelaySeconds
+	}
+	return 0
+}
+
+func (x *WaitlistSettings) GetUpdatedBy() string {
+	if x != nil {
+		return x.UpdatedBy
+	}
+	return ""
+}
+
+func (x *WaitlistSettings) GetUpdateTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdateTime
+	}
+	return nil
+}
+
+// GetWaitlistSettingsRequest asks for the settings.
+type GetWaitlistSettingsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWaitlistSettingsRequest) Reset() {
+	*x = GetWaitlistSettingsRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWaitlistSettingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWaitlistSettingsRequest) ProtoMessage() {}
+
+func (x *GetWaitlistSettingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWaitlistSettingsRequest.ProtoReflect.Descriptor instead.
+func (*GetWaitlistSettingsRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{18}
+}
+
+// GetWaitlistSettingsResponse returns the effective settings.
+type GetWaitlistSettingsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The settings, defaults filled in.
+	Settings      *WaitlistSettings `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWaitlistSettingsResponse) Reset() {
+	*x = GetWaitlistSettingsResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWaitlistSettingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWaitlistSettingsResponse) ProtoMessage() {}
+
+func (x *GetWaitlistSettingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWaitlistSettingsResponse.ProtoReflect.Descriptor instead.
+func (*GetWaitlistSettingsResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetWaitlistSettingsResponse) GetSettings() *WaitlistSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+// UpdateWaitlistSettingsRequest replaces the settings.
+type UpdateWaitlistSettingsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The new settings; zero values mean the default.
+	Settings      *WaitlistSettings `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateWaitlistSettingsRequest) Reset() {
+	*x = UpdateWaitlistSettingsRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateWaitlistSettingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateWaitlistSettingsRequest) ProtoMessage() {}
+
+func (x *UpdateWaitlistSettingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateWaitlistSettingsRequest.ProtoReflect.Descriptor instead.
+func (*UpdateWaitlistSettingsRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *UpdateWaitlistSettingsRequest) GetSettings() *WaitlistSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+// UpdateWaitlistSettingsResponse returns the effective settings.
+type UpdateWaitlistSettingsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The settings, defaults filled in.
+	Settings      *WaitlistSettings `protobuf:"bytes,1,opt,name=settings,proto3" json:"settings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateWaitlistSettingsResponse) Reset() {
+	*x = UpdateWaitlistSettingsResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateWaitlistSettingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateWaitlistSettingsResponse) ProtoMessage() {}
+
+func (x *UpdateWaitlistSettingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateWaitlistSettingsResponse.ProtoReflect.Descriptor instead.
+func (*UpdateWaitlistSettingsResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *UpdateWaitlistSettingsResponse) GetSettings() *WaitlistSettings {
+	if x != nil {
+		return x.Settings
+	}
+	return nil
+}
+
+// GetWaitlistMetricsRequest chooses the window.
+type GetWaitlistMetricsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Days back from now (1-90; default 30).
+	WindowDays int32 `protobuf:"varint,1,opt,name=window_days,json=windowDays,proto3" json:"window_days,omitempty"`
+	// Only these kinds (all when empty).
+	Kinds         []WaitlistKind `protobuf:"varint,2,rep,packed,name=kinds,proto3,enum=pantherclaw.v1.WaitlistKind" json:"kinds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWaitlistMetricsRequest) Reset() {
+	*x = GetWaitlistMetricsRequest{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWaitlistMetricsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWaitlistMetricsRequest) ProtoMessage() {}
+
+func (x *GetWaitlistMetricsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWaitlistMetricsRequest.ProtoReflect.Descriptor instead.
+func (*GetWaitlistMetricsRequest) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetWaitlistMetricsRequest) GetWindowDays() int32 {
+	if x != nil {
+		return x.WindowDays
+	}
+	return 0
+}
+
+func (x *GetWaitlistMetricsRequest) GetKinds() []WaitlistKind {
+	if x != nil {
+		return x.Kinds
+	}
+	return nil
+}
+
+// WaitlistMetric aggregates entries of one kind, or of one decider.
+type WaitlistMetric struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The kind.
+	Kind WaitlistKind `protobuf:"varint,1,opt,name=kind,proto3,enum=pantherclaw.v1.WaitlistKind" json:"kind,omitempty"`
+	// The decider (per-decider rows only).
+	DeciderUserId string `protobuf:"bytes,2,opt,name=decider_user_id,json=deciderUserId,proto3" json:"decider_user_id,omitempty"`
+	// Entries created in the window.
+	Count int64 `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	// Entries decided in the window.
+	Decided int64 `protobuf:"varint,4,opt,name=decided,proto3" json:"decided,omitempty"`
+	// Median and 90th percentile time to first response, in seconds.
+	FirstResponseP50Seconds float64 `protobuf:"fixed64,5,opt,name=first_response_p50_seconds,json=firstResponseP50Seconds,proto3" json:"first_response_p50_seconds,omitempty"`
+	// 90th percentile time to first response, in seconds.
+	FirstResponseP90Seconds float64 `protobuf:"fixed64,6,opt,name=first_response_p90_seconds,json=firstResponseP90Seconds,proto3" json:"first_response_p90_seconds,omitempty"`
+	// Median time to decision, in seconds.
+	DecisionP50Seconds float64 `protobuf:"fixed64,7,opt,name=decision_p50_seconds,json=decisionP50Seconds,proto3" json:"decision_p50_seconds,omitempty"`
+	// 90th percentile time to decision, in seconds.
+	DecisionP90Seconds float64 `protobuf:"fixed64,8,opt,name=decision_p90_seconds,json=decisionP90Seconds,proto3" json:"decision_p90_seconds,omitempty"`
+	// Share of entries that expired (0-1).
+	ExpiryRate float64 `protobuf:"fixed64,9,opt,name=expiry_rate,json=expiryRate,proto3" json:"expiry_rate,omitempty"`
+	// Share of entries that escalated at least once (0-1).
+	EscalationRate float64 `protobuf:"fixed64,10,opt,name=escalation_rate,json=escalationRate,proto3" json:"escalation_rate,omitempty"`
+	// Entries whose routing failed (no eligible decider or failing
+	// deliveries).
+	RoutingFailures int64 `protobuf:"varint,11,opt,name=routing_failures,json=routingFailures,proto3" json:"routing_failures,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *WaitlistMetric) Reset() {
+	*x = WaitlistMetric{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WaitlistMetric) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitlistMetric) ProtoMessage() {}
+
+func (x *WaitlistMetric) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitlistMetric.ProtoReflect.Descriptor instead.
+func (*WaitlistMetric) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *WaitlistMetric) GetKind() WaitlistKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WaitlistKind_WAITLIST_KIND_UNSPECIFIED
+}
+
+func (x *WaitlistMetric) GetDeciderUserId() string {
+	if x != nil {
+		return x.DeciderUserId
+	}
+	return ""
+}
+
+func (x *WaitlistMetric) GetCount() int64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetDecided() int64 {
+	if x != nil {
+		return x.Decided
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetFirstResponseP50Seconds() float64 {
+	if x != nil {
+		return x.FirstResponseP50Seconds
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetFirstResponseP90Seconds() float64 {
+	if x != nil {
+		return x.FirstResponseP90Seconds
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetDecisionP50Seconds() float64 {
+	if x != nil {
+		return x.DecisionP50Seconds
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetDecisionP90Seconds() float64 {
+	if x != nil {
+		return x.DecisionP90Seconds
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetExpiryRate() float64 {
+	if x != nil {
+		return x.ExpiryRate
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetEscalationRate() float64 {
+	if x != nil {
+		return x.EscalationRate
+	}
+	return 0
+}
+
+func (x *WaitlistMetric) GetRoutingFailures() int64 {
+	if x != nil {
+		return x.RoutingFailures
+	}
+	return 0
+}
+
+// GetWaitlistMetricsResponse returns the metrics.
+type GetWaitlistMetricsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Per kind.
+	ByKind []*WaitlistMetric `protobuf:"bytes,1,rep,name=by_kind,json=byKind,proto3" json:"by_kind,omitempty"`
+	// Per decider and kind.
+	ByDecider []*WaitlistMetric `protobuf:"bytes,2,rep,name=by_decider,json=byDecider,proto3" json:"by_decider,omitempty"`
+	// Window start.
+	StartTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	// Window end.
+	EndTime       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=end_time,json=endTime,proto3" json:"end_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWaitlistMetricsResponse) Reset() {
+	*x = GetWaitlistMetricsResponse{}
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWaitlistMetricsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWaitlistMetricsResponse) ProtoMessage() {}
+
+func (x *GetWaitlistMetricsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pantherclaw_v1_waitlist_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWaitlistMetricsResponse.ProtoReflect.Descriptor instead.
+func (*GetWaitlistMetricsResponse) Descriptor() ([]byte, []int) {
+	return file_pantherclaw_v1_waitlist_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *GetWaitlistMetricsResponse) GetByKind() []*WaitlistMetric {
+	if x != nil {
+		return x.ByKind
+	}
+	return nil
+}
+
+func (x *GetWaitlistMetricsResponse) GetByDecider() []*WaitlistMetric {
+	if x != nil {
+		return x.ByDecider
+	}
+	return nil
+}
+
+func (x *GetWaitlistMetricsResponse) GetStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartTime
+	}
+	return nil
+}
+
+func (x *GetWaitlistMetricsResponse) GetEndTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndTime
+	}
+	return nil
+}
+
 var File_pantherclaw_v1_waitlist_proto protoreflect.FileDescriptor
 
 const file_pantherclaw_v1_waitlist_proto_rawDesc = "" +
 	"\n" +
-	"\x1dpantherclaw/v1/waitlist.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x97\x06\n" +
+	"\x1dpantherclaw/v1/waitlist.proto\x12\x0epantherclaw.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\t\n" +
 	"\rWaitlistEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.pantherclaw.v1.WaitlistKindR\x04kind\x12!\n" +
@@ -533,41 +2107,189 @@ const file_pantherclaw_v1_waitlist_proto_rawDesc = "" +
 	"decideTime\x12'\n" +
 	"\x0fdecision_reason\x18\f \x01(\tR\x0edecisionReason\x12;\n" +
 	"\vcreate_time\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime\x1a;\n" +
+	"createTime\x12\x1a\n" +
+	"\bpriority\x18\x0e \x01(\x05R\bpriority\x12\x15\n" +
+	"\x06run_id\x18\x0f \x01(\tR\x05runId\x12%\n" +
+	"\x0etransaction_id\x18\x10 \x01(\tR\rtransactionId\x12!\n" +
+	"\frequested_by\x18\x11 \x01(\tR\vrequestedBy\x12D\n" +
+	"\x0erouting_health\x18\x12 \x01(\x0e2\x1d.pantherclaw.v1.RoutingHealthR\rroutingHealth\x12'\n" +
+	"\x0fescalation_step\x18\x13 \x01(\x05R\x0eescalationStep\x12@\n" +
+	"\x0enext_step_time\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\fnextStepTime\x12(\n" +
+	"\x10assignee_user_id\x18\x15 \x01(\tR\x0eassigneeUserId\x12;\n" +
+	"\vassign_time\x18\x16 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"assignTime\x12J\n" +
+	"\x13first_response_time\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\x11firstResponseTime\x1a;\n" +
 	"\rEvidenceEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aD\n" +
 	"\x16UntrustedEvidenceEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x82\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x03\n" +
 	"\x1aListWaitlistEntriesRequest\x12'\n" +
 	"\tpage_size\x18\x01 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\xc8\x01(\x00R\bpageSize\x128\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tB\x19\xbaH\x16r\x14\x18@2\x10^[A-Za-z0-9_-]*$R\tpageToken\x12J\n" +
 	"\x06states\x18\x03 \x03(\x0e2\x1d.pantherclaw.v1.WaitlistStateB\x13\xbaH\x10\x92\x01\r\x10\x05\x18\x01\"\a\x82\x01\x04\x10\x01 \x00R\x06states\x12(\n" +
-	"\bagent_id\x18\x04 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\aagentId\x88\x01\x01B\v\n" +
-	"\t_agent_id\"~\n" +
+	"\bagent_id\x18\x04 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\aagentId\x88\x01\x01\x12G\n" +
+	"\x05kinds\x18\x05 \x03(\x0e2\x1c.pantherclaw.v1.WaitlistKindB\x13\xbaH\x10\x92\x01\r\x10\x06\x18\x01\"\a\x82\x01\x04\x10\x01 \x00R\x05kinds\x122\n" +
+	"\n" +
+	"priorities\x18\x06 \x03(\x05B\x12\xbaH\x0f\x92\x01\f\x10\x04\x18\x01\"\x06\x1a\x04\x18\x04(\x01R\n" +
+	"priorities\x12$\n" +
+	"\x0eassigned_to_me\x18\a \x01(\bR\fassignedToMe\x12\x18\n" +
+	"\aoverdue\x18\b \x01(\bR\aoverdueB\v\n" +
+	"\t_agent_id\"\xa5\x01\n" +
 	"\x1bListWaitlistEntriesResponse\x127\n" +
 	"\aentries\x18\x01 \x03(\v2\x1d.pantherclaw.v1.WaitlistEntryR\aentries\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"3\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12%\n" +
+	"\x0echecked_scopes\x18\x03 \x03(\tR\rcheckedScopes\"3\n" +
 	"\x17GetWaitlistEntryRequest\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\"O\n" +
 	"\x18GetWaitlistEntryResponse\x123\n" +
-	"\x05entry\x18\x01 \x01(\v2\x1d.pantherclaw.v1.WaitlistEntryR\x05entry*J\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1d.pantherclaw.v1.WaitlistEntryR\x05entry\"R\n" +
+	"\x1aAssignWaitlistEntryRequest\x12\x18\n" +
+	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x1a\n" +
+	"\bunassign\x18\x02 \x01(\bR\bunassign\"R\n" +
+	"\x1bAssignWaitlistEntryResponse\x123\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1d.pantherclaw.v1.WaitlistEntryR\x05entry\"\xa0\x01\n" +
+	"\x14RequestAccessRequest\x12\x1f\n" +
+	"\x06run_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x05runId\x12\x1e\n" +
+	"\x04note\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01(\x80 R\x04note\x124\n" +
+	"\x0etransaction_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\rtransactionId\x88\x01\x01B\x11\n" +
+	"\x0f_transaction_id\"L\n" +
+	"\x15RequestAccessResponse\x123\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1d.pantherclaw.v1.WaitlistEntryR\x05entry\"[\n" +
+	"\x1bDismissAccessRequestRequest\x12\x18\n" +
+	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\"\n" +
+	"\x06reason\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xf4\x03R\x06reason\"S\n" +
+	"\x1cDismissAccessRequestResponse\x123\n" +
+	"\x05entry\x18\x01 \x01(\v2\x1d.pantherclaw.v1.WaitlistEntryR\x05entry\"\xe3\x01\n" +
+	"\x0eEscalationStep\x12(\n" +
+	"\n" +
+	"at_percent\x18\x01 \x01(\x05B\t\xbaH\x06\x1a\x04\x18c(\x00R\tatPercent\x12A\n" +
+	"\x05scope\x18\x02 \x01(\x0e2\x1f.pantherclaw.v1.EscalationScopeB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x05scope\x12\x16\n" +
+	"\x06remind\x18\x03 \x01(\bR\x06remind\x12#\n" +
+	"\rnotify_owners\x18\x04 \x01(\bR\fnotifyOwners\x12'\n" +
+	"\x0fnotify_channels\x18\x05 \x01(\bR\x0enotifyChannels\"\xd8\x01\n" +
+	"\x0fEscalationChain\x12\x17\n" +
+	"\ateam_id\x18\x01 \x01(\tR\x06teamId\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x05R\brevision\x124\n" +
+	"\x05steps\x18\x03 \x03(\v2\x1e.pantherclaw.v1.EscalationStepR\x05steps\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x04 \x01(\tR\tcreatedBy\x12;\n" +
+	"\vcreate_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"createTime\"O\n" +
+	"\x19GetEscalationChainRequest\x12&\n" +
+	"\ateam_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x06teamId\x88\x01\x01B\n" +
+	"\n" +
+	"\b_team_id\"S\n" +
+	"\x1aGetEscalationChainResponse\x125\n" +
+	"\x05chain\x18\x01 \x01(\v2\x1f.pantherclaw.v1.EscalationChainR\x05chain\"\xb6\x01\n" +
+	"\x19SetEscalationChainRequest\x12&\n" +
+	"\ateam_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x06teamId\x88\x01\x01\x12@\n" +
+	"\x05steps\x18\x02 \x03(\v2\x1e.pantherclaw.v1.EscalationStepB\n" +
+	"\xbaH\a\x92\x01\x04\b\x01\x10\x05R\x05steps\x12#\n" +
+	"\brevision\x18\x03 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\brevisionB\n" +
+	"\n" +
+	"\b_team_id\"S\n" +
+	"\x1aSetEscalationChainResponse\x125\n" +
+	"\x05chain\x18\x01 \x01(\v2\x1f.pantherclaw.v1.EscalationChainR\x05chain\"\xa3\t\n" +
+	"\x10WaitlistSettings\x12\xa1\x01\n" +
+	"\x0ebatch_ceilings\x18\x01 \x03(\v23.pantherclaw.v1.WaitlistSettings.BatchCeilingsEntryBE\xbaHB\x9a\x01?\x10\x10\"\x0er\f2\n" +
+	"^[A-Z]{3}$*+r)\x18\x1b2%^(0|[1-9][0-9]{0,17})(\\.[0-9]{1,8})?$R\rbatchCeilings\x12>\n" +
+	"\x15hold_deadline_seconds\x18\x02 \x01(\x05B\n" +
+	"\xbaH\a\x1a\x05\x18\x90\x1c(\x00R\x13holdDeadlineSeconds\x12@\n" +
+	"\x16consume_window_seconds\x18\x03 \x01(\x05B\n" +
+	"\xbaH\a\x1a\x05\x18\x84\a(\x00R\x14consumeWindowSeconds\x12R\n" +
+	"\x1faccess_request_deadline_seconds\x18\x04 \x01(\x05B\v\xbaH\b\x1a\x06\x18\x80\xf5$(\x00R\x1caccessRequestDeadlineSeconds\x12M\n" +
+	"\x1ctool_review_deadline_seconds\x18\x05 \x01(\x05B\f\xbaH\t\x1a\a\x18\x80\x9a\x9e\x01(\x00R\x19toolReviewDeadlineSeconds\x12M\n" +
+	"\x1crestoration_deadline_seconds\x18\x06 \x01(\x05B\v\xbaH\b\x1a\x06\x18\x80\xa3\x05(\x00R\x1arestorationDeadlineSeconds\x12S\n" +
+	"\x1freconciliation_deadline_seconds\x18\a \x01(\x05B\v\xbaH\b\x1a\x06\x18\x80\xe9\x0f(\x00R\x1dreconciliationDeadlineSeconds\x128\n" +
+	"\x13max_holds_per_grant\x18\b \x01(\x05B\t\xbaH\x06\x1a\x04\x18d(\x00R\x10maxHoldsPerGrant\x124\n" +
+	"\x11max_holds_per_run\x18\t \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x05(\x00R\x0emaxHoldsPerRun\x12C\n" +
+	"\x17min_account_age_seconds\x18\n" +
+	" \x01(\x05B\f\xbaH\t\x1a\a\x18\x80\xe7\x84\x0f(\x00R\x14minAccountAgeSeconds\x12=\n" +
+	"\x14min_role_age_seconds\x18\v \x01(\x05B\f\xbaH\t\x1a\a\x18\x80\xe7\x84\x0f(\x00R\x11minRoleAgeSeconds\x12I\n" +
+	"\x1amin_credential_age_seconds\x18\f \x01(\x05B\f\xbaH\t\x1a\a\x18\x80\xe7\x84\x0f(\x00R\x17minCredentialAgeSeconds\x12E\n" +
+	"\x18self_grant_delay_seconds\x18\r \x01(\x05B\f\xbaH\t\x1a\a\x18\x80\xe7\x84\x0f(\x00R\x15selfGrantDelaySeconds\x12\x1d\n" +
+	"\n" +
+	"updated_by\x18\x0e \x01(\tR\tupdatedBy\x12;\n" +
+	"\vupdate_time\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"updateTime\x1a@\n" +
+	"\x12BatchCeilingsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1c\n" +
+	"\x1aGetWaitlistSettingsRequest\"[\n" +
+	"\x1bGetWaitlistSettingsResponse\x12<\n" +
+	"\bsettings\x18\x01 \x01(\v2 .pantherclaw.v1.WaitlistSettingsR\bsettings\"e\n" +
+	"\x1dUpdateWaitlistSettingsRequest\x12D\n" +
+	"\bsettings\x18\x01 \x01(\v2 .pantherclaw.v1.WaitlistSettingsB\x06\xbaH\x03\xc8\x01\x01R\bsettings\"^\n" +
+	"\x1eUpdateWaitlistSettingsResponse\x12<\n" +
+	"\bsettings\x18\x01 \x01(\v2 .pantherclaw.v1.WaitlistSettingsR\bsettings\"\x90\x01\n" +
+	"\x19GetWaitlistMetricsRequest\x12*\n" +
+	"\vwindow_days\x18\x01 \x01(\x05B\t\xbaH\x06\x1a\x04\x18Z(\x00R\n" +
+	"windowDays\x12G\n" +
+	"\x05kinds\x18\x02 \x03(\x0e2\x1c.pantherclaw.v1.WaitlistKindB\x13\xbaH\x10\x92\x01\r\x10\x06\x18\x01\"\a\x82\x01\x04\x10\x01 \x00R\x05kinds\"\xed\x03\n" +
+	"\x0eWaitlistMetric\x120\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1c.pantherclaw.v1.WaitlistKindR\x04kind\x12&\n" +
+	"\x0fdecider_user_id\x18\x02 \x01(\tR\rdeciderUserId\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\x03R\x05count\x12\x18\n" +
+	"\adecided\x18\x04 \x01(\x03R\adecided\x12;\n" +
+	"\x1afirst_response_p50_seconds\x18\x05 \x01(\x01R\x17firstResponseP50Seconds\x12;\n" +
+	"\x1afirst_response_p90_seconds\x18\x06 \x01(\x01R\x17firstResponseP90Seconds\x120\n" +
+	"\x14decision_p50_seconds\x18\a \x01(\x01R\x12decisionP50Seconds\x120\n" +
+	"\x14decision_p90_seconds\x18\b \x01(\x01R\x12decisionP90Seconds\x12\x1f\n" +
+	"\vexpiry_rate\x18\t \x01(\x01R\n" +
+	"expiryRate\x12'\n" +
+	"\x0fescalation_rate\x18\n" +
+	" \x01(\x01R\x0eescalationRate\x12)\n" +
+	"\x10routing_failures\x18\v \x01(\x03R\x0froutingFailures\"\x86\x02\n" +
+	"\x1aGetWaitlistMetricsResponse\x127\n" +
+	"\aby_kind\x18\x01 \x03(\v2\x1e.pantherclaw.v1.WaitlistMetricR\x06byKind\x12=\n" +
+	"\n" +
+	"by_decider\x18\x02 \x03(\v2\x1e.pantherclaw.v1.WaitlistMetricR\tbyDecider\x129\n" +
+	"\n" +
+	"start_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x125\n" +
+	"\bend_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime*\xeb\x01\n" +
 	"\fWaitlistKind\x12\x1d\n" +
 	"\x19WAITLIST_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
-	"\x17WAITLIST_KIND_ADMISSION\x10\x01*\xbc\x01\n" +
+	"\x17WAITLIST_KIND_ADMISSION\x10\x01\x12 \n" +
+	"\x1cWAITLIST_KIND_ACCESS_REQUEST\x10\x02\x12\x1d\n" +
+	"\x19WAITLIST_KIND_ACTION_HOLD\x10\x03\x12\x1d\n" +
+	"\x19WAITLIST_KIND_TOOL_REVIEW\x10\x04\x12\x1d\n" +
+	"\x19WAITLIST_KIND_RESTORATION\x10\x05\x12 \n" +
+	"\x1cWAITLIST_KIND_RECONCILIATION\x10\x06*\xbc\x01\n" +
 	"\rWaitlistState\x12\x1e\n" +
 	"\x1aWAITLIST_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13WAITLIST_STATE_OPEN\x10\x01\x12\x1b\n" +
 	"\x17WAITLIST_STATE_APPROVED\x10\x02\x12\x1b\n" +
 	"\x17WAITLIST_STATE_REJECTED\x10\x03\x12\x1a\n" +
 	"\x16WAITLIST_STATE_EXPIRED\x10\x04\x12\x1c\n" +
-	"\x18WAITLIST_STATE_CANCELLED\x10\x052\xf2\x01\n" +
+	"\x18WAITLIST_STATE_CANCELLED\x10\x05*\x93\x01\n" +
+	"\rRoutingHealth\x12\x1e\n" +
+	"\x1aROUTING_HEALTH_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11ROUTING_HEALTH_OK\x10\x01\x12&\n" +
+	"\"ROUTING_HEALTH_NO_ELIGIBLE_DECIDER\x10\x02\x12#\n" +
+	"\x1fROUTING_HEALTH_DELIVERY_FAILING\x10\x03*\x8f\x01\n" +
+	"\x0fEscalationScope\x12 \n" +
+	"\x1cESCALATION_SCOPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18ESCALATION_SCOPE_NEAREST\x10\x01\x12\"\n" +
+	"\x1eESCALATION_SCOPE_BUSINESS_UNIT\x10\x02\x12\x18\n" +
+	"\x14ESCALATION_SCOPE_ORG\x10\x032\xf2\b\n" +
 	"\x0fWaitlistService\x12s\n" +
 	"\x13ListWaitlistEntries\x12*.pantherclaw.v1.ListWaitlistEntriesRequest\x1a+.pantherclaw.v1.ListWaitlistEntriesResponse\"\x03\x90\x02\x01\x12j\n" +
-	"\x10GetWaitlistEntry\x12'.pantherclaw.v1.GetWaitlistEntryRequest\x1a(.pantherclaw.v1.GetWaitlistEntryResponse\"\x03\x90\x02\x01B\xc6\x01\n" +
+	"\x10GetWaitlistEntry\x12'.pantherclaw.v1.GetWaitlistEntryRequest\x1a(.pantherclaw.v1.GetWaitlistEntryResponse\"\x03\x90\x02\x01\x12n\n" +
+	"\x13AssignWaitlistEntry\x12*.pantherclaw.v1.AssignWaitlistEntryRequest\x1a+.pantherclaw.v1.AssignWaitlistEntryResponse\x12\\\n" +
+	"\rRequestAccess\x12$.pantherclaw.v1.RequestAccessRequest\x1a%.pantherclaw.v1.RequestAccessResponse\x12q\n" +
+	"\x14DismissAccessRequest\x12+.pantherclaw.v1.DismissAccessRequestRequest\x1a,.pantherclaw.v1.DismissAccessRequestResponse\x12p\n" +
+	"\x12GetEscalationChain\x12).pantherclaw.v1.GetEscalationChainRequest\x1a*.pantherclaw.v1.GetEscalationChainResponse\"\x03\x90\x02\x01\x12k\n" +
+	"\x12SetEscalationChain\x12).pantherclaw.v1.SetEscalationChainRequest\x1a*.pantherclaw.v1.SetEscalationChainResponse\x12s\n" +
+	"\x13GetWaitlistSettings\x12*.pantherclaw.v1.GetWaitlistSettingsRequest\x1a+.pantherclaw.v1.GetWaitlistSettingsResponse\"\x03\x90\x02\x01\x12w\n" +
+	"\x16UpdateWaitlistSettings\x12-.pantherclaw.v1.UpdateWaitlistSettingsRequest\x1a..pantherclaw.v1.UpdateWaitlistSettingsResponse\x12p\n" +
+	"\x12GetWaitlistMetrics\x12).pantherclaw.v1.GetWaitlistMetricsRequest\x1a*.pantherclaw.v1.GetWaitlistMetricsResponse\"\x03\x90\x02\x01B\xc6\x01\n" +
 	"\x12com.pantherclaw.v1B\rWaitlistProtoP\x01ZHgithub.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1;pantherclawv1\xa2\x02\x03PXX\xaa\x02\x0ePantherclaw.V1\xca\x02\x0ePantherclaw\\V1\xe2\x02\x1aPantherclaw\\V1\\GPBMetadata\xea\x02\x0fPantherclaw::V1b\x06proto3"
 
 var (
@@ -582,40 +2304,104 @@ func file_pantherclaw_v1_waitlist_proto_rawDescGZIP() []byte {
 	return file_pantherclaw_v1_waitlist_proto_rawDescData
 }
 
-var file_pantherclaw_v1_waitlist_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pantherclaw_v1_waitlist_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_pantherclaw_v1_waitlist_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_pantherclaw_v1_waitlist_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_pantherclaw_v1_waitlist_proto_goTypes = []any{
-	(WaitlistKind)(0),                   // 0: pantherclaw.v1.WaitlistKind
-	(WaitlistState)(0),                  // 1: pantherclaw.v1.WaitlistState
-	(*WaitlistEntry)(nil),               // 2: pantherclaw.v1.WaitlistEntry
-	(*ListWaitlistEntriesRequest)(nil),  // 3: pantherclaw.v1.ListWaitlistEntriesRequest
-	(*ListWaitlistEntriesResponse)(nil), // 4: pantherclaw.v1.ListWaitlistEntriesResponse
-	(*GetWaitlistEntryRequest)(nil),     // 5: pantherclaw.v1.GetWaitlistEntryRequest
-	(*GetWaitlistEntryResponse)(nil),    // 6: pantherclaw.v1.GetWaitlistEntryResponse
-	nil,                                 // 7: pantherclaw.v1.WaitlistEntry.EvidenceEntry
-	nil,                                 // 8: pantherclaw.v1.WaitlistEntry.UntrustedEvidenceEntry
-	(*timestamppb.Timestamp)(nil),       // 9: google.protobuf.Timestamp
+	(WaitlistKind)(0),                      // 0: pantherclaw.v1.WaitlistKind
+	(WaitlistState)(0),                     // 1: pantherclaw.v1.WaitlistState
+	(RoutingHealth)(0),                     // 2: pantherclaw.v1.RoutingHealth
+	(EscalationScope)(0),                   // 3: pantherclaw.v1.EscalationScope
+	(*WaitlistEntry)(nil),                  // 4: pantherclaw.v1.WaitlistEntry
+	(*ListWaitlistEntriesRequest)(nil),     // 5: pantherclaw.v1.ListWaitlistEntriesRequest
+	(*ListWaitlistEntriesResponse)(nil),    // 6: pantherclaw.v1.ListWaitlistEntriesResponse
+	(*GetWaitlistEntryRequest)(nil),        // 7: pantherclaw.v1.GetWaitlistEntryRequest
+	(*GetWaitlistEntryResponse)(nil),       // 8: pantherclaw.v1.GetWaitlistEntryResponse
+	(*AssignWaitlistEntryRequest)(nil),     // 9: pantherclaw.v1.AssignWaitlistEntryRequest
+	(*AssignWaitlistEntryResponse)(nil),    // 10: pantherclaw.v1.AssignWaitlistEntryResponse
+	(*RequestAccessRequest)(nil),           // 11: pantherclaw.v1.RequestAccessRequest
+	(*RequestAccessResponse)(nil),          // 12: pantherclaw.v1.RequestAccessResponse
+	(*DismissAccessRequestRequest)(nil),    // 13: pantherclaw.v1.DismissAccessRequestRequest
+	(*DismissAccessRequestResponse)(nil),   // 14: pantherclaw.v1.DismissAccessRequestResponse
+	(*EscalationStep)(nil),                 // 15: pantherclaw.v1.EscalationStep
+	(*EscalationChain)(nil),                // 16: pantherclaw.v1.EscalationChain
+	(*GetEscalationChainRequest)(nil),      // 17: pantherclaw.v1.GetEscalationChainRequest
+	(*GetEscalationChainResponse)(nil),     // 18: pantherclaw.v1.GetEscalationChainResponse
+	(*SetEscalationChainRequest)(nil),      // 19: pantherclaw.v1.SetEscalationChainRequest
+	(*SetEscalationChainResponse)(nil),     // 20: pantherclaw.v1.SetEscalationChainResponse
+	(*WaitlistSettings)(nil),               // 21: pantherclaw.v1.WaitlistSettings
+	(*GetWaitlistSettingsRequest)(nil),     // 22: pantherclaw.v1.GetWaitlistSettingsRequest
+	(*GetWaitlistSettingsResponse)(nil),    // 23: pantherclaw.v1.GetWaitlistSettingsResponse
+	(*UpdateWaitlistSettingsRequest)(nil),  // 24: pantherclaw.v1.UpdateWaitlistSettingsRequest
+	(*UpdateWaitlistSettingsResponse)(nil), // 25: pantherclaw.v1.UpdateWaitlistSettingsResponse
+	(*GetWaitlistMetricsRequest)(nil),      // 26: pantherclaw.v1.GetWaitlistMetricsRequest
+	(*WaitlistMetric)(nil),                 // 27: pantherclaw.v1.WaitlistMetric
+	(*GetWaitlistMetricsResponse)(nil),     // 28: pantherclaw.v1.GetWaitlistMetricsResponse
+	nil,                                    // 29: pantherclaw.v1.WaitlistEntry.EvidenceEntry
+	nil,                                    // 30: pantherclaw.v1.WaitlistEntry.UntrustedEvidenceEntry
+	nil,                                    // 31: pantherclaw.v1.WaitlistSettings.BatchCeilingsEntry
+	(*timestamppb.Timestamp)(nil),          // 32: google.protobuf.Timestamp
 }
 var file_pantherclaw_v1_waitlist_proto_depIdxs = []int32{
 	0,  // 0: pantherclaw.v1.WaitlistEntry.kind:type_name -> pantherclaw.v1.WaitlistKind
 	1,  // 1: pantherclaw.v1.WaitlistEntry.state:type_name -> pantherclaw.v1.WaitlistState
-	7,  // 2: pantherclaw.v1.WaitlistEntry.evidence:type_name -> pantherclaw.v1.WaitlistEntry.EvidenceEntry
-	8,  // 3: pantherclaw.v1.WaitlistEntry.untrusted_evidence:type_name -> pantherclaw.v1.WaitlistEntry.UntrustedEvidenceEntry
-	9,  // 4: pantherclaw.v1.WaitlistEntry.deadline_time:type_name -> google.protobuf.Timestamp
-	9,  // 5: pantherclaw.v1.WaitlistEntry.decide_time:type_name -> google.protobuf.Timestamp
-	9,  // 6: pantherclaw.v1.WaitlistEntry.create_time:type_name -> google.protobuf.Timestamp
-	1,  // 7: pantherclaw.v1.ListWaitlistEntriesRequest.states:type_name -> pantherclaw.v1.WaitlistState
-	2,  // 8: pantherclaw.v1.ListWaitlistEntriesResponse.entries:type_name -> pantherclaw.v1.WaitlistEntry
-	2,  // 9: pantherclaw.v1.GetWaitlistEntryResponse.entry:type_name -> pantherclaw.v1.WaitlistEntry
-	3,  // 10: pantherclaw.v1.WaitlistService.ListWaitlistEntries:input_type -> pantherclaw.v1.ListWaitlistEntriesRequest
-	5,  // 11: pantherclaw.v1.WaitlistService.GetWaitlistEntry:input_type -> pantherclaw.v1.GetWaitlistEntryRequest
-	4,  // 12: pantherclaw.v1.WaitlistService.ListWaitlistEntries:output_type -> pantherclaw.v1.ListWaitlistEntriesResponse
-	6,  // 13: pantherclaw.v1.WaitlistService.GetWaitlistEntry:output_type -> pantherclaw.v1.GetWaitlistEntryResponse
-	12, // [12:14] is the sub-list for method output_type
-	10, // [10:12] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	29, // 2: pantherclaw.v1.WaitlistEntry.evidence:type_name -> pantherclaw.v1.WaitlistEntry.EvidenceEntry
+	30, // 3: pantherclaw.v1.WaitlistEntry.untrusted_evidence:type_name -> pantherclaw.v1.WaitlistEntry.UntrustedEvidenceEntry
+	32, // 4: pantherclaw.v1.WaitlistEntry.deadline_time:type_name -> google.protobuf.Timestamp
+	32, // 5: pantherclaw.v1.WaitlistEntry.decide_time:type_name -> google.protobuf.Timestamp
+	32, // 6: pantherclaw.v1.WaitlistEntry.create_time:type_name -> google.protobuf.Timestamp
+	2,  // 7: pantherclaw.v1.WaitlistEntry.routing_health:type_name -> pantherclaw.v1.RoutingHealth
+	32, // 8: pantherclaw.v1.WaitlistEntry.next_step_time:type_name -> google.protobuf.Timestamp
+	32, // 9: pantherclaw.v1.WaitlistEntry.assign_time:type_name -> google.protobuf.Timestamp
+	32, // 10: pantherclaw.v1.WaitlistEntry.first_response_time:type_name -> google.protobuf.Timestamp
+	1,  // 11: pantherclaw.v1.ListWaitlistEntriesRequest.states:type_name -> pantherclaw.v1.WaitlistState
+	0,  // 12: pantherclaw.v1.ListWaitlistEntriesRequest.kinds:type_name -> pantherclaw.v1.WaitlistKind
+	4,  // 13: pantherclaw.v1.ListWaitlistEntriesResponse.entries:type_name -> pantherclaw.v1.WaitlistEntry
+	4,  // 14: pantherclaw.v1.GetWaitlistEntryResponse.entry:type_name -> pantherclaw.v1.WaitlistEntry
+	4,  // 15: pantherclaw.v1.AssignWaitlistEntryResponse.entry:type_name -> pantherclaw.v1.WaitlistEntry
+	4,  // 16: pantherclaw.v1.RequestAccessResponse.entry:type_name -> pantherclaw.v1.WaitlistEntry
+	4,  // 17: pantherclaw.v1.DismissAccessRequestResponse.entry:type_name -> pantherclaw.v1.WaitlistEntry
+	3,  // 18: pantherclaw.v1.EscalationStep.scope:type_name -> pantherclaw.v1.EscalationScope
+	15, // 19: pantherclaw.v1.EscalationChain.steps:type_name -> pantherclaw.v1.EscalationStep
+	32, // 20: pantherclaw.v1.EscalationChain.create_time:type_name -> google.protobuf.Timestamp
+	16, // 21: pantherclaw.v1.GetEscalationChainResponse.chain:type_name -> pantherclaw.v1.EscalationChain
+	15, // 22: pantherclaw.v1.SetEscalationChainRequest.steps:type_name -> pantherclaw.v1.EscalationStep
+	16, // 23: pantherclaw.v1.SetEscalationChainResponse.chain:type_name -> pantherclaw.v1.EscalationChain
+	31, // 24: pantherclaw.v1.WaitlistSettings.batch_ceilings:type_name -> pantherclaw.v1.WaitlistSettings.BatchCeilingsEntry
+	32, // 25: pantherclaw.v1.WaitlistSettings.update_time:type_name -> google.protobuf.Timestamp
+	21, // 26: pantherclaw.v1.GetWaitlistSettingsResponse.settings:type_name -> pantherclaw.v1.WaitlistSettings
+	21, // 27: pantherclaw.v1.UpdateWaitlistSettingsRequest.settings:type_name -> pantherclaw.v1.WaitlistSettings
+	21, // 28: pantherclaw.v1.UpdateWaitlistSettingsResponse.settings:type_name -> pantherclaw.v1.WaitlistSettings
+	0,  // 29: pantherclaw.v1.GetWaitlistMetricsRequest.kinds:type_name -> pantherclaw.v1.WaitlistKind
+	0,  // 30: pantherclaw.v1.WaitlistMetric.kind:type_name -> pantherclaw.v1.WaitlistKind
+	27, // 31: pantherclaw.v1.GetWaitlistMetricsResponse.by_kind:type_name -> pantherclaw.v1.WaitlistMetric
+	27, // 32: pantherclaw.v1.GetWaitlistMetricsResponse.by_decider:type_name -> pantherclaw.v1.WaitlistMetric
+	32, // 33: pantherclaw.v1.GetWaitlistMetricsResponse.start_time:type_name -> google.protobuf.Timestamp
+	32, // 34: pantherclaw.v1.GetWaitlistMetricsResponse.end_time:type_name -> google.protobuf.Timestamp
+	5,  // 35: pantherclaw.v1.WaitlistService.ListWaitlistEntries:input_type -> pantherclaw.v1.ListWaitlistEntriesRequest
+	7,  // 36: pantherclaw.v1.WaitlistService.GetWaitlistEntry:input_type -> pantherclaw.v1.GetWaitlistEntryRequest
+	9,  // 37: pantherclaw.v1.WaitlistService.AssignWaitlistEntry:input_type -> pantherclaw.v1.AssignWaitlistEntryRequest
+	11, // 38: pantherclaw.v1.WaitlistService.RequestAccess:input_type -> pantherclaw.v1.RequestAccessRequest
+	13, // 39: pantherclaw.v1.WaitlistService.DismissAccessRequest:input_type -> pantherclaw.v1.DismissAccessRequestRequest
+	17, // 40: pantherclaw.v1.WaitlistService.GetEscalationChain:input_type -> pantherclaw.v1.GetEscalationChainRequest
+	19, // 41: pantherclaw.v1.WaitlistService.SetEscalationChain:input_type -> pantherclaw.v1.SetEscalationChainRequest
+	22, // 42: pantherclaw.v1.WaitlistService.GetWaitlistSettings:input_type -> pantherclaw.v1.GetWaitlistSettingsRequest
+	24, // 43: pantherclaw.v1.WaitlistService.UpdateWaitlistSettings:input_type -> pantherclaw.v1.UpdateWaitlistSettingsRequest
+	26, // 44: pantherclaw.v1.WaitlistService.GetWaitlistMetrics:input_type -> pantherclaw.v1.GetWaitlistMetricsRequest
+	6,  // 45: pantherclaw.v1.WaitlistService.ListWaitlistEntries:output_type -> pantherclaw.v1.ListWaitlistEntriesResponse
+	8,  // 46: pantherclaw.v1.WaitlistService.GetWaitlistEntry:output_type -> pantherclaw.v1.GetWaitlistEntryResponse
+	10, // 47: pantherclaw.v1.WaitlistService.AssignWaitlistEntry:output_type -> pantherclaw.v1.AssignWaitlistEntryResponse
+	12, // 48: pantherclaw.v1.WaitlistService.RequestAccess:output_type -> pantherclaw.v1.RequestAccessResponse
+	14, // 49: pantherclaw.v1.WaitlistService.DismissAccessRequest:output_type -> pantherclaw.v1.DismissAccessRequestResponse
+	18, // 50: pantherclaw.v1.WaitlistService.GetEscalationChain:output_type -> pantherclaw.v1.GetEscalationChainResponse
+	20, // 51: pantherclaw.v1.WaitlistService.SetEscalationChain:output_type -> pantherclaw.v1.SetEscalationChainResponse
+	23, // 52: pantherclaw.v1.WaitlistService.GetWaitlistSettings:output_type -> pantherclaw.v1.GetWaitlistSettingsResponse
+	25, // 53: pantherclaw.v1.WaitlistService.UpdateWaitlistSettings:output_type -> pantherclaw.v1.UpdateWaitlistSettingsResponse
+	28, // 54: pantherclaw.v1.WaitlistService.GetWaitlistMetrics:output_type -> pantherclaw.v1.GetWaitlistMetricsResponse
+	45, // [45:55] is the sub-list for method output_type
+	35, // [35:45] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_waitlist_proto_init() }
@@ -624,13 +2410,16 @@ func file_pantherclaw_v1_waitlist_proto_init() {
 		return
 	}
 	file_pantherclaw_v1_waitlist_proto_msgTypes[1].OneofWrappers = []any{}
+	file_pantherclaw_v1_waitlist_proto_msgTypes[7].OneofWrappers = []any{}
+	file_pantherclaw_v1_waitlist_proto_msgTypes[13].OneofWrappers = []any{}
+	file_pantherclaw_v1_waitlist_proto_msgTypes[15].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pantherclaw_v1_waitlist_proto_rawDesc), len(file_pantherclaw_v1_waitlist_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   7,
+			NumEnums:      4,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
