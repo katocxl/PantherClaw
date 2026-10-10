@@ -23,6 +23,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	"github.com/katocxl/pantherclaw/internal/credentials/domain"
@@ -106,18 +107,32 @@ type fakeAuthority struct {
 	reports  []*pb.ReportUnknownWorkloadRequest
 	actions  []actionir.Parsed
 	verifies int
+	// verifiedRuns are the runs VerifyWorkload was asked about; endedRuns
+	// are refused as run_mismatch.
+	verifiedRuns []string
+	endedRuns    map[string]bool
 }
 
-// VerifyWorkload verifies every workload unless identity is set.
+// VerifyWorkload verifies every workload unless identity is set, as the
+// test instance with testJKT; a named run verifies unless it is in
+// endedRuns, and expires an hour from now.
 func (f *fakeAuthority) VerifyWorkload(_ context.Context, req *pb.VerifyWorkloadRequest) (*pb.VerifyWorkloadResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.verifies++
 	f.creds = req.GetWorkload()
+	f.verifiedRuns = append(f.verifiedRuns, req.GetRunId())
 	if f.identity != "" {
 		return &pb.VerifyWorkloadResponse{ErrorCode: f.identity, Nonce: "nonce-2"}, nil
 	}
-	return &pb.VerifyWorkloadResponse{Verified: true, InstanceId: testAgent, EnvironmentId: testEnv, Nonce: "nonce-4"}, nil
+	if f.endedRuns[req.GetRunId()] {
+		return &pb.VerifyWorkloadResponse{ErrorCode: "run_mismatch", Nonce: "nonce-2"}, nil
+	}
+	res := &pb.VerifyWorkloadResponse{Verified: true, InstanceId: testAgent, EnvironmentId: testEnv, Jkt: testJKT, Nonce: "nonce-4"}
+	if req.GetRunId() != "" {
+		res.RunExpiresAt = timestamppb.New(time.Now().Add(time.Hour))
+	}
+	return res, nil
 }
 
 func newFakeAuthority(t *testing.T) *fakeAuthority {
@@ -886,11 +901,19 @@ func TestHR010_AQuarantinedConnectionDispatchesNothing(t *testing.T) {
 // The gateway reads it without verifying; the Authority verifies it.
 func testWorkloadToken() string { return workloadTokenFor(testAgent) }
 
-// workloadTokenFor is an unsigned workload token naming instance.
-func workloadTokenFor(instance string) string {
+// testJKT is the key thumbprint testWorkloadToken is bound to.
+const testJKT = "jkt-of-the-test-workload-key-0000000000000"
+
+// workloadTokenFor is an unsigned workload token naming instance, bound to
+// testJKT.
+func workloadTokenFor(instance string) string { return workloadTokenWith(instance, testJKT) }
+
+// workloadTokenWith is an unsigned workload token naming instance, bound
+// to the key thumbprint jkt.
+func workloadTokenWith(instance, jkt string) string {
 	enc := base64.RawURLEncoding.EncodeToString
 	payload := `{"sub":"pc:org/` + testOrg + `/agent/01920000-0000-7000-8000-0000000000b1/inst/` + instance +
-		`","pap":{"v":1,"env":"` + testEnv + `"}}`
+		`","cnf":{"jkt":"` + jkt + `"},"pap":{"v":1,"env":"` + testEnv + `"}}`
 	return enc([]byte(`{"alg":"EdDSA"}`)) + "." + enc([]byte(payload)) + ".sig"
 }
 

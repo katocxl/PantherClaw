@@ -1379,7 +1379,11 @@ func (x *ReportUnknownWorkloadResponse) GetNonce() string {
 type VerifyWorkloadRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The request's credentials, as for Authorize.
-	Workload      *WorkloadCredentials `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
+	Workload *WorkloadCredentials `protobuf:"bytes,1,opt,name=workload,proto3" json:"workload,omitempty"`
+	// Optional run (PAP-Run-Id) the request is made in: the instance must be
+	// allowed to use it, as for an action (HR-022), and the response says
+	// when it expires. An MCP session lives on a run.
+	RunId         string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1421,20 +1425,32 @@ func (x *VerifyWorkloadRequest) GetWorkload() *WorkloadCredentials {
 	return nil
 }
 
+func (x *VerifyWorkloadRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
 // VerifyWorkloadResponse says whether the workload is an admitted instance
 // of a usable agent.
 type VerifyWorkloadResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Whether the credentials verified and the agent is usable.
 	Verified bool `protobuf:"varint,1,opt,name=verified,proto3" json:"verified,omitempty"`
-	// When not verified: the PAP-Error code (PAP-1 §12), or `agent_unusable`
-	// for a suspended or retired agent.
+	// When not verified: the PAP-Error code (PAP-1 §12, `run_mismatch` for a
+	// run the instance may not use), or `agent_unusable` for a suspended or
+	// retired agent.
 	ErrorCode string `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	// The verified instance and its environment.
 	InstanceId    string `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
 	EnvironmentId string `protobuf:"bytes,4,opt,name=environment_id,json=environmentId,proto3" json:"environment_id,omitempty"`
 	// Current nonce, for the PAP-Nonce response header.
-	Nonce         string `protobuf:"bytes,5,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	Nonce string `protobuf:"bytes,5,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	// RFC 7638 thumbprint of the key that signed the request.
+	Jkt string `protobuf:"bytes,6,opt,name=jkt,proto3" json:"jkt,omitempty"`
+	// When the requested run expires; unset when no run was named.
+	RunExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=run_expires_at,json=runExpiresAt,proto3" json:"run_expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1502,6 +1518,20 @@ func (x *VerifyWorkloadResponse) GetNonce() string {
 		return x.Nonce
 	}
 	return ""
+}
+
+func (x *VerifyWorkloadResponse) GetJkt() string {
+	if x != nil {
+		return x.Jkt
+	}
+	return ""
+}
+
+func (x *VerifyWorkloadResponse) GetRunExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RunExpiresAt
+	}
+	return nil
 }
 
 var File_pantherclaw_v1_authority_proto protoreflect.FileDescriptor
@@ -1597,9 +1627,10 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\x05route\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x05route\"X\n" +
 	"\x1dReportUnknownWorkloadResponse\x12!\n" +
 	"\fdiscovery_id\x18\x01 \x01(\tR\vdiscoveryId\x12\x14\n" +
-	"\x05nonce\x18\x02 \x01(\tR\x05nonce\"`\n" +
+	"\x05nonce\x18\x02 \x01(\tR\x05nonce\"\x84\x01\n" +
 	"\x15VerifyWorkloadRequest\x12G\n" +
-	"\bworkload\x18\x01 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsB\x06\xbaH\x03\xc8\x01\x01R\bworkload\"\xb1\x01\n" +
+	"\bworkload\x18\x01 \x01(\v2#.pantherclaw.v1.WorkloadCredentialsB\x06\xbaH\x03\xc8\x01\x01R\bworkload\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\"\x85\x02\n" +
 	"\x16VerifyWorkloadResponse\x12\x1a\n" +
 	"\bverified\x18\x01 \x01(\bR\bverified\x12\x1d\n" +
 	"\n" +
@@ -1607,7 +1638,9 @@ const file_pantherclaw_v1_authority_proto_rawDesc = "" +
 	"\vinstance_id\x18\x03 \x01(\tR\n" +
 	"instanceId\x12%\n" +
 	"\x0eenvironment_id\x18\x04 \x01(\tR\renvironmentId\x12\x14\n" +
-	"\x05nonce\x18\x05 \x01(\tR\x05nonce*\xcc\x01\n" +
+	"\x05nonce\x18\x05 \x01(\tR\x05nonce\x12\x10\n" +
+	"\x03jkt\x18\x06 \x01(\tR\x03jkt\x12@\n" +
+	"\x0erun_expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\frunExpiresAt*\xcc\x01\n" +
 	"\bDecision\x12\x18\n" +
 	"\x14DECISION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eDECISION_ALLOW\x10\x01\x12#\n" +
@@ -1694,23 +1727,24 @@ var file_pantherclaw_v1_authority_proto_depIdxs = []int32{
 	20, // 8: pantherclaw.v1.GetNonceResponse.expire_time:type_name -> google.protobuf.Timestamp
 	13, // 9: pantherclaw.v1.ReportUnknownWorkloadRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
 	13, // 10: pantherclaw.v1.VerifyWorkloadRequest.workload:type_name -> pantherclaw.v1.WorkloadCredentials
-	5,  // 11: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
-	9,  // 12: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
-	11, // 13: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
-	14, // 14: pantherclaw.v1.AuthorityService.GetNonce:input_type -> pantherclaw.v1.GetNonceRequest
-	16, // 15: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:input_type -> pantherclaw.v1.ReportUnknownWorkloadRequest
-	18, // 16: pantherclaw.v1.AuthorityService.VerifyWorkload:input_type -> pantherclaw.v1.VerifyWorkloadRequest
-	6,  // 17: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
-	10, // 18: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
-	12, // 19: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
-	15, // 20: pantherclaw.v1.AuthorityService.GetNonce:output_type -> pantherclaw.v1.GetNonceResponse
-	17, // 21: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:output_type -> pantherclaw.v1.ReportUnknownWorkloadResponse
-	19, // 22: pantherclaw.v1.AuthorityService.VerifyWorkload:output_type -> pantherclaw.v1.VerifyWorkloadResponse
-	17, // [17:23] is the sub-list for method output_type
-	11, // [11:17] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	20, // 11: pantherclaw.v1.VerifyWorkloadResponse.run_expires_at:type_name -> google.protobuf.Timestamp
+	5,  // 12: pantherclaw.v1.AuthorityService.Authorize:input_type -> pantherclaw.v1.AuthorizeRequest
+	9,  // 13: pantherclaw.v1.AuthorityService.BeginDispatch:input_type -> pantherclaw.v1.BeginDispatchRequest
+	11, // 14: pantherclaw.v1.AuthorityService.RecordExecution:input_type -> pantherclaw.v1.RecordExecutionRequest
+	14, // 15: pantherclaw.v1.AuthorityService.GetNonce:input_type -> pantherclaw.v1.GetNonceRequest
+	16, // 16: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:input_type -> pantherclaw.v1.ReportUnknownWorkloadRequest
+	18, // 17: pantherclaw.v1.AuthorityService.VerifyWorkload:input_type -> pantherclaw.v1.VerifyWorkloadRequest
+	6,  // 18: pantherclaw.v1.AuthorityService.Authorize:output_type -> pantherclaw.v1.AuthorizeResponse
+	10, // 19: pantherclaw.v1.AuthorityService.BeginDispatch:output_type -> pantherclaw.v1.BeginDispatchResponse
+	12, // 20: pantherclaw.v1.AuthorityService.RecordExecution:output_type -> pantherclaw.v1.RecordExecutionResponse
+	15, // 21: pantherclaw.v1.AuthorityService.GetNonce:output_type -> pantherclaw.v1.GetNonceResponse
+	17, // 22: pantherclaw.v1.AuthorityService.ReportUnknownWorkload:output_type -> pantherclaw.v1.ReportUnknownWorkloadResponse
+	19, // 23: pantherclaw.v1.AuthorityService.VerifyWorkload:output_type -> pantherclaw.v1.VerifyWorkloadResponse
+	18, // [18:24] is the sub-list for method output_type
+	12, // [12:18] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_pantherclaw_v1_authority_proto_init() }

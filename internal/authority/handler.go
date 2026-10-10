@@ -202,8 +202,14 @@ func (h *Handler) VerifyWorkload(ctx context.Context, req *pantherclawv1.VerifyW
 	if err != nil {
 		return nil, err
 	}
+	var run ids.UUID
+	if r := req.GetRunId(); r != "" {
+		if run, err = ids.ParseUUID(r); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, "run_id must be a UUID")
+		}
+	}
 	out := &pantherclawv1.VerifyWorkloadResponse{}
-	v, err := h.svc.Verify(ctx, gw, credentials(req.GetWorkload()))
+	v, err := h.svc.Verify(ctx, gw, credentials(req.GetWorkload()), run)
 	var pe *pap.Error
 	switch {
 	case errors.As(err, &pe):
@@ -213,7 +219,10 @@ func (h *Handler) VerifyWorkload(ctx context.Context, req *pantherclawv1.VerifyW
 	case err != nil:
 		return nil, err
 	default:
-		out.Verified, out.InstanceId, out.EnvironmentId = true, v.Instance.String(), v.Environment.String()
+		out.Verified, out.InstanceId, out.EnvironmentId, out.Jkt = true, v.Instance.String(), v.Environment.String(), v.JKT
+		if !v.RunExpires.IsZero() {
+			out.RunExpiresAt = timestamppb.New(v.RunExpires)
+		}
 	}
 	out.Nonce = h.svc.nonce(ctx, gw)
 	return out, nil

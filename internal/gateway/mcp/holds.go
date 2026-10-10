@@ -55,6 +55,7 @@ const (
 const (
 	statusWorking   = "working"
 	statusCompleted = "completed"
+	statusFailed    = "failed"
 	statusCancelled = "cancelled" //nolint:misspell // the tasks extension spells it so
 )
 
@@ -180,20 +181,26 @@ func (s *store) settle(k key, b binding, action string, res dispatch.Result) {
 	}
 }
 
-// newTask returns a task for a held call: the open one for the same call,
-// or a new one. It returns nil when the bounds are reached (the client then
-// gets the held tool error) or no random id could be made.
-func (s *store) newTask(b binding, a actionir.Parsed, k key) *task {
+// newTask returns a task for a call's answer res. A held call's task is
+// working and keeps the action to resubmit: the open one for the same
+// call, or a new one. Any other answer (a 2025-11-25 task-augmented call
+// that was not held) makes a completed task with result. It returns nil
+// when the bounds are reached or no random id could be made.
+func (s *store) newTask(b binding, a actionir.Parsed, k key, res dispatch.Result, result toolResult) *task {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return nil
+	}
+	held := res.Class == dispatch.Held
+	if !held {
+		a = actionir.Parsed{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	s.purgeLocked(now)
 	for _, t := range s.tasks {
-		if t.key == k && t.binding == b && t.status == statusWorking && t.action.Action.ActionID == a.Action.ActionID {
+		if held && t.key == k && t.binding == b && t.status == statusWorking && t.action.Action.ActionID == a.Action.ActionID {
 			cp := *t
 			return &cp
 		}
@@ -204,6 +211,9 @@ func (s *store) newTask(b binding, a actionir.Parsed, k key) *task {
 	t := &task{
 		id: base64.RawURLEncoding.EncodeToString(raw[:]), binding: b, action: a, key: k,
 		created: now, updated: now, expires: now.Add(holdTTL), status: statusWorking,
+	}
+	if !held {
+		t.status, t.result = statusCompleted, &result
 	}
 	s.tasks[t.id] = t
 	s.bytes += len(a.Canonical)
@@ -295,6 +305,34 @@ type taskResult struct {
 	PollIntervalMs int            `json:"pollIntervalMs,omitzero"`
 	Result         *toolResult    `json:"result,omitzero"`
 	Meta           map[string]any `json:"_meta,omitzero"`
+}
+
+// legacyTask is a task as 2025-11-25 clients see it (Task): ttl and
+// pollInterval, and a tool error is "failed".
+type legacyTask struct {
+	TaskID        string         `json:"taskId"`
+	Status        string         `json:"status"`
+	StatusMessage string         `json:"statusMessage,omitzero"`
+	CreatedAt     string         `json:"createdAt"`
+	LastUpdatedAt string         `json:"lastUpdatedAt"`
+	TTL           int64          `json:"ttl"`
+	PollInterval  int            `json:"pollInterval,omitzero"`
+	Meta          map[string]any `json:"_meta,omitzero"`
+}
+
+func (t task) legacyView(txn string) legacyTask {
+	v := t.view("", txn)
+	out := legacyTask{
+		TaskID: v.TaskID, Status: v.Status, StatusMessage: v.StatusMessage, CreatedAt: v.CreatedAt, LastUpdatedAt: v.LastUpdatedAt,
+		TTL: v.TTLMs, PollInterval: v.PollIntervalMs, Meta: v.Meta,
+	}
+	switch {
+	case t.status == statusCompleted && t.result != nil && t.result.IsError:
+		out.Status, out.StatusMessage = statusFailed, "PantherClaw did not run the call, or the tool failed: tasks/result says why."
+	case t.status == statusCancelled:
+		out.StatusMessage = "Canceled by request."
+	}
+	return out
 }
 
 // view is the task as clients see it; txn is the held transaction, when
