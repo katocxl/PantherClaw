@@ -57,6 +57,8 @@ type Hold struct {
 	Display      apdomain.Display
 	DisplayHash  [32]byte
 	Deadline     time.Time
+	// Action is the canonical action held (HR-172).
+	Action []byte
 	// Actor is the gateway that asked.
 	Actor evdomain.Actor
 }
@@ -154,7 +156,7 @@ func RecordHold(ctx context.Context, tx db.TenantTx, org ids.OrgID, h Hold) erro
 		OrgID: org, ID: h.RequestID, AgentID: h.AgentID, TransactionID: &h.TransactionID, Evaluation: ptr(int32(h.Evaluation)), //nolint:gosec // ≤ 64
 		RunID: &h.RunID, GrantID: &h.GrantID, GrantRevision: ptr(int32(h.GrantRevision)), VariantKey: h.VariantKey[:], //nolint:gosec // small
 		Operation: h.Operation, PreviousID: h.Previous, Binding: h.Binding.Hash[:], BindingInput: h.Binding.Input,
-		Requirements: reqs, Display: display.Input, DisplayHash: h.DisplayHash[:], DeadlineAt: h.Deadline,
+		Requirements: reqs, Display: display.Input, DisplayHash: h.DisplayHash[:], ActionIr: h.Action, DeadlineAt: h.Deadline,
 	}); err != nil {
 		return err
 	}
@@ -271,4 +273,23 @@ func Revalidate(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.
 	}
 	_, err = q.ReopenHoldEntry(ctx, ids.NewV7(), org, request)
 	return err
+}
+
+// End ends a waiting request as DECLINED with endReason (a decline or a
+// narrower proposal, HR-171), frees its hold slots and closes its entry
+// with entryState. It returns ErrChanged when the request was no longer
+// waiting.
+func End(ctx context.Context, tx db.TenantTx, org ids.OrgID, request ids.UUID, endReason, entryState string) error {
+	q := dbq.New(tx)
+	row, err := q.DeclineApprovalRequest(ctx, &endReason, org, request)
+	if db.IsNoRows(err) {
+		return ErrChanged
+	}
+	if err != nil {
+		return err
+	}
+	if err := release(ctx, q, org, row.GrantID, row.RunID); err != nil {
+		return err
+	}
+	return closeEntry(ctx, q, org, request, entryState, endReason)
 }
