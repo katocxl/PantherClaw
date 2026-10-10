@@ -33,6 +33,12 @@ type HTTPDispatch struct {
 	// fills it from the transaction (HR-008). Required when the definition
 	// declares target_idempotency.
 	IdempotencyHeader string `json:"idempotency_header,omitzero"`
+	// Query maps query parameter names to references, as a path segment
+	// takes them (identifiers, enums and integers); an absent optional
+	// param leaves its parameter out (G0 M7 design decision 5). The
+	// gateway encodes the values, and the built URL carries exactly these
+	// names.
+	Query map[string]string `json:"query,omitzero"`
 }
 
 // MCPDispatch is a call of one tool on an upstream (remote) MCP server.
@@ -47,6 +53,7 @@ type MCPDispatch struct {
 
 var (
 	fieldRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+	queryRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}(\[[a-z]{1,16}\])?$`)
 	headerRe    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,63}$`)
 	digestRe    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	dispatchSeg = regexp.MustCompile(`^([A-Za-z0-9._~-]+|\{[a-z][a-z0-9_.]{0,80}\})$`)
@@ -58,7 +65,10 @@ var (
 	}
 )
 
-const maxTemplateFields = 64
+const (
+	maxTemplateFields = 64
+	maxQueryParams    = 16
+)
 
 // bodiless methods send no body.
 var bodiless = []string{"GET", "DELETE"}
@@ -141,6 +151,17 @@ func (d *Definition) validateDispatch() error {
 		}
 		if slices.Contains(bodiless, h.Method) && len(h.Body) > 0 {
 			return invalid("%s.http: %s sends no body", at, h.Method)
+		}
+		if len(h.Query) > maxQueryParams {
+			return invalid("%s.http.query: at most %d parameters", at, maxQueryParams)
+		}
+		for _, name := range slices.Sorted(maps.Keys(h.Query)) {
+			if !queryRe.MatchString(name) {
+				return invalid("%s.http.query: parameter name %q", at, name)
+			}
+			if err := d.reference(at+".http.query."+name, h.Query[name], true); err != nil {
+				return err
+			}
 		}
 		switch hd := h.IdempotencyHeader; {
 		case hd == "" && d.Retry.TargetIdempotency:
