@@ -268,6 +268,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 		}
 		m6.mountPages(web)
 		device.WithBrowserCallback(web.Callback)
+		roots, err := packageRoots(ctx, cfg, log)
+		if err != nil {
+			return err
+		}
 		handler, err := apiHandler(apiDeps{
 			pool: pool, reg: reg, log: log, authority: svc, billing: bill,
 			auth:      rpcauth.New(authn, procedurePermissions, nil),
@@ -276,9 +280,10 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer, env Env, onS
 				cfg.Auth.PublicURL, limiter),
 			device:    device,
 			publicURL: cfg.Auth.PublicURL, clientIP: limiter.ClientIP, clusters: clusters, subjects: subjects,
-			web: web,
-			m5:  m5,
-			m6:  m6,
+			packageRoots: roots,
+			web:          web,
+			m5:           m5,
+			m6:           m6,
 		})
 		if err != nil {
 			return err

@@ -192,3 +192,64 @@ func TestHR081_InputSchemasAreAClosedSubset(t *testing.T) {
 		}
 	}
 }
+
+// TestHR080_ReviewedSchemasDeclareParameterHeaders: a reviewed input
+// schema may name the Mcp-Param-* header MCP clients mirror an argument
+// into (x-mcp-header), on a string, integer or boolean property reached
+// through properties only; the declaration is what clients receive and
+// part of the digest. Anything else is refused when the package decodes.
+func TestHR080_ReviewedSchemasDeclareParameterHeaders(t *testing.T) {
+	raw := readMock(t)
+	const reason = "            reason:\n              type: string\n              enum: [duplicate, fraudulent, requested_by_customer]\n"
+	const currency = "            currency:\n              type: string\n              enum: [USD, EUR]\n"
+	header := "            reason:\n              type: string\n              x-mcp-header: Reason\n              enum: [duplicate, fraudulent, requested_by_customer]\n"
+	p, err := Decode(mutate(t, raw, reason, header))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, _ := p.Definition("payments.refund.create")
+	if s := def.Mappings[1].InputSchema.Properties["reason"]; s.Header != "Reason" {
+		t.Fatalf("decoded %+v", s)
+	}
+	plain, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainDef, _ := plain.Definition("payments.refund.create"); plainDef.Digest == def.Digest {
+		t.Fatal("the declaration is not part of the definition's digest")
+	}
+	for name, schema := range map[string]string{
+		"integer":         "            reason:\n              type: integer\n              x-mcp-header: Count\n",
+		"boolean":         "            reason:\n              type: boolean\n              x-mcp-header: Urgent\n",
+		"nested property": "            reason:\n              type: object\n              additionalProperties: false\n              properties:\n                code:\n                  type: string\n                  x-mcp-header: Code\n",
+	} {
+		if _, err := Decode(mutate(t, raw, reason, schema)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, schema := range map[string]string{
+		"inside items":   "            reason:\n              type: array\n              maxItems: 3\n              items:\n                type: string\n                x-mcp-header: Reason\n",
+		"on an object":   "            reason:\n              type: object\n              additionalProperties: false\n              x-mcp-header: Reason\n              properties:\n                code:\n                  type: string\n",
+		"on an array":    "            reason:\n              type: array\n              maxItems: 3\n              x-mcp-header: Reason\n              items:\n                type: string\n",
+		"not a name":     "            reason:\n              type: string\n              x-mcp-header: 'Re ason'\n",
+		"underscore":     "            reason:\n              type: string\n              x-mcp-header: Re_ason\n",
+		"leading hyphen": "            reason:\n              type: string\n              x-mcp-header: -Reason\n",
+		"too long":       "            reason:\n              type: string\n              x-mcp-header: R" + strings.Repeat("e", 64) + "\n",
+		"not a string":   "            reason:\n              type: string\n              x-mcp-header: [Reason]\n",
+		"twice ignoring case": "            reason:\n              type: string\n              x-mcp-header: CURRENCY\n" +
+			"            note:\n              type: string\n              x-mcp-header: currency\n",
+	} {
+		if _, err := Decode(mutate(t, raw, reason, schema)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	root := mutate(t, raw, "        input_schema:\n          type: object\n          additionalProperties: false\n          required: [refund]",
+		"        input_schema:\n          type: object\n          x-mcp-header: Refund\n          additionalProperties: false\n          required: [refund]")
+	if _, err := Decode(root); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("on the root: %v", err)
+	}
+	if _, err := Decode(mutate(t, mutate(t, raw, reason, "            reason:\n              type: string\n              x-mcp-header: Currency\n"),
+		currency, "            currency:\n              type: string\n              x-mcp-header: currency\n")); err == nil {
+		t.Error("two properties with one header name: accepted")
+	}
+}

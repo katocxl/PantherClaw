@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -18,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +25,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/identity/pap"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 )
 
 // `pclaw mcp proxy` (G0 M6 design decision 13; HR-092) lets an
@@ -32,7 +33,11 @@ import (
 // as a stdio MCP server, and it posts each message it reads to the
 // gateway's MCP endpoint, signed with PAP/1 by the desktop workload's key
 // in the configured run, with the MCP request headers taken from the
-// message itself. Answers go back one per line. It speaks only stdio and
+// message itself. A 2026-07-28 tools/call also carries the Mcp-Param-*
+// headers the tool's served schema declares (x-mcp-header), learned from
+// the tool lists the gateway sends; when the gateway refuses a call's
+// headers (HeaderMismatch), the proxy lists the tools itself and sends the
+// call once more. Answers go back one per line. It speaks only stdio and
 // never opens a listener, so nothing else on the machine can use the
 // workload's identity through it (HR-092). Diagnostics go to stderr; stdout
 // carries only the protocol.
@@ -165,6 +170,10 @@ type proxy struct {
 	initialize []byte
 	version    string
 	session    string
+	// declared are the x-mcp-header parameters of each tool, from the last
+	// 2026-07-28 tool list.
+	declared map[string][]mcpheader.Param
+	lists    int
 }
 
 // serve forwards messages until the client closes stdin or ctx ends.
@@ -198,10 +207,11 @@ type message struct {
 	ID     jsontext.Value `json:"id,omitzero"`
 	Method string         `json:"method"`
 	Params struct {
-		Meta   map[string]jsontext.Value `json:"_meta"`
-		Name   string                    `json:"name"`
-		URI    string                    `json:"uri"`
-		TaskID string                    `json:"taskId"`
+		Meta      map[string]jsontext.Value `json:"_meta"`
+		Name      string                    `json:"name"`
+		URI       string                    `json:"uri"`
+		TaskID    string                    `json:"taskId"`
+		Arguments jsontext.Value            `json:"arguments"`
 	} `json:"params"`
 }
 
@@ -230,6 +240,14 @@ func (p *proxy) forward(ctx context.Context, line []byte) [][]byte {
 			status, header, body, err = p.post(ctx, m, modern, line)
 		}
 	}
+	if err == nil && modern != "" && m.Method == "tools/call" && status == http.StatusBadRequest && headerMismatch(body) {
+		// The tool's declared parameter headers are unknown here or
+		// changed: the gateway refused before deciding anything, so list
+		// the tools and send once more.
+		if p.relist(ctx, m, modern) {
+			status, header, body, err = p.post(ctx, m, modern, line)
+		}
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(p.log, "pclaw mcp proxy: %s: %v\n", m.Method, err)
 		if len(m.ID) == 0 {
@@ -241,6 +259,9 @@ func (p *proxy) forward(ctx context.Context, line []byte) [][]byte {
 		p.adopt(header, body)
 	}
 	answers := answersOf(header, body)
+	if modern != "" && m.Method == "tools/list" && status == http.StatusOK {
+		p.learn(answers)
+	}
 	if len(answers) == 0 && len(m.ID) > 0 {
 		return [][]byte{rpcFailure(m.ID, -32603, fmt.Sprintf("the gateway answered HTTP %d", status))}
 	}
@@ -264,7 +285,15 @@ func (p *proxy) post(ctx context.Context, m message, modern string, body []byte)
 		req.Header.Set("MCP-Protocol-Version", modern)
 		req.Header.Set("Mcp-Method", m.Method)
 		if name := target(m); name != "" {
-			req.Header.Set("Mcp-Name", headerValue(name))
+			req.Header.Set("Mcp-Name", mcpheader.Encode(name))
+		}
+		if m.Method == "tools/call" {
+			// Arguments that cannot be mirrored go without: the gateway
+			// says what is wrong.
+			mirrored, _ := mcpheader.Mirror(p.declared[m.Params.Name], m.Params.Arguments)
+			for k, vs := range mirrored {
+				req.Header[k] = vs
+			}
 		}
 	case m.Method != "initialize":
 		req.Header.Set("MCP-Protocol-Version", p.versionOrDefault())
@@ -379,17 +408,66 @@ func rpcFailure(id jsontext.Value, code int, msg string) []byte {
 	return b
 }
 
-// headerValue encodes an Mcp-Name value that is not plain header-safe
-// ASCII in the base64 sentinel form (MCP 2026-07-28, Value Encoding).
-func headerValue(s string) string {
-	plain := s != "" && s == strings.TrimSpace(s) && (!strings.HasPrefix(s, "=?base64?") || !strings.HasSuffix(s, "?="))
-	for i := range len(s) {
-		if s[i] < 0x20 || s[i] > 0x7e {
-			plain = false
+// learn keeps the x-mcp-header parameters of each tool in a 2026-07-28
+// tool list. A tool whose declarations break the specification is
+// reported and gets none (the gateway serves only reviewed schemas, which
+// never do).
+func (p *proxy) learn(answers [][]byte) {
+	for _, a := range answers {
+		var r struct {
+			Result *struct {
+				Tools []struct {
+					Name        string         `json:"name"`
+					InputSchema jsontext.Value `json:"inputSchema"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(a, &r) != nil || r.Result == nil {
+			continue
+		}
+		p.declared = map[string][]mcpheader.Param{}
+		for _, t := range r.Result.Tools {
+			params, err := mcpheader.Parse(t.InputSchema)
+			if err != nil {
+				_, _ = fmt.Fprintf(p.log, "pclaw mcp proxy: tool %q: %v\n", t.Name, err)
+				continue
+			}
+			p.declared[t.Name] = params
 		}
 	}
-	if plain {
-		return s
+}
+
+// relist asks the gateway for its tools, with a call's version and
+// client metadata, and learns their declared parameter headers.
+func (p *proxy) relist(ctx context.Context, call message, modern string) bool {
+	meta := map[string]jsontext.Value{}
+	for _, k := range []string{"io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo", "io.modelcontextprotocol/clientCapabilities"} {
+		if v, ok := call.Params.Meta[k]; ok {
+			meta[k] = v
+		}
 	}
-	return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(s)) + "?="
+	p.lists++
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": "pclaw-proxy-" + strconv.Itoa(p.lists), "method": "tools/list", "params": map[string]any{"_meta": meta},
+	}, json.Deterministic(true))
+	if err != nil {
+		return false
+	}
+	status, header, answer, err := p.post(ctx, message{Method: "tools/list"}, modern, body)
+	if err != nil || status != http.StatusOK {
+		return false
+	}
+	p.learn(answersOf(header, answer))
+	return true
+}
+
+// headerMismatch reports whether an answer is the gateway's HeaderMismatch
+// error (-32020).
+func headerMismatch(body []byte) bool {
+	var r struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &r) == nil && r.Error != nil && r.Error.Code == -32020
 }

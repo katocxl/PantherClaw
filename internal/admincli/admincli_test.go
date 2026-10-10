@@ -89,6 +89,7 @@ func TestUsage(t *testing.T) {
 		{"keygen"},
 		{"keygen", "--purpose", "admin", "--out-dir", "."},
 		{"keygen", "--purpose", "org-packages", "--out-dir", "."}, // an org key, not a PantherClaw root
+		{"keygen", "--purpose", "packages-dev", "--out-dir", "."}, // only dev seed makes the development key (HR-163)
 		{"packages"},
 		{"packages", "sign", "--key", "k", "--version", "1", "--out", "o", "p.yaml"},                          // no expiry
 		{"packages", "sign", "--key", "k", "--version", "0", "--expires-days", "180", "--out", "o", "p.yaml"}, // version 0

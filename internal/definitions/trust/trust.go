@@ -18,7 +18,8 @@
 //
 // An org's own packages are signed with an org package-signing key instead
 // (HR-162, orgkeys.go): the same format, verified only against the keys
-// that org registered.
+// that org registered. In development, `dev seed` signs with a development
+// package key (HR-163, devkey.go) that only a local server trusts.
 package trust
 
 import (

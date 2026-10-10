@@ -4,7 +4,8 @@
 // Package rootkey creates and stores the offline root signing keys
 // (licence signing, package signing) used only by pclaw-admin (HR-063), and
 // in the same format the org package-signing keys pclaw makes on a
-// customer's machine (HR-162).
+// customer's machine (HR-162) and the development package key `dev seed`
+// keeps in deploy/dev/secrets (HR-163).
 //
 // Private keys are written as PKCS#8 in a PEM block. With a passphrase the
 // block is encrypted: PBKDF2-HMAC-SHA256 (600,000 iterations, 16-byte salt)
@@ -44,11 +45,15 @@ const (
 	// created by pclaw on the customer's machine. It is not a PantherClaw
 	// root: pclaw-admin never makes one.
 	PurposeOrgPackages Purpose = "org-packages"
+	// PurposeDevPackages is the development package key (HR-163), created
+	// by `pantherclaw-server dev seed`. It is not a root either: only a
+	// server whose listeners are all on loopback trusts it.
+	PurposeDevPackages Purpose = "packages-dev"
 )
 
 // Valid reports whether p is a known purpose.
 func (p Purpose) Valid() bool {
-	return slices.Contains([]Purpose{PurposeLicence, PurposePackages, PurposeOrgPackages}, p)
+	return slices.Contains([]Purpose{PurposeLicence, PurposePackages, PurposeOrgPackages, PurposeDevPackages}, p)
 }
 
 // Root reports whether p is one of PantherClaw's offline roots.
@@ -67,9 +72,10 @@ var ErrKeyFile = errors.New("rootkey: invalid key file")
 
 // KID derives the kid of a root public key: "<purpose>-root-<thumbprint>",
 // or "org-packages-<thumbprint>" for an org package-signing key (equal to
-// trust.OrgKID).
+// trust.OrgKID) and "packages-dev-<thumbprint>" for the development
+// package key (equal to trust.DevKID).
 func KID(p Purpose, pub ed25519.PublicKey) string {
-	if p == PurposeOrgPackages {
+	if p == PurposeOrgPackages || p == PurposeDevPackages {
 		return string(p) + "-" + jws.Thumbprint(pub)[:22]
 	}
 	return string(p) + "-root-" + jws.Thumbprint(pub)[:22]

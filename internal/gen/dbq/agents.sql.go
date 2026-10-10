@@ -123,7 +123,7 @@ const closeOpenAgentEntries = `-- name: CloseOpenAgentEntries :execrows
 UPDATE pc.waitlist_entries
 SET state = $1, decided_by = $2, decided_at = now(),
     decision_reason = $3
-WHERE org_id = $4 AND agent_id = $5 AND state = 'OPEN'
+WHERE org_id = $4 AND agent_id = $5::uuid AND kind = 'ADMISSION' AND state = 'OPEN'
   AND ($6::text IS NULL OR subject_type = $6::text)
 `
 

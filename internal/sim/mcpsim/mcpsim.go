@@ -7,8 +7,10 @@
 // 2026-07-28 or, with sessions, 2025-11-25. Faults make it misbehave the
 // ways a remote server can: ask the client for elicitation, sampling or
 // roots, answer input_required, fail the tool, or change a tool's
-// definition under a reviewed package (drift). Every response is marked
-// SIMULATED; nothing here moves real money.
+// definition under a reviewed package (drift). It can declare x-mcp-header
+// parameters, valid or not; it then checks each 2026-07-28 call's
+// Mcp-Param-* headers against the body, as a conforming server must.
+// Every response is marked SIMULATED; nothing here moves real money.
 package mcpsim
 
 import (
@@ -22,8 +24,11 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/katocxl/pantherclaw/internal/platform/mcpheader"
 )
 
 // Protocol versions.
@@ -58,6 +63,15 @@ type Faults struct {
 	PageSize int
 	// Token, when set, is the bearer token every request must carry.
 	Token string
+	// ParamHeaders makes create_refund declare x-mcp-header on its
+	// currency (Mcp-Param-Currency) and reason (Mcp-Param-Reason); a
+	// 2026-07-28 call whose Mcp-Param-* headers do not match the body is
+	// refused with HeaderMismatch, as a conforming server must.
+	ParamHeaders bool
+	// InvalidHeaders makes get_refund declare x-mcp-header where the
+	// specification forbids it (inside array items): a client must not
+	// call it.
+	InvalidHeaders bool
 }
 
 // Server is the simulated MCP server.
@@ -70,6 +84,7 @@ type Server struct {
 	pending  map[string]chan jsontext.Value
 	answers  []string
 	calls    int
+	params   []http.Header
 }
 
 type refund struct {
@@ -98,6 +113,14 @@ func (s *Server) EndSessions() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.sessions)
+}
+
+// ParamHeaders are the Mcp-Param-* headers of each tools/call received, in
+// order.
+func (s *Server) ParamHeaders() []http.Header {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.params)
 }
 
 // Answers are the client's answers to server-to-client requests, as
@@ -148,13 +171,37 @@ func (s *Server) tools() []jsontext.Value {
 	if s.f.Description != "" {
 		get = s.f.Description
 	}
+	currency, reason := `{"type":"string"}`, `{"type":"string"}`
+	if s.f.ParamHeaders {
+		currency, reason = `{"type":"string","x-mcp-header":"Currency"}`, `{"type":"string","x-mcp-header":"Reason"}`
+	}
+	refundProps := `"refund":{"type":"string"}`
+	if s.f.InvalidHeaders {
+		refundProps += `,"expand":{"type":"array","items":{"type":"string","x-mcp-header":"Expand"}}`
+	}
 	return []jsontext.Value{
 		jsontext.Value(`{"name":"create_refund","description":"Refund a simulated charge.","inputSchema":{"type":"object",` +
-			`"properties":{"charge":{"type":"string"},"amount":{"type":"string"},"currency":{"type":"string"},"reason":{"type":"string"}},` +
+			`"properties":{"charge":{"type":"string"},"amount":{"type":"string"},"currency":` + currency + `,"reason":` + reason + `},` +
 			`"required":["charge","amount","currency"]}}`),
 		jsontext.Value(`{"name":"get_refund","description":` + strconv.Quote(get) + `,"inputSchema":{"type":"object",` +
-			`"properties":{"refund":{"type":"string"}},"required":["refund"]}}`),
+			`"properties":{` + refundProps + `},"required":["refund"]}}`),
 	}
+}
+
+// declared are the x-mcp-header parameters of a tool as the server lists
+// it.
+func (s *Server) declared(name string) []mcpheader.Param {
+	for _, t := range s.Tools() {
+		var d struct {
+			Name        string         `json:"name"`
+			InputSchema jsontext.Value `json:"inputSchema"`
+		}
+		if json.Unmarshal(t, &d) == nil && d.Name == name {
+			params, _ := mcpheader.Parse(d.InputSchema)
+			return params
+		}
+	}
+	return nil
 }
 
 type message struct {
@@ -194,8 +241,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) modern(w http.ResponseWriter, r *http.Request, m message) {
 	var p struct {
-		Meta map[string]jsontext.Value `json:"_meta"`
-		Name string                    `json:"name"`
+		Meta      map[string]jsontext.Value `json:"_meta"`
+		Name      string                    `json:"name"`
+		Arguments jsontext.Value            `json:"arguments"`
 	}
 	_ = json.Unmarshal(m.Params, &p)
 	var v string
@@ -223,8 +271,21 @@ func (s *Server) modern(w http.ResponseWriter, r *http.Request, m message) {
 		page["resultType"] = "complete"
 		writeJSON(w, http.StatusOK, reply(m.ID, page, nil))
 	case "tools/call":
+		mirrored := http.Header{}
+		for k, v := range r.Header {
+			if strings.HasPrefix(k, mcpheader.Prefix) {
+				mirrored[k] = v
+			}
+		}
+		s.mu.Lock()
+		s.params = append(s.params, mirrored)
+		s.mu.Unlock()
 		if r.Header.Get("Mcp-Name") != p.Name {
 			writeJSON(w, http.StatusBadRequest, reply(m.ID, nil, rpcError(-32020, "Header mismatch")))
+			return
+		}
+		if msg := mcpheader.Check(r.Header, s.declared(p.Name), p.Arguments); msg != "" {
+			writeJSON(w, http.StatusBadRequest, reply(m.ID, nil, rpcError(-32020, "Header mismatch: "+msg)))
 			return
 		}
 		if s.f.InputRequired {
