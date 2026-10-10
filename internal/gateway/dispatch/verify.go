@@ -9,11 +9,13 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	defs "github.com/katocxl/pantherclaw/internal/definitions/domain"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
+	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
 )
 
 // Verification reads (G0 M7 design decision 1, HR-190). The server leases
@@ -89,8 +91,8 @@ func (e *Engine) VerifyEffect(ctx context.Context, conn *control.Connection, l L
 	params := req.Params
 	var out Observation
 	for range maxPages {
-		status, body, err := e.read(ctx, conn, read, req.Target, params)
-		if err != nil {
+		status, body, ok := e.read(ctx, conn, read, req.Target, params)
+		if !ok {
 			return Observation{HTTPStatus: status}, nil // the read failed: inconclusive, retried
 		}
 		sum := sha256.Sum256(body)
@@ -156,31 +158,34 @@ func reviewedRead(conn *control.Connection, op string) (*defs.Definition, *defs.
 }
 
 // read sends one GET of read with the connection's credential and returns
-// the status and the capped body.
+// the status and the capped body; false when the request could not be
+// built or sent, or no answer came back (the read is inconclusive).
 func (e *Engine) read(ctx context.Context, conn *control.Connection, read *defs.Definition, target actionir.Target,
 	params map[string]string,
-) (int, []byte, error) {
+) (int, []byte, bool) {
 	raw, err := json.Marshal(params, json.Deterministic(true))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, false
 	}
 	a := actionir.Parsed{Action: actionir.ActionIR{Operation: read.Operation, Target: target, Params: raw}}
 	p, err := e.prepare(ctx, conn, read, a, "")
 	if err != nil {
-		return 0, nil, err
+		e.log.WarnContext(ctx, "gateway.verification_not_built", slog.String("connection_id", conn.GetId()), pclog.Err(err))
+		return 0, nil, false
 	}
 	if conn.GetAccessMode() == "pantherclaw_held" {
 		secret, err := e.credential(conn, p.req)
 		if err != nil {
-			return 0, nil, err
+			e.log.WarnContext(ctx, "gateway.credential_unavailable", slog.String("connection_id", conn.GetId()), pclog.Err(err))
+			return 0, nil, false
 		}
 		defer clear(secret)
 	}
 	res, err := p.client.Do(p.req)
 	if err != nil {
-		return res.Status, nil, err
+		return res.Status, nil, false
 	}
-	return res.Status, res.Body, nil
+	return res.Status, res.Body, true
 }
 
 // fields reads the declared fields of a JSON object.

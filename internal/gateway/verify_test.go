@@ -42,7 +42,7 @@ func refundAt(t *testing.T, sim *payments.Server, charge, key string) string {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+"/v1/refunds",
 		strings.NewReader(`{"charge":"`+charge+`","amount":"30.00","currency":"USD","reason":"duplicate"}`))
 	req.Header.Set("Idempotency-Key", key)
-	res, err := http.DefaultClient.Do(req)
+	res, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("refund: %v %v", res, err)
 	}
