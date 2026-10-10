@@ -90,6 +90,8 @@ Usage:
   pantherclaw-server db bootstrap --admin-url-file F --app-password-file F --migrator-password-file F --audit-password-file F
                                                      create roles and schema once, as the database owner
   pantherclaw-server keys gen-kek --out FILE          write a new key-encryption key (0600)
+  pantherclaw-server keys rotate-gateway-ca --confirm [--config FILE]
+                                                     replace the internal gateway CA key; every gateway enrolls again
   pantherclaw-server org create --name N [--admin-email E] [--config FILE]
                                                      create an organization and print its one-time admin token
   pantherclaw-server org admin-invite --org ID [--admin-email E] [--config FILE]
@@ -129,7 +131,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 	case "db":
 		err = cmdDB(ctx, args[1:], stdout, stderr)
 	case "keys":
-		err = cmdKeys(args[1:], stdout, stderr)
+		err = cmdKeys(ctx, args[1:], stdout, stderr, env)
 	case "org":
 		err = cmdOrg(ctx, args[1:], stdout, stderr, env)
 	case "dev":
@@ -637,7 +639,10 @@ func cmdDB(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func cmdKeys(args []string, stdout, stderr io.Writer) error {
+func cmdKeys(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {
+	if len(args) > 0 && args[0] == "rotate-gateway-ca" {
+		return cmdRotateGatewayCA(ctx, args[1:], stdout, stderr, env)
+	}
 	if len(args) == 0 || args[0] != "gen-kek" {
 		_, _ = fmt.Fprint(stderr, usage)
 		return errUsage
