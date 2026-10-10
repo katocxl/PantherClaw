@@ -50,6 +50,9 @@ type world struct {
 	env      ids.UUID
 	team     ids.UUID
 	alice    gdomain.Principal
+	// gateway serves conn, an enforce-mode HTTP connection to the package
+	// that every request goes through (PAP-1 §6).
+	gateway, conn ids.UUID
 }
 
 func newWorld(tb fataler) *world {
@@ -78,8 +81,12 @@ func newWorld(tb fataler) *world {
 	w := &world{
 		tb: tb, w: pipelinetest.New(org, pkg, now), mapper: m,
 		agent: ids.NewV7(), instance: ids.NewV7(), env: ids.NewV7(), team: ids.NewV7(),
-		alice: gdomain.Principal{Kind: gdomain.PrincipalUser, ID: ids.NewV7()},
+		alice: gdomain.Principal{Kind: gdomain.PrincipalUser, ID: ids.NewV7()}, gateway: ids.NewV7(), conn: ids.NewV7(),
 	}
+	w.w.PutConnection(pipeline.Connection{
+		ID: w.conn, Gateway: w.gateway, Kind: "http", Package: pkg.Name, State: "ACTIVE", AccessMode: "none",
+		DefaultMode: pipeline.ModeEnforce, Modes: map[string]string{},
+	})
 	w.p = &pipeline.Pipeline{Reader: w.w}
 	w.w.AddAgent(w.agent, pipeline.Agent{State: "VERIFIED", TeamID: w.team, BusinessUnitID: ids.NewV7()})
 	for _, ch := range []string{"ch_1", "ch_2", "ch_3"} {
@@ -122,11 +129,14 @@ func (w *world) request(run ids.UUID, tool, input string) pipeline.Request {
 	w.tb.Helper()
 	p, err := w.mapper.MCP(context.Background(), mapping.Context{
 		Org: org.String(), Env: w.env.String(), RunID: run.String(), ActionID: ids.NewV7().String(), AgentInstance: w.instance.String(),
+		Connection: w.conn.String(),
 	}, tool, jsontext.Value(input))
 	if err != nil {
 		w.tb.Fatal(err)
 	}
-	return pipeline.Request{Org: org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1}}
+	return pipeline.Request{
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: w.instance, AgentID: w.agent, AttestationLevel: 1}, Gateway: w.gateway.String(),
+	}
 }
 
 func (w *world) eval(req pipeline.Request) *pipeline.Evaluation {

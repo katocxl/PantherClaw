@@ -56,9 +56,35 @@ func TestHR184_TheConnectionsRouteModeDecidesTheMode(t *testing.T) {
 	if ev.Mode != pipeline.ModeMonitor || !ev.MonitorPermit() {
 		t.Fatalf("a route without a mode takes the default: %s", ev.Mode)
 	}
-	if ev := f.call(f.run, "create_refund", refund("ch_1", "10.00")); ev.Mode != pipeline.ModeEnforce || ev.Connection != nil {
-		t.Fatalf("no connection: %s %+v", ev.Mode, ev.Connection)
+}
+
+// TestT067_GatewayActionsNameAConnectionThatServesThem: an action from a
+// gateway channel without a connection would escape its route's mode and
+// its quarantine, so it cannot be authorized; nor can a definition the
+// connection's kind cannot dispatch (PAP-1 §6).
+func TestT067_GatewayActionsNameAConnectionThatServesThem(t *testing.T) {
+	f := newFx(t)
+	p, err := f.mapper.MCP(context.Background(), mapping.Context{
+		Org: org.String(), Env: f.env.String(), RunID: f.run.String(), ActionID: ids.NewV7().String(), AgentInstance: f.instance.String(),
+	}, "create_refund", jsontext.Value(refund("ch_1", "10.00")))
+	if err != nil {
+		t.Fatal(err)
 	}
+	ev := f.eval(pipeline.Request{
+		Org: org, Action: p, Identity: pipeline.Identity{InstanceID: f.instance, AgentID: f.agent, AttestationLevel: 1}, Gateway: f.gateway.String(),
+	})
+	expect(t, ev, adomain.CannotAuthorize, pipeline.ReasonConnectionRequired)
+	if ev.Decision.Permits() || ev.MonitorPermit() {
+		t.Fatal("an action without its connection got a permit")
+	}
+
+	// The mock payments package has HTTP dispatch templates only: an MCP
+	// connection to it serves none of its routes.
+	gw := ids.NewV7()
+	c := connection(gw)
+	c.Kind = "mcp"
+	f.w.PutConnection(c)
+	expect(t, f.on(gw, c.ID, "create_refund", refund("ch_1", "10.00")), adomain.CannotAuthorize, pipeline.ReasonRouteUnknown)
 }
 
 // TestHR184_MonitorModeStillNeedsIdentityAndContainment: a monitor-mode

@@ -66,6 +66,9 @@ type world struct {
 	auth     *finalize.Authority
 	gw       finalize.Gateway
 	human    context.Context
+	// gwID is the gateway's id, and conn the connection requests go
+	// through by default.
+	gwID, conn ids.UUID
 }
 
 func exec(t *testing.T, p *db.Pool, org ids.OrgID, sql string, args ...any) {
@@ -155,7 +158,12 @@ func newWorld(t *testing.T) *world {
 	permits, _ := reg.Signer(keys.PurposePermits)
 	reader := &pgauthority.Reader{Pool: p, Definitions: defs, Policies: &polpg.Store{Pool: p}, FactStore: facts, Grants: gs, Limits: celenv.DefaultLimits}
 	w.auth = &finalize.Authority{Pipeline: &pipeline.Pipeline{Reader: reader}, Store: &pgauthority.Store{Pool: p}, Receipts: receipts, Permits: permits}
-	w.gw = finalize.Gateway{ID: "gw-test", Org: w.org}
+	// One gateway, and the enforce-mode connection every request goes
+	// through unless a test names another (PAP-1 §6).
+	gw := ids.NewV7()
+	exec(t, p, w.org, "INSERT INTO pc.gateways (org_id, id, name, created_by) VALUES ($1, $2, 'edge', 'test')", w.org, gw)
+	w.gw, w.gwID = finalize.Gateway{ID: gw.String(), Org: w.org}, gw
+	w.conn = w.withConnection("enforce")
 	return w
 }
 
@@ -218,6 +226,7 @@ func (w *world) request(run, action ids.UUID, charge, amount string) pipeline.Re
 	w.t.Helper()
 	p, err := w.mapper.MCP(context.Background(), mapping.Context{
 		Org: w.org.String(), Env: w.env.String(), RunID: run.String(), ActionID: action.String(), AgentInstance: w.instance.String(),
+		Connection: w.conn.String(),
 	}, "create_refund", []byte(`{"charge":"`+charge+`","amount":"`+amount+`","currency":"USD","reason":"duplicate"}`))
 	if err != nil {
 		w.t.Fatal(err)
