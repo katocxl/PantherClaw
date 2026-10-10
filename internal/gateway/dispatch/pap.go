@@ -188,6 +188,32 @@ func (e *Engine) ReportUnknown(ctx context.Context, creds *pb.WorkloadCredential
 	return code, nonce
 }
 
+// Verified is the Authority's answer about a workload whose request decides
+// nothing (VerifyWorkload).
+type Verified struct {
+	// OK: an admitted instance of a usable agent.
+	OK bool
+	// Code is the PAP-Error code when not OK.
+	Code          pap.Code
+	Instance, Env string
+	Nonce         string
+}
+
+// Verify asks the Authority to verify a workload for a request that decides
+// nothing, such as an MCP tools/list (HR-021): the gateway never verifies
+// a workload itself. An error means the Authority could not be asked.
+func (e *Engine) Verify(ctx context.Context, creds *pb.WorkloadCredentials) (Verified, error) {
+	res, err := e.authority.VerifyWorkload(ctx, &pb.VerifyWorkloadRequest{Workload: creds})
+	if err != nil {
+		return Verified{}, err
+	}
+	e.nonces.set(res.GetNonce(), time.Time{})
+	return Verified{
+		OK: res.GetVerified(), Code: pap.Code(res.GetErrorCode()), Instance: res.GetInstanceId(), Env: res.GetEnvironmentId(),
+		Nonce: res.GetNonce(),
+	}, nil
+}
+
 // clientAddress is the workload's address as the gateway saw it. It is
 // UNTRUSTED and only feeds the network-change alert (HR-092).
 func clientAddress(r *http.Request) string {

@@ -17,6 +17,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	"github.com/katocxl/pantherclaw/internal/gateway/dispatch"
 	"github.com/katocxl/pantherclaw/internal/gateway/httpproxy"
+	"github.com/katocxl/pantherclaw/internal/gateway/mcp"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 )
@@ -48,11 +49,20 @@ type Gateway struct {
 	broker      *Broker
 	engine      *dispatch.Engine
 	http        *httpproxy.Handler
+	mcp         *mcp.Handler
 }
 
 // Handler returns the gateway's agent-facing HTTP handler: `/{connection}/…`
 // (httpproxy).
-func (g *Gateway) Handler() http.Handler { return g.http }
+func (g *Gateway) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := mcp.Path(r.URL.EscapedPath()); ok {
+			g.mcp.ServeHTTP(w, r)
+			return
+		}
+		g.http.ServeHTTP(w, r)
+	})
+}
 
 // Deps are what the gateway takes from the control plane. New builds them
 // over mutual TLS from the gateway's identity; tests build them directly.
@@ -141,6 +151,7 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	return &Gateway{
 		run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker, engine: engine,
 		http: httpproxy.New(engine, d.Configuration, cfg.PublicURL, log),
+		mcp:  mcp.New(engine, d.Configuration, cfg.PublicURL, log),
 	}, nil
 }
 
