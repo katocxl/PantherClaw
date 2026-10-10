@@ -243,9 +243,19 @@ func (s *snapshot) Run(ctx context.Context, org ids.OrgID, id ids.UUID) (pipelin
 		return pipeline.Run{}, notFound(err)
 	}
 	out := pipeline.Run{
-		AgentID: row.AgentID, EnvironmentID: row.EnvironmentID, Active: row.Live,
+		AgentID: row.AgentID, EnvironmentID: row.EnvironmentID, Active: row.Live, TaskRef: row.TaskRef,
 		Principal: principal(row.PrincipalUserID, row.PrincipalSaID, nil),
 		Launcher:  principal(row.LauncherUserID, row.LauncherSaID, row.LauncherInstanceID),
+	}
+	if row.ParentRunID != nil {
+		ancestors, err := dbq.New(s.tx).RunAncestors(ctx, org, id)
+		if err != nil {
+			return pipeline.Run{}, err
+		}
+		for _, a := range ancestors {
+			out.Ancestors = append(out.Ancestors, principal(a.LauncherUserID, a.LauncherSaID, a.LauncherInstanceID),
+				principal(a.PrincipalUserID, a.PrincipalSaID, nil))
+		}
 	}
 	if row.InstanceID != nil {
 		out.InstanceID = *row.InstanceID

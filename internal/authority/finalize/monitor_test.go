@@ -42,7 +42,7 @@ func throughConnection(t *testing.T, s *pipelinetest.Scenario, run, conn ids.UUI
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pipeline.Request{Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1}}
+	return pipeline.Request{Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}}
 }
 
 // TestHR184_MonitorModeIssuesAPermitOverAHypotheticalDecision: over the

@@ -99,12 +99,23 @@ type Item struct {
 
 // Outcome is the policy verdict with its explanation.
 type Outcome struct {
-	Verdict     Verdict
-	Checklist   []Item
-	Approvals   []ApprovalRequirement
-	StepUps     []StepUpRequirement
+	Verdict   Verdict
+	Checklist []Item
+	Approvals []ApprovalRequirement
+	StepUps   []StepUpRequirement
+	// Required lists the same requirements with the rule that asks for each
+	// (G0 M5 part 2: a hold keeps every requirement's source).
+	Required    []Required
 	Obligations []Obligation
 	Labels      map[string]string
+}
+
+// Required is one requirement of a REQUIRE_APPROVAL or REQUIRE_STEP_UP rule.
+type Required struct {
+	Rule     string
+	Reason   string
+	Approval *ApprovalRequirement
+	StepUp   *StepUpRequirement
 }
 
 // Decisive returns the decisive checklist item, if any.
@@ -199,6 +210,7 @@ func Compose(results []Result) Outcome {
 			if r.Rule.StepUp != nil {
 				out.StepUps = append(out.StepUps, *r.Rule.StepUp)
 			}
+			out.Required = append(out.Required, Required{Rule: r.Rule.ID, Reason: reason, Approval: r.Rule.Approval, StepUp: r.Rule.StepUp})
 		case StatusConstrained:
 			out.Obligations = append(out.Obligations, *r.Obligation)
 		case StatusAnnotated:

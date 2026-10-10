@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	bdomain "github.com/katocxl/pantherclaw/internal/budgets/domain"
@@ -78,6 +79,59 @@ type Result struct {
 	AccessMode string
 	// Repeat is set when the answer is a stored decision (HR-005).
 	Repeat bool
+	// Wait is the wait handle of a held action, or of one its approval
+	// request ended (G0 M5 part 2); nil otherwise.
+	Wait *Wait
+}
+
+// DefaultRetryAfter is how long a held agent waits before waiting again or
+// resubmitting (PAP-1 §7.1 retry_after_s).
+const DefaultRetryAfter = 5 * time.Second
+
+// Wait is a wait handle (PAP-1 §7.1, §8): the transaction id, the state of
+// its approval request as a waiter sees it, and its times. It never carries
+// approver identities, notes or the display (HR-174).
+type Wait struct {
+	Handle           ids.UUID
+	RetryAfter       time.Duration
+	Deadline         time.Time
+	State            string
+	ConsumeBy        *time.Time
+	RequestID        ids.UUID
+	Code             string
+	EvidenceDeadline *time.Time
+	ProposedParams   []byte
+}
+
+// waitOf returns the wait handle of an evaluation: for a hold, and for a
+// DENY that its approval request decided (declined, narrower proposed or
+// expired).
+func waitOf(ev *pipeline.Evaluation, txn ids.UUID) *Wait {
+	h := ev.Hold
+	if h == nil {
+		return nil
+	}
+	held := ev.Decision == adomain.RequireApproval || ev.Decision == adomain.RequireStepUp
+	ended := ev.Decision == adomain.Deny && h.Code != "" && ev.Decisive().Code == h.Code
+	if !held && !ended {
+		return nil
+	}
+	w := &Wait{Handle: txn, RetryAfter: DefaultRetryAfter, Deadline: h.Deadline, State: h.State, Code: h.Code}
+	if r := h.Request; r != nil && (h.Keep || ended) {
+		w.RequestID, w.Deadline = r.ID, r.Deadline
+		switch h.State {
+		case apdomain.WaitEvidenceRequested:
+			w.Code, w.EvidenceDeadline = r.Question, r.EvidenceDeadline
+		case apdomain.WaitReady:
+			w.ConsumeBy = r.ConsumeBy
+		case apdomain.WaitNarrowerProposed:
+			w.ProposedParams = r.ProposedParams
+		}
+	}
+	if ended {
+		w.RetryAfter = 0
+	}
+	return w
 }
 
 // Authorize decides one action and binds the decision. A finalized
@@ -229,7 +283,7 @@ func (a *Authority) bind(ctx context.Context, gw Gateway, ev *pipeline.Evaluatio
 	res := Result{
 		Decision: ev.Decision, TransactionID: w.TransactionID, Evaluation: w.Evaluation, ActionHash: ev.ActionHash,
 		EffectiveHash: ev.EffectiveHash, BasisDigest: ev.Basis.Digest(), Checklist: ev.Checklist,
-		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode,
+		Obligations: ev.Obligations, Reasons: reasons(ev.Checklist), Mode: ev.Mode, Wait: waitOf(ev, w.TransactionID),
 	}
 	if ev.Connection != nil {
 		res.AccessMode = ev.Connection.AccessMode

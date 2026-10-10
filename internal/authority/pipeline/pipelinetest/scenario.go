@@ -149,7 +149,7 @@ func (s *Scenario) Request(run, act ids.UUID, tool, input string) pipeline.Reque
 		s.TB.Fatal(err)
 	}
 	return pipeline.Request{
-		Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1}, Gateway: s.Gateway.ID,
+		Org: s.Org, Action: p, Identity: pipeline.Identity{InstanceID: s.Instance, AgentID: s.Agent, AttestationLevel: 1, JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"}, Gateway: s.Gateway.ID,
 	}
 }
 

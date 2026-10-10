@@ -117,11 +117,16 @@ func (r Requirement) validate(name string) error {
 	if (r.Approval == nil) == (r.StepUp == nil) {
 		return invalid("%s: set exactly one of approval, step_up", name)
 	}
-	if r.Approval != nil && (r.Approval.Role == "" || r.Approval.Count < 1 || r.Approval.Count > 5) {
-		return invalid("%s: an approval names a role and 1..5 approvers", name)
+	// From M5 (G0 M5 part 2 decisions 2, 4 and 6): an approval names a
+	// default role holding approval.respond, a step-up the launcher or the
+	// principal by WebAuthn, and a deadline, if any, is 300..604800 seconds.
+	// Requirements stored before M5 are read as they are; the decision
+	// pipeline answers REQUIREMENT_INVALID for those.
+	if a := r.Approval; a != nil && (!pdomain.ApprovalRole(a.Role) || a.Count < 1 || a.Count > 5 || !pdomain.ValidDeadline(a.DeadlineSeconds)) {
+		return invalid("%s: an approval names a default role holding approval.respond (approver), 1..5 approvers and a deadline of 300..604800 seconds if any", name)
 	}
-	if r.StepUp != nil && (r.StepUp.Subject == "" || r.StepUp.Method == "") {
-		return invalid("%s: a step-up names its subject and method", name)
+	if s := r.StepUp; s != nil && ((s.Subject != "launcher" && s.Subject != "principal") || s.Method != "webauthn" || !pdomain.ValidDeadline(s.DeadlineSeconds)) {
+		return invalid("%s: a step-up names the launcher or the principal, the method webauthn and a deadline of 300..604800 seconds if any", name)
 	}
 	if (r.Param == "") != (r.Unless == nil) {
 		return invalid("%s: param and unless go together", name)
