@@ -326,6 +326,11 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	// obligations applied) or, in monitor mode, the requested one.
 	bound := c.Action
 	if !r.Monitor {
+		if conn.GetKind() == "local" && len(ar.GetObligations()) > 0 {
+			// A cooperative client runs the action as it asked: it can
+			// honor no obligation (HR-186).
+			return r.fail(EnforcementFailed, CodeObligation)
+		}
 		eff, err := effective(def, c.Action, ar.GetObligations())
 		if err != nil {
 			return r.fail(EnforcementFailed, CodeObligation)
@@ -355,10 +360,28 @@ func (e *Engine) dispatch(ctx context.Context, c Call, t *timer) Result {
 	if want.Epoch < epoch {
 		return r.fail(EnforcementFailed, CodeEpochStale)
 	}
-	if conn.GetKind() == "mcp" {
+	switch conn.GetKind() {
+	case "mcp":
 		return e.sendMCP(ctx, r, conn, def, bound, want, t)
+	case "local":
+		return e.delegate(ctx, r, want, t)
 	}
 	return e.send(ctx, r, conn, def, bound, want, t)
+}
+
+// delegate commits and records a cooperative channel's permitted action
+// (the Claude Code hook; HR-186): BeginDispatch, so containment, the kill
+// switch and the epoch apply as for any action, then RecordExecution with
+// outcome DELEGATED. The agent's own machine performs the action; the
+// gateway sends nothing, and the receipt says so.
+func (e *Engine) delegate(ctx context.Context, r Result, want permitWant, t *timer) Result {
+	_, err := e.authority.BeginDispatch(ctx, &pb.BeginDispatchRequest{PermitId: want.PermitID, Epoch: want.Epoch})
+	t.lap("begin")
+	if err != nil {
+		r.Reasons = append(r.Reasons, strings.ToUpper(connect.CodeOf(err).String()))
+		return r.fail(EnforcementFailed, CodeDispatchRefused)
+	}
+	return e.record(context.WithoutCancel(ctx), r, want, pb.Outcome_OUTCOME_DELEGATED, 0, nil, 0, "", "", t)
 }
 
 // allows reports whether a decision lets an enforce-mode action proceed.

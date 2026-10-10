@@ -16,6 +16,7 @@ import (
 	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	"github.com/katocxl/pantherclaw/internal/gateway/dispatch"
+	"github.com/katocxl/pantherclaw/internal/gateway/hook"
 	"github.com/katocxl/pantherclaw/internal/gateway/httpproxy"
 	"github.com/katocxl/pantherclaw/internal/gateway/mcp"
 	pb "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
@@ -51,6 +52,7 @@ type Gateway struct {
 	engine      *dispatch.Engine
 	http        *httpproxy.Handler
 	mcp         *mcp.Handler
+	hook        *hook.Handler
 	log         *slog.Logger
 	// reportDrift, driftEvery and driftPoll drive the drift checks
 	// (drift.go).
@@ -58,12 +60,16 @@ type Gateway struct {
 	driftEvery, driftPoll time.Duration
 }
 
-// Handler returns the gateway's agent-facing HTTP handler: `/{connection}/…`
-// (httpproxy).
+// Handler returns the gateway's agent-facing HTTP handler: `/mcp/{connection}`
+// (mcp), `/hook/{connection}` (hook) and `/{connection}/…` (httpproxy).
 func (g *Gateway) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := mcp.Path(r.URL.EscapedPath()); ok {
 			g.mcp.ServeHTTP(w, r)
+			return
+		}
+		if _, ok := hook.Path(r.URL.EscapedPath()); ok {
+			g.hook.ServeHTTP(w, r)
 			return
 		}
 		g.http.ServeHTTP(w, r)
@@ -170,6 +176,7 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 		run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker, engine: engine,
 		http: httpproxy.New(engine, d.Configuration, cfg.PublicURL, log),
 		mcp:  mcp.New(engine, d.Configuration, cfg.PublicURL, log),
+		hook: hook.New(engine, d.Configuration, cfg.PublicURL, log),
 		log:  log, reportDrift: d.ReportDrift, driftEvery: DriftEvery, driftPoll: driftPoll,
 	}, nil
 }
