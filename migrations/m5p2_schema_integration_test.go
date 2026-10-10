@@ -50,8 +50,10 @@ const (
 // the first user.
 func newM5p2Fixture(t *testing.T, f m5Fixture) m5p2Fixture {
 	t.Helper()
-	g := m5p2Fixture{m5Fixture: f, agent: m5ID(), run: m5ID(), grant: m5ID(), txn: m5ID(), user2: m5ID(),
-		session2: m5ID(), cliSession: m5ID()}
+	g := m5p2Fixture{
+		m5Fixture: f, agent: m5ID(), run: m5ID(), grant: m5ID(), txn: m5ID(), user2: m5ID(),
+		session2: m5ID(), cliSession: m5ID(),
+	}
 	env := m5ID()
 	g.mustExec(t, "INSERT INTO pc.environments (org_id, id, slug, name, kind) VALUES ($1, $2, 'dev', 'Dev', 'DEVELOPMENT')", g.org, env)
 	g.mustExec(t, "INSERT INTO pc.agents (org_id, id, name, state, created_by) VALUES ($1, $2, 'coder', 'DISCOVERED', 'test')", g.org, g.agent)
@@ -85,8 +87,10 @@ func TestHR171_ApprovalRequestsAreFixedOnceRecorded(t *testing.T) {
 	req := g.request(t, 20)
 	g.want(t, m5Unique, "a second live request for one transaction", m5p2Request,
 		g.org, m5ID(), g.agent, g.txn, g.run, g.grant, m5Secret(21), m5Secret(21), "1 hour")
-	for _, col := range []string{"binding", "binding_input", "requirements", "display", "display_hash", "deadline_at",
-		"transaction_id", "run_id", "grant_revision", "agent_id", "subject_kind"} {
+	for _, col := range []string{
+		"binding", "binding_input", "requirements", "display", "display_hash", "deadline_at",
+		"transaction_id", "run_id", "grant_revision", "agent_id", "subject_kind",
+	} {
 		g.want(t, m5Denied, "updating "+col, "UPDATE pc.approval_requests SET "+col+" = "+col+" WHERE id = $1", req)
 	}
 	g.want(t, m5Check, "superseded without a reason",
