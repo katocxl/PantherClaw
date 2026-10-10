@@ -2,15 +2,19 @@
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
 // Package payments is a simulated payments API for tests and demos
-// (pantherclaw-sim payments). It refunds charges, requires an idempotency
-// key, detects replays, and can inject latency, declines and hangs so that
-// ALLOW, FAILED and UNKNOWN paths can be exercised. Every response is marked
-// SIMULATED; nothing here moves real money.
+// (pantherclaw-sim payments). It refunds charges and reads refunds back,
+// requires an idempotency key, detects replays, and can inject latency,
+// declines, hangs and redirects so that ALLOW, FAILED and UNKNOWN paths
+// can be exercised. Like a real target it can require a credential (the
+// one PantherClaw holds in custody) or a PantherClaw action token, so a
+// request that bypasses the gateway is refused (S11). Every response is
+// marked SIMULATED; nothing here moves real money.
 package payments
 
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json/v2"
 	"io"
@@ -30,6 +34,19 @@ type Faults struct {
 	DeclineRate float64 // respond 402 card_declined (no effect)
 	HangRate    float64 // never answer within the client's timeout (unknown outcome)
 	HangFor     time.Duration
+	// RedirectTo, when set, answers every refund with a 307 redirect to
+	// it, which a client must not follow (S12).
+	RedirectTo string
+}
+
+// Require is what a request must carry: the target's own checks.
+type Require struct {
+	// Token is the bearer token every request must carry, the credential
+	// PantherClaw holds in custody (HR-061).
+	Token string
+	// ActionTokens, when set, verifies a PAP-Action token on every refund
+	// (HR-188).
+	ActionTokens *ActionVerifier
 }
 
 // Refund is one recorded refund.
@@ -43,14 +60,18 @@ type Refund struct {
 
 // Server is the simulated payments API.
 type Server struct {
-	faults Faults
-	log    *slog.Logger
+	faults  Faults
+	require Require
+	log     *slog.Logger
 
-	mu      sync.Mutex
-	byKey   map[string]Refund
-	total   money.Decimal
-	count   int
-	replays int
+	mu        sync.Mutex
+	byKey     map[string]Refund
+	byID      map[string]Refund
+	total     money.Decimal
+	count     int
+	replays   int
+	refused   int
+	redirects int
 }
 
 // New returns a simulator.
@@ -58,7 +79,13 @@ func New(f Faults, log *slog.Logger) *Server {
 	if f.HangFor == 0 {
 		f.HangFor = 30 * time.Second
 	}
-	return &Server{faults: f, log: log, byKey: map[string]Refund{}}
+	return &Server{faults: f, log: log, byKey: map[string]Refund{}, byID: map[string]Refund{}}
+}
+
+// WithRequire makes the simulator require what r names, and returns it.
+func (s *Server) WithRequire(r Require) *Server {
+	s.require = r
+	return s
 }
 
 type refundRequest struct {
@@ -77,10 +104,39 @@ var (
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/refunds", s.refund)
+	mux.HandleFunc("GET /v1/refunds/{id}", s.getRefund)
 	mux.HandleFunc("GET /v1/stats", s.stats)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Simulated", "true")
+		if r.URL.Path != "/v1/stats" && s.require.Token != "" &&
+			subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.require.Token)) != 1 {
+			s.refuse(w, http.StatusUnauthorized, "credential_required")
+			return
+		}
 		mux.ServeHTTP(w, r)
+	})
+}
+
+// refuse answers a refused request and counts it.
+func (s *Server) refuse(w http.ResponseWriter, status int, reason string) {
+	s.mu.Lock()
+	s.refused++
+	s.mu.Unlock()
+	writeJSON(w, status, map[string]string{"error": reason})
+}
+
+// getRefund reads one refund back (payments.refund.get).
+func (s *Server) getRefund(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	ref, ok := s.byID[r.PathValue("id")]
+	s.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "refund_not_found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": ref.ID, "charge": ref.Charge, "amount": ref.Amount.Amount.String(), "currency": string(ref.Amount.Currency),
+		"reason": ref.Reason, "status": "succeeded", "simulated": true,
 	})
 }
 
@@ -111,7 +167,22 @@ func (s *Server) refund(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_amount"})
 		return
 	}
+	if v := s.require.ActionTokens; v != nil {
+		want := Want{Operation: "payments.refund.create", TargetType: "payments.charge", TargetID: req.Charge}
+		if err := v.Verify(r.Context(), r, body, want); err != nil {
+			s.refuse(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
 	hash := sha256.Sum256(body)
+	if s.faults.RedirectTo != "" {
+		s.mu.Lock()
+		s.redirects++
+		s.mu.Unlock()
+		w.Header().Set("Location", s.faults.RedirectTo)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		return
+	}
 
 	if s.faults.Latency > 0 {
 		select {
@@ -153,7 +224,7 @@ func (s *Server) apply(key string, req refundRequest, amount money.Money, hash [
 		return http.StatusPaymentRequired, map[string]string{"error": "card_declined"}, false
 	}
 	ref := Refund{ID: "re_" + ids.NewV7().String(), Charge: req.Charge, Amount: amount, Reason: req.Reason, BodyHash: hash}
-	s.byKey[key] = ref
+	s.byKey[key], s.byID[ref.ID] = ref, ref
 	s.count++
 	if t, err := s.total.Add(amount.Amount); err == nil {
 		s.total = t
@@ -166,13 +237,17 @@ type Stats struct {
 	Refunds int    `json:"refunds"`
 	Total   string `json:"total"`
 	Replays int    `json:"replays"`
+	// Refused counts requests refused for a missing or wrong credential or
+	// action token; Redirects counts redirect answers.
+	Refused   int `json:"refused"`
+	Redirects int `json:"redirects"`
 }
 
 // Stats returns the current counters.
 func (s *Server) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Stats{Refunds: s.count, Total: s.total.String(), Replays: s.replays}
+	return Stats{Refunds: s.count, Total: s.total.String(), Replays: s.replays, Refused: s.refused, Redirects: s.redirects}
 }
 
 func (s *Server) stats(w http.ResponseWriter, _ *http.Request) {
