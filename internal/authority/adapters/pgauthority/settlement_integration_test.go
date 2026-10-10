@@ -97,7 +97,7 @@ func TestADR0015_OutcomesSettleOffTheHotRow(t *testing.T) {
 	cancel()
 	release()
 
-	if res, sp := w.budget(); res != "50" || sp != "0" {
+	if res, sp := w.rows(); res != "50" || sp != "0" {
 		t.Fatalf("before the settlement the row counts both as reserved: reserved %s spent %s", res, sp)
 	}
 	if !w.settling() {
@@ -119,7 +119,7 @@ func TestADR0015_OutcomesSettleOffTheHotRow(t *testing.T) {
 	if n, err := w.auth.Store.ApplySettlements(ctx, w.org); err != nil || n != 2 {
 		t.Fatalf("applied %d, %v; want the 2 outcomes", n, err)
 	}
-	if res, sp := w.budget(); res != "5" || sp != "30" {
+	if res, sp := w.rows(); res != "5" || sp != "30" {
 		t.Fatalf("after the settlement: reserved %s spent %s", res, sp)
 	}
 	if n, err := w.auth.Store.ApplySettlements(ctx, w.org); err != nil || n != 0 {

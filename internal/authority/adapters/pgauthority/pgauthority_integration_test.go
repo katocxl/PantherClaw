@@ -376,12 +376,29 @@ func TestHR048_NoOverspendUnder1000ConcurrentAuthorizations(t *testing.T) {
 	}
 }
 
-// budget returns the reserved and spent totals of the org's accounts.
+// budget returns the reserved and spent totals of the org's accounts as
+// settled: an outcome recorded but not yet applied to its row by the sweep
+// counts as spent or released (ADR-0015), as the budget views show it.
 func (w *world) budget() (reserved, spent string) {
 	w.t.Helper()
+	return w.totals(`SELECT
+		((SELECT coalesce(sum(reserved), 0) FROM pc.budget_accounts)
+		 - (SELECT coalesce(sum(amount), 0) FROM pc.reservations WHERE pending AND account_id IS NOT NULL))::text,
+		((SELECT coalesce(sum(spent), 0) FROM pc.budget_accounts)
+		 + (SELECT coalesce(sum(amount), 0) FROM pc.reservations WHERE pending AND state = 'COMMITTED' AND account_id IS NOT NULL))::text`)
+}
+
+// rows returns the reserved and spent totals of the account rows
+// themselves, which an outcome reaches only when the sweep applies it.
+func (w *world) rows() (reserved, spent string) {
+	w.t.Helper()
+	return w.totals("SELECT coalesce(sum(reserved), 0)::text, coalesce(sum(spent), 0)::text FROM pc.budget_accounts")
+}
+
+func (w *world) totals(sql string) (reserved, spent string) {
+	w.t.Helper()
 	if err := w.pool.InTenantTx(context.Background(), w.org, func(ctx context.Context, tx db.TenantTx) error {
-		return tx.QueryRow(ctx, "SELECT coalesce(sum(reserved), 0)::text, coalesce(sum(spent), 0)::text FROM pc.budget_accounts").
-			Scan(&reserved, &spent)
+		return tx.QueryRow(ctx, sql).Scan(&reserved, &spent)
 	}); err != nil {
 		w.t.Fatal(err)
 	}
@@ -389,7 +406,8 @@ func (w *world) budget() (reserved, spent string) {
 }
 
 // settle applies the outcomes recorded so far to the budget rows, as the
-// sweep job does (ADR-0015), and checks that none is left pending.
+// sweep job does (ADR-0015), and checks that none is left pending and the
+// rows now equal the settled totals.
 func (w *world) settle() {
 	w.t.Helper()
 	if _, err := w.auth.Store.ApplySettlements(context.Background(), w.org); err != nil {
@@ -397,6 +415,10 @@ func (w *world) settle() {
 	}
 	if n := w.count("SELECT count(*) FROM pc.reservations WHERE pending"); n != 0 {
 		w.t.Fatalf("%d reservations still pending after the settlement", n)
+	}
+	r1, s1 := w.rows()
+	if r2, s2 := w.budget(); r1 != r2 || s1 != s2 {
+		w.t.Fatalf("after the settlement the rows show reserved %s spent %s, the settled totals %s and %s", r1, s1, r2, s2)
 	}
 }
 
@@ -452,9 +474,13 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	}
 	dispatch(first, finalize.Failed)
 	// The outcome reaches the budget row with the settlement (ADR-0015);
-	// until then the row still counts it reserved, never less.
-	if res, sp := w.budget(); res != "30" || sp != "0" {
-		t.Fatalf("before the settlement: reserved %s spent %s, want the release still counted", res, sp)
+	// until then the row still counts it reserved, never less, while the
+	// settled totals already show it released.
+	if res, sp := w.rows(); res != "30" || sp != "0" {
+		t.Fatalf("before the settlement the row: reserved %s spent %s, want the release still counted", res, sp)
+	}
+	if res, sp := w.budget(); res != "0" || sp != "0" {
+		t.Fatalf("before the settlement the settled totals: reserved %s spent %s", res, sp)
 	}
 	w.settle()
 	if res, sp := w.budget(); res != "0" || sp != "0" {
