@@ -89,6 +89,19 @@ func (w *World) AccountState(ref bdomain.Ref) bdomain.Account {
 	return w.accounts[ref]
 }
 
+// DeleteRow removes the budget account or counter row of ref, as an
+// operator deleting it from the database would (the application never
+// does).
+func (w *World) DeleteRow(ref bdomain.Ref) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	f := w.fin()
+	delete(f.rowRefs, f.refRows[ref])
+	delete(f.refRows, ref)
+	delete(w.accounts, ref)
+	delete(w.counters, ref)
+}
+
 // Lookup implements finalize.Store.
 func (w *World) Lookup(_ context.Context, _ ids.OrgID, run, action ids.UUID) (*finalize.Stored, error) {
 	w.mu.Lock()
@@ -175,6 +188,14 @@ func (w *World) Finalize(ctx context.Context, org ids.OrgID, wr finalize.Write) 
 	if err := w.holdWrite(wr); err != nil {
 		return err
 	}
+	// The limits are the evaluated plan's, as the database adapter passes
+	// them to its conditional updates, whether or not Prepare ran.
+	for _, d := range ev.Plan.Budgets {
+		f.debits[d.Ref] = d
+	}
+	for _, d := range ev.Plan.Counters {
+		f.counters[d.Ref] = d
+	}
 	if err := w.reserve(wr.Lines); err != nil {
 		return err
 	}
@@ -208,7 +229,10 @@ func (w *World) reserve(lines []bdomain.Line) error {
 	f := w.fin()
 	book := bdomain.NewBook()
 	for _, l := range lines {
-		ref := f.rowRefs[l.ID]
+		ref, ok := f.rowRefs[l.ID]
+		if !ok {
+			return finalize.ErrExhausted // the database's conditional update matches no row
+		}
 		switch l.Kind {
 		case bdomain.KindBudget:
 			a := w.accounts[ref]
