@@ -429,3 +429,159 @@ message GetTransactionEvidenceResponse {
   // Links from and to it.
   repeated TransactionLink links = 8;
 }
+
+// ReconciliationService owns unknown outcomes and conflicting effects
+// (HR-192, HR-193). Evidence resolves a reconciliation only towards
+// "occurred"; "did not occur" is released only on the reconciliation's page,
+// by an independent person with a security key, never through this API.
+// Writes are human only.
+service ReconciliationService {
+  // ListReconciliations lists reconciliations, newest first.
+  // permission: evidence.read
+  rpc ListReconciliations(ListReconciliationsRequest) returns (ListReconciliationsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // GetReconciliation returns one reconciliation and its transaction.
+  // permission: evidence.read
+  rpc GetReconciliation(GetReconciliationRequest) returns (GetReconciliationResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // ResolveOccurred records, with a written basis, that the effect
+  // happened. For an unknown outcome the held budget is committed and an
+  // exact repeat stays refused within the repeat window; a conflicting
+  // effect's committed budget stays committed. It only ever commits, the
+  // safe direction.
+  // permission: transaction.reconcile
+  rpc ResolveOccurred(ResolveOccurredRequest) returns (ResolveOccurredResponse);
+  // RequestVerification asks the transaction's verifier to read the target
+  // again now.
+  // permission: transaction.reconcile
+  rpc RequestVerification(RequestVerificationRequest) returns (RequestVerificationResponse);
+  // LinkTransaction links a later, separately authorized transaction to an
+  // earlier one as its compensation or recovery. The earlier transaction's
+  // records and budget never change; it becomes COMPENSATED only once the
+  // compensating effect is confirmed.
+  // permission: transaction.reconcile
+  rpc LinkTransaction(LinkTransactionRequest) returns (LinkTransactionResponse);
+}
+
+// ListReconciliationsRequest pages through reconciliations, newest first.
+message ListReconciliationsRequest {
+  // Maximum results (default 50, at most 200). A page can hold fewer when
+  // some are not readable.
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 200
+  }];
+  // Token from a previous response.
+  string page_token = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]*$"
+  }];
+  // Only in these states (all when empty).
+  repeated ReconciliationState states = 3 [(buf.validate.field).repeated = {
+    max_items: 3
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only of these kinds (all when empty).
+  repeated ReconciliationKind kinds = 4 [(buf.validate.field).repeated = {
+    max_items: 2
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Only this transaction's.
+  optional string transaction_id = 5 [(buf.validate.field).string.uuid = true];
+}
+
+// ListReconciliationsResponse is one page.
+message ListReconciliationsResponse {
+  // Reconciliations, newest first.
+  repeated Reconciliation reconciliations = 1;
+  // Token for the next page; empty at the end.
+  string next_page_token = 2;
+}
+
+// GetReconciliationRequest names a reconciliation.
+message GetReconciliationRequest {
+  // Reconciliation id.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// GetReconciliationResponse returns it.
+message GetReconciliationResponse {
+  // The reconciliation.
+  Reconciliation reconciliation = 1;
+  // Its transaction.
+  Transaction transaction = 2;
+}
+
+// ResolveOccurredRequest records that an effect happened.
+message ResolveOccurredRequest {
+  // Reconciliation id; it must be open.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // What the person checked, in their words (stored and shown as
+  // untrusted text).
+  string basis = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 2000
+  }];
+  // The transaction's observations the person relied on.
+  repeated string evidence = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {uuid: true}
+    }
+  }];
+  // The observation the person found authoritative; one of evidence.
+  optional string observation_id = 4 [(buf.validate.field).string.uuid = true];
+}
+
+// ResolveOccurredResponse returns the resolved reconciliation.
+message ResolveOccurredResponse {
+  // The reconciliation.
+  Reconciliation reconciliation = 1;
+}
+
+// RequestVerificationRequest names a dispatched transaction.
+message RequestVerificationRequest {
+  // Transaction id.
+  string transaction_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// RequestVerificationResponse names the verification task.
+message RequestVerificationResponse {
+  // The task that reads the target next.
+  string verification_id = 1;
+}
+
+// LinkTransactionRequest links two transactions.
+message LinkTransactionRequest {
+  // The later transaction: the compensation or recovery.
+  string from_transaction_id = 1 [(buf.validate.field).string.uuid = true];
+  // The earlier transaction it compensates or recovers. It must have been
+  // dispatched before the later one was decided.
+  string to_transaction_id = 2 [(buf.validate.field).string.uuid = true];
+  // Kind.
+  LinkKind kind = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// LinkTransactionResponse returns the link.
+message LinkTransactionResponse {
+  // The link.
+  TransactionLink link = 1;
+}

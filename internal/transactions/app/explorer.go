@@ -171,16 +171,16 @@ type Evidence struct {
 	Links           []Link
 }
 
-// readers caches, per agent, whether the caller holds p where it lives.
+// readers caches, per agent, whether the caller holds evidence.read where
+// it lives.
 type readers struct {
 	c       tenancy.Caller
 	q       *dbq.Queries
-	p       td.Permission
 	allowed map[ids.UUID]bool
 }
 
-func newReaders(c tenancy.Caller, q *dbq.Queries, p td.Permission) *readers {
-	return &readers{c: c, q: q, p: p, allowed: map[ids.UUID]bool{}}
+func newReaders(c tenancy.Caller, q *dbq.Queries) *readers {
+	return &readers{c: c, q: q, allowed: map[ids.UUID]bool{}}
 }
 
 func (r *readers) can(ctx context.Context, agent ids.UUID) (bool, error) {
@@ -195,7 +195,7 @@ func (r *readers) can(ctx context.Context, agent ids.UUID) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	ok := r.c.Can(r.p, path)
+	ok := r.c.Can(td.PermEvidenceRead, path)
 	r.allowed[agent] = ok
 	return ok, nil
 }
@@ -231,7 +231,7 @@ func (e *Explorer) ListTransactions(ctx context.Context, pr page.Request, f Filt
 			return err
 		}
 		rows, out.Next = page.Finish(pr, rows, func(r dbq.ListTransactionsRow) ids.UUID { return r.ID })
-		rd := newReaders(c, q, td.PermEvidenceRead)
+		rd := newReaders(c, q)
 		for _, r := range rows {
 			ok, err := rd.can(ctx, r.AgentID)
 			if err != nil {
@@ -268,7 +268,7 @@ func (e *Explorer) TransactionEvidence(ctx context.Context, id ids.UUID) (Eviden
 		} else if err != nil {
 			return err
 		}
-		rd := newReaders(c, q, td.PermEvidenceRead)
+		rd := newReaders(c, q)
 		if ok, err := rd.can(ctx, t.AgentID); err != nil {
 			return err
 		} else if !ok {
@@ -313,7 +313,7 @@ func (e *Explorer) TransactionEvidence(ctx context.Context, id ids.UUID) (Eviden
 				Achieved: defs.Level(deref(f.LevelAchieved)), Basis: f.Basis, JWS: f.ReceiptJws,
 				Integrity: integrity(f.LedgerEntryID, f.ChainSeq), Created: f.CreatedAt,
 			})
-			named = append(named, effectObservations(f.ReceiptJws)...)
+			named = append(named, ReceiptObservations(f.ReceiptJws)...)
 		}
 
 		obs, err := q.ObservationsOf(ctx, c.Org, &id, named)
@@ -380,6 +380,11 @@ func summary(t dbq.TransactionSummaryRow) Summary {
 			Decision: t.Decision, Reason: t.ReasonCode, PermitState: deref(t.PermitState), Outcome: deref(t.Outcome),
 		}),
 	}
+}
+
+// ReconciliationOf converts a stored reconciliation.
+func ReconciliationOf(k dbq.ReconciliationOfRow) Reconciliation {
+	return reconciliation(dbq.ReconciliationsOfRow(k))
 }
 
 func reconciliation(k dbq.ReconciliationsOfRow) Reconciliation {
@@ -465,9 +470,9 @@ func decisionBasis(jws string) *DecisionBasis {
 	return out
 }
 
-// effectObservations returns the observations an effect receipt's basis
+// ReceiptObservations returns the observations an effect receipt's basis
 // names.
-func effectObservations(jws string) []ids.UUID {
+func ReceiptObservations(jws string) []ids.UUID {
 	var claims struct {
 		Pap struct {
 			Basis struct {
@@ -485,4 +490,93 @@ func effectObservations(jws string) []ids.UUID {
 		}
 	}
 	return out
+}
+
+// ReconciliationFilter narrows ListReconciliations; empty fields match
+// everything.
+type ReconciliationFilter struct {
+	States      []domain.TaskState
+	Kinds       []domain.TaskKind
+	Transaction *ids.UUID
+}
+
+// ReconciliationPage is one page of reconciliations, newest first.
+type ReconciliationPage struct {
+	Items []Reconciliation
+	Next  string
+}
+
+// ListReconciliations lists the reconciliations the caller may read,
+// newest first.
+func (e *Explorer) ListReconciliations(ctx context.Context, pr page.Request, f ReconciliationFilter) (ReconciliationPage, error) {
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return ReconciliationPage{}, err
+	}
+	states, kinds := make([]string, len(f.States)), make([]string, len(f.Kinds))
+	for i, s := range f.States {
+		states[i] = string(s)
+	}
+	for i, k := range f.Kinds {
+		kinds[i] = string(k)
+	}
+	var out ReconciliationPage
+	err = e.Pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		rows, err := q.ListReconciliations(ctx, dbq.ListReconciliationsParams{
+			OrgID: c.Org, Before: pr.After, States: states, Kinds: kinds, TransactionID: f.Transaction, PageLimit: pr.Limit(),
+		})
+		if err != nil {
+			return err
+		}
+		rows, out.Next = page.Finish(pr, rows, func(r dbq.ListReconciliationsRow) ids.UUID { return r.ID })
+		rd := newReaders(c, q)
+		for _, k := range rows {
+			ok, err := rd.can(ctx, k.AgentID)
+			if err != nil {
+				return err
+			}
+			if ok {
+				out.Items = append(out.Items, reconciliation(dbq.ReconciliationsOfRow{
+					ID: k.ID, TransactionID: k.TransactionID, Kind: k.Kind, State: k.State, ResolvedVia: k.ResolvedVia,
+					ObservationID: k.ObservationID, UserID: k.UserID, Basis: k.Basis, Evidence: k.Evidence,
+					WaitlistEntryID: k.WaitlistEntryID, OpenedAt: k.OpenedAt, ResolvedAt: k.ResolvedAt,
+				}))
+			}
+		}
+		return nil
+	}, db.ReadOnly())
+	return out, err
+}
+
+// Reconciliation returns one reconciliation and its transaction
+// (evidence.read where the run's agent lives).
+func (e *Explorer) Reconciliation(ctx context.Context, id ids.UUID) (Reconciliation, Summary, error) {
+	c, err := tenancy.CallerFrom(ctx)
+	if err != nil {
+		return Reconciliation{}, Summary{}, err
+	}
+	var k Reconciliation
+	var s Summary
+	err = e.Pool.InTenantTx(ctx, c.Org, func(ctx context.Context, tx db.TenantTx) error {
+		q := dbq.New(tx)
+		row, err := q.ReconciliationOf(ctx, c.Org, id)
+		if db.IsNoRows(err) {
+			return ErrReconciliationNotFound
+		} else if err != nil {
+			return err
+		}
+		t, err := q.TransactionSummary(ctx, c.Org, row.TransactionID)
+		if err != nil {
+			return err
+		}
+		if ok, err := newReaders(c, q).can(ctx, t.AgentID); err != nil {
+			return err
+		} else if !ok {
+			return td.ErrPermissionDenied(td.PermEvidenceRead)
+		}
+		k, s = reconciliation(dbq.ReconciliationsOfRow(row)), summary(t)
+		return nil
+	}, db.ReadOnly())
+	return k, s, err
 }

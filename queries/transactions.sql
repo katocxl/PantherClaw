@@ -105,3 +105,91 @@ FROM pc.transaction_links
 WHERE org_id = sqlc.arg(org_id)
   AND (from_transaction_id = sqlc.arg(transaction_id) OR to_transaction_id = sqlc.arg(transaction_id))
 ORDER BY created_at;
+
+-- Reconciliation (G0 M7 design decisions 3 and 4, HR-192, HR-193).
+
+-- name: ListReconciliations :many
+SELECT k.id, k.transaction_id, k.kind, k.state, k.resolved_via, k.observation_id, k.user_id, k.basis, k.evidence,
+       k.waitlist_entry_id, k.opened_at, k.resolved_at, r.agent_id
+FROM pc.reconciliation_tasks k
+JOIN pc.transactions t ON t.org_id = k.org_id AND t.id = k.transaction_id
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+WHERE k.org_id = sqlc.arg(org_id)
+  AND (coalesce(sqlc.arg(before)::uuid, '00000000-0000-0000-0000-000000000000') = '00000000-0000-0000-0000-000000000000'
+       OR k.id < sqlc.arg(before)::uuid)
+  AND (cardinality(sqlc.arg(states)::text[]) = 0 OR k.state = ANY (sqlc.arg(states)::text[]))
+  AND (cardinality(sqlc.arg(kinds)::text[]) = 0 OR k.kind = ANY (sqlc.arg(kinds)::text[]))
+  AND (sqlc.narg(transaction_id)::uuid IS NULL OR k.transaction_id = sqlc.narg(transaction_id)::uuid)
+ORDER BY k.id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- name: ReconciliationByID :one
+SELECT k.id, k.transaction_id, k.kind, k.state, k.resolved_via, k.observation_id, k.user_id, k.basis, k.evidence,
+       k.waitlist_entry_id, k.opened_at, k.resolved_at, r.agent_id, p.id AS permit_id
+FROM pc.reconciliation_tasks k
+JOIN pc.transactions t ON t.org_id = k.org_id AND t.id = k.transaction_id
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+LEFT JOIN pc.permits p ON p.org_id = t.org_id AND p.transaction_id = t.id
+WHERE k.org_id = sqlc.arg(org_id) AND k.id = sqlc.arg(id)
+FOR UPDATE OF k;
+
+-- ResolveReconciliationByPerson records a person's "occurred" with their
+-- basis; only an open task changes.
+-- name: ResolveReconciliationByPerson :execrows
+UPDATE pc.reconciliation_tasks
+SET state = 'OCCURRED', resolved_via = 'person', user_id = sqlc.arg(user_id), basis = sqlc.arg(basis),
+    evidence = sqlc.arg(evidence)::uuid[], observation_id = sqlc.narg(observation_id), resolved_at = now()
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id) AND state = 'OPEN';
+
+-- LatestVerification is the transaction's newest verification task: what
+-- a requested verification reads again.
+-- name: LatestVerification :one
+SELECT id, purpose, state, connection_id, operation, request,
+       extract(epoch FROM deadline_at - created_at)::float8 AS window_seconds
+FROM pc.verifications
+WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: VerifyNow :many
+UPDATE pc.verifications SET next_at = now()
+WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id) AND state = 'PENDING'
+RETURNING id;
+
+-- name: OpenVerifications :many
+SELECT id FROM pc.verifications
+WHERE org_id = sqlc.arg(org_id) AND transaction_id = sqlc.arg(transaction_id) AND state IN ('PENDING', 'LEASED');
+
+-- LinkEnd is one end of a link, locked.
+-- name: LinkEnd :one
+SELECT t.created_at, t.effect_state, t.effect_level_required, t.effect_level_achieved, r.agent_id, p.dispatching_at,
+       p.definition_digest
+FROM pc.transactions t
+JOIN pc.runs r ON r.org_id = t.org_id AND r.id = t.run_id
+LEFT JOIN pc.permits p ON p.org_id = t.org_id AND p.transaction_id = t.id
+WHERE t.org_id = sqlc.arg(org_id) AND t.id = sqlc.arg(id)
+FOR UPDATE OF t;
+
+-- name: InsertTransactionLink :execrows
+INSERT INTO pc.transaction_links (org_id, from_transaction_id, to_transaction_id, kind, created_by)
+VALUES (sqlc.arg(org_id), sqlc.arg(from_transaction_id), sqlc.arg(to_transaction_id), sqlc.arg(kind), sqlc.arg(created_by))
+ON CONFLICT DO NOTHING;
+
+-- Compensated are the earlier transactions a transaction compensates.
+-- name: Compensated :many
+SELECT to_transaction_id FROM pc.transaction_links
+WHERE org_id = sqlc.arg(org_id) AND from_transaction_id = sqlc.arg(from_transaction_id) AND kind = 'compensates';
+
+-- CompensatedBy are the confirmed transactions that compensate a
+-- transaction: an original confirmed after its compensation.
+-- name: CompensatedBy :many
+SELECT l.from_transaction_id FROM pc.transaction_links l
+JOIN pc.transactions f ON f.org_id = l.org_id AND f.id = l.from_transaction_id
+WHERE l.org_id = sqlc.arg(org_id) AND l.to_transaction_id = sqlc.arg(to_transaction_id) AND l.kind = 'compensates'
+  AND f.effect_state = 'CONFIRMED';
+
+-- name: ReconciliationOf :one
+SELECT id, transaction_id, kind, state, resolved_via, observation_id, user_id, basis, evidence, waitlist_entry_id,
+       opened_at, resolved_at
+FROM pc.reconciliation_tasks
+WHERE org_id = sqlc.arg(org_id) AND id = sqlc.arg(id);

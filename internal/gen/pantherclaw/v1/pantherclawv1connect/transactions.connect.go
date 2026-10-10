@@ -17,6 +17,8 @@ import (
 const (
 	// TransactionServiceName is the fully-qualified name of the TransactionService service.
 	TransactionServiceName = "pantherclaw.v1.TransactionService"
+	// ReconciliationServiceName is the fully-qualified name of the ReconciliationService service.
+	ReconciliationServiceName = "pantherclaw.v1.ReconciliationService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -33,6 +35,21 @@ const (
 	// TransactionServiceGetTransactionEvidenceProcedure is the procedure name of the
 	// TransactionService's GetTransactionEvidence RPC.
 	TransactionServiceGetTransactionEvidenceProcedure = "/pantherclaw.v1.TransactionService/GetTransactionEvidence"
+	// ReconciliationServiceListReconciliationsProcedure is the procedure name of the
+	// ReconciliationService's ListReconciliations RPC.
+	ReconciliationServiceListReconciliationsProcedure = "/pantherclaw.v1.ReconciliationService/ListReconciliations"
+	// ReconciliationServiceGetReconciliationProcedure is the procedure name of the
+	// ReconciliationService's GetReconciliation RPC.
+	ReconciliationServiceGetReconciliationProcedure = "/pantherclaw.v1.ReconciliationService/GetReconciliation"
+	// ReconciliationServiceResolveOccurredProcedure is the procedure name of the
+	// ReconciliationService's ResolveOccurred RPC.
+	ReconciliationServiceResolveOccurredProcedure = "/pantherclaw.v1.ReconciliationService/ResolveOccurred"
+	// ReconciliationServiceRequestVerificationProcedure is the procedure name of the
+	// ReconciliationService's RequestVerification RPC.
+	ReconciliationServiceRequestVerificationProcedure = "/pantherclaw.v1.ReconciliationService/RequestVerification"
+	// ReconciliationServiceLinkTransactionProcedure is the procedure name of the
+	// ReconciliationService's LinkTransaction RPC.
+	ReconciliationServiceLinkTransactionProcedure = "/pantherclaw.v1.ReconciliationService/LinkTransaction"
 )
 
 var (
@@ -143,6 +160,249 @@ func (h transactionServiceHandler) getTransactionEvidence(ctx context.Context, _
 		return err
 	}
 	res, err := h.svc.GetTransactionEvidence(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	reconciliationServiceListReconciliationsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_transactions_proto.Services().ByName("ReconciliationService").Methods().ByName("ListReconciliations"),
+			Procedure:        ReconciliationServiceListReconciliationsProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
+	reconciliationServiceGetReconciliationSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType:       connect.StreamTypeUnary,
+			Schema:           v1.File_pantherclaw_v1_transactions_proto.Services().ByName("ReconciliationService").Methods().ByName("GetReconciliation"),
+			Procedure:        ReconciliationServiceGetReconciliationProcedure,
+			IdempotencyLevel: connect.IdempotencyNoSideEffects,
+		}
+	})
+	reconciliationServiceResolveOccurredSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_transactions_proto.Services().ByName("ReconciliationService").Methods().ByName("ResolveOccurred"),
+			Procedure:  ReconciliationServiceResolveOccurredProcedure,
+		}
+	})
+	reconciliationServiceRequestVerificationSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_transactions_proto.Services().ByName("ReconciliationService").Methods().ByName("RequestVerification"),
+			Procedure:  ReconciliationServiceRequestVerificationProcedure,
+		}
+	})
+	reconciliationServiceLinkTransactionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_pantherclaw_v1_transactions_proto.Services().ByName("ReconciliationService").Methods().ByName("LinkTransaction"),
+			Procedure:  ReconciliationServiceLinkTransactionProcedure,
+		}
+	})
+)
+
+// ReconciliationServiceClient is a client for the pantherclaw.v1.ReconciliationService service.
+type ReconciliationServiceClient interface {
+	// ListReconciliations lists reconciliations, newest first.
+	// permission: evidence.read
+	ListReconciliations(context.Context, *v1.ListReconciliationsRequest) (*v1.ListReconciliationsResponse, error)
+	// GetReconciliation returns one reconciliation and its transaction.
+	// permission: evidence.read
+	GetReconciliation(context.Context, *v1.GetReconciliationRequest) (*v1.GetReconciliationResponse, error)
+	// ResolveOccurred records, with a written basis, that the effect
+	// happened. For an unknown outcome the held budget is committed and an
+	// exact repeat stays refused within the repeat window; a conflicting
+	// effect's committed budget stays committed. It only ever commits, the
+	// safe direction.
+	// permission: transaction.reconcile
+	ResolveOccurred(context.Context, *v1.ResolveOccurredRequest) (*v1.ResolveOccurredResponse, error)
+	// RequestVerification asks the transaction's verifier to read the target
+	// again now.
+	// permission: transaction.reconcile
+	RequestVerification(context.Context, *v1.RequestVerificationRequest) (*v1.RequestVerificationResponse, error)
+	// LinkTransaction links a later, separately authorized transaction to an
+	// earlier one as its compensation or recovery. The earlier transaction's
+	// records and budget never change; it becomes COMPENSATED only once the
+	// compensating effect is confirmed.
+	// permission: transaction.reconcile
+	LinkTransaction(context.Context, *v1.LinkTransactionRequest) (*v1.LinkTransactionResponse, error)
+}
+
+// NewReconciliationServiceClient constructs a client for the pantherclaw.v1.ReconciliationService
+// service. Multiple service clients may share a single connect.Client.
+func NewReconciliationServiceClient(client *connect.Client) ReconciliationServiceClient {
+	return &reconciliationServiceClient{client: client}
+}
+
+// ReconciliationServiceHandler is an implementation of the pantherclaw.v1.ReconciliationService
+// service.
+type ReconciliationServiceHandler interface {
+	// ListReconciliations lists reconciliations, newest first.
+	// permission: evidence.read
+	ListReconciliations(context.Context, *v1.ListReconciliationsRequest) (*v1.ListReconciliationsResponse, error)
+	// GetReconciliation returns one reconciliation and its transaction.
+	// permission: evidence.read
+	GetReconciliation(context.Context, *v1.GetReconciliationRequest) (*v1.GetReconciliationResponse, error)
+	// ResolveOccurred records, with a written basis, that the effect
+	// happened. For an unknown outcome the held budget is committed and an
+	// exact repeat stays refused within the repeat window; a conflicting
+	// effect's committed budget stays committed. It only ever commits, the
+	// safe direction.
+	// permission: transaction.reconcile
+	ResolveOccurred(context.Context, *v1.ResolveOccurredRequest) (*v1.ResolveOccurredResponse, error)
+	// RequestVerification asks the transaction's verifier to read the target
+	// again now.
+	// permission: transaction.reconcile
+	RequestVerification(context.Context, *v1.RequestVerificationRequest) (*v1.RequestVerificationResponse, error)
+	// LinkTransaction links a later, separately authorized transaction to an
+	// earlier one as its compensation or recovery. The earlier transaction's
+	// records and budget never change; it becomes COMPENSATED only once the
+	// compensating effect is confirmed.
+	// permission: transaction.reconcile
+	LinkTransaction(context.Context, *v1.LinkTransactionRequest) (*v1.LinkTransactionResponse, error)
+}
+
+// RegisterReconciliationServiceHandler registers svc as the pantherclaw.v1.ReconciliationService
+// implementation on server.
+func RegisterReconciliationServiceHandler(server *connect.Server, svc ReconciliationServiceHandler) {
+	adapter := reconciliationServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: reconciliationServiceListReconciliationsSpec(), Handler: adapter.listReconciliations},
+		connect.Method{Spec: reconciliationServiceGetReconciliationSpec(), Handler: adapter.getReconciliation},
+		connect.Method{Spec: reconciliationServiceResolveOccurredSpec(), Handler: adapter.resolveOccurred},
+		connect.Method{Spec: reconciliationServiceRequestVerificationSpec(), Handler: adapter.requestVerification},
+		connect.Method{Spec: reconciliationServiceLinkTransactionSpec(), Handler: adapter.linkTransaction},
+	)
+}
+
+// UnimplementedReconciliationServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedReconciliationServiceHandler struct{}
+
+func (UnimplementedReconciliationServiceHandler) ListReconciliations(context.Context, *v1.ListReconciliationsRequest) (*v1.ListReconciliationsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.ReconciliationService.ListReconciliations is not implemented")
+}
+
+func (UnimplementedReconciliationServiceHandler) GetReconciliation(context.Context, *v1.GetReconciliationRequest) (*v1.GetReconciliationResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.ReconciliationService.GetReconciliation is not implemented")
+}
+
+func (UnimplementedReconciliationServiceHandler) ResolveOccurred(context.Context, *v1.ResolveOccurredRequest) (*v1.ResolveOccurredResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.ReconciliationService.ResolveOccurred is not implemented")
+}
+
+func (UnimplementedReconciliationServiceHandler) RequestVerification(context.Context, *v1.RequestVerificationRequest) (*v1.RequestVerificationResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.ReconciliationService.RequestVerification is not implemented")
+}
+
+func (UnimplementedReconciliationServiceHandler) LinkTransaction(context.Context, *v1.LinkTransactionRequest) (*v1.LinkTransactionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "pantherclaw.v1.ReconciliationService.LinkTransaction is not implemented")
+}
+
+type reconciliationServiceClient struct {
+	client *connect.Client
+}
+
+func (c *reconciliationServiceClient) ListReconciliations(ctx context.Context, req *v1.ListReconciliationsRequest) (*v1.ListReconciliationsResponse, error) {
+	var res v1.ListReconciliationsResponse
+	if err := c.client.CallUnary(ctx, reconciliationServiceListReconciliationsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reconciliationServiceClient) GetReconciliation(ctx context.Context, req *v1.GetReconciliationRequest) (*v1.GetReconciliationResponse, error) {
+	var res v1.GetReconciliationResponse
+	if err := c.client.CallUnary(ctx, reconciliationServiceGetReconciliationSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reconciliationServiceClient) ResolveOccurred(ctx context.Context, req *v1.ResolveOccurredRequest) (*v1.ResolveOccurredResponse, error) {
+	var res v1.ResolveOccurredResponse
+	if err := c.client.CallUnary(ctx, reconciliationServiceResolveOccurredSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reconciliationServiceClient) RequestVerification(ctx context.Context, req *v1.RequestVerificationRequest) (*v1.RequestVerificationResponse, error) {
+	var res v1.RequestVerificationResponse
+	if err := c.client.CallUnary(ctx, reconciliationServiceRequestVerificationSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *reconciliationServiceClient) LinkTransaction(ctx context.Context, req *v1.LinkTransactionRequest) (*v1.LinkTransactionResponse, error) {
+	var res v1.LinkTransactionResponse
+	if err := c.client.CallUnary(ctx, reconciliationServiceLinkTransactionSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type reconciliationServiceHandler struct{ svc ReconciliationServiceHandler }
+
+func (h reconciliationServiceHandler) listReconciliations(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ListReconciliationsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListReconciliations(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reconciliationServiceHandler) getReconciliation(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.GetReconciliationRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.GetReconciliation(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reconciliationServiceHandler) resolveOccurred(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ResolveOccurredRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ResolveOccurred(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reconciliationServiceHandler) requestVerification(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RequestVerificationRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.RequestVerification(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h reconciliationServiceHandler) linkTransaction(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.LinkTransactionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.LinkTransaction(ctx, &req)
 	if err != nil {
 		return err
 	}
