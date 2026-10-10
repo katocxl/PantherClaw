@@ -230,26 +230,33 @@ func (s *Store) Pinned(ctx context.Context, org ids.OrgID, pin actionir.Definiti
 	var d *domain.Definition
 	var state domain.State
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		q := dbq.New(tx)
-		row, err := q.GetDefinitionVersion(ctx, dbq.GetDefinitionVersionParams{OrgID: org, Name: pin.Package, Version: pin.Version, Digest: pin.Digest})
-		if db.IsNoRows(err) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return err
-		}
-		p, err := s.decoded(ctx, q, org, row.ID)
-		if err != nil {
-			return err
-		}
-		i := slices.IndexFunc(p.Definitions, func(x domain.Definition) bool { return x.Digest == pin.Digest })
-		if i < 0 {
-			return ErrNotFound
-		}
-		d, state = &p.Definitions[i], domain.State(row.State)
-		return nil
+		var err error
+		d, state, err = s.PinnedInTx(ctx, tx, org, pin)
+		return err
 	})
 	return d, state, err
+}
+
+// PinnedInTx is Pinned inside the caller's transaction (the Authority's
+// one-snapshot read).
+func (s *Store) PinnedInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID, pin actionir.Definition) (*domain.Definition, domain.State, error) {
+	q := dbq.New(tx)
+	row, err := q.GetDefinitionVersion(ctx, dbq.GetDefinitionVersionParams{OrgID: org, Name: pin.Package, Version: pin.Version, Digest: pin.Digest})
+	if db.IsNoRows(err) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	p, err := s.decoded(ctx, q, org, row.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	i := slices.IndexFunc(p.Definitions, func(x domain.Definition) bool { return x.Digest == pin.Digest })
+	if i < 0 {
+		return nil, "", ErrNotFound
+	}
+	return &p.Definitions[i], domain.State(row.State), nil
 }
 
 // Active returns the org's ACTIVE definition of an operation (the highest
@@ -287,23 +294,32 @@ func (s *Store) Active(ctx context.Context, org ids.OrgID, op string) (*domain.D
 func (s *Store) ActiveDefinitions(ctx context.Context, org ids.OrgID) ([]*domain.Definition, error) {
 	var out []*domain.Definition
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		q := dbq.New(tx)
-		versions, err := q.ListActiveVersions(ctx, org)
-		if err != nil {
-			return err
-		}
-		for _, v := range versions {
-			p, err := s.decoded(ctx, q, org, v)
-			if err != nil {
-				return err
-			}
-			for i := range p.Definitions {
-				out = append(out, &p.Definitions[i])
-			}
-		}
-		return nil
+		var err error
+		out, err = s.ActiveDefinitionsInTx(ctx, tx, org)
+		return err
 	})
 	return out, err
+}
+
+// ActiveDefinitionsInTx is ActiveDefinitions inside the caller's
+// transaction.
+func (s *Store) ActiveDefinitionsInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID) ([]*domain.Definition, error) {
+	q := dbq.New(tx)
+	versions, err := q.ListActiveVersions(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	var out []*domain.Definition
+	for _, v := range versions {
+		p, err := s.decoded(ctx, q, org, v)
+		if err != nil {
+			return nil, err
+		}
+		for i := range p.Definitions {
+			out = append(out, &p.Definitions[i])
+		}
+	}
+	return out, nil
 }
 
 // decoded returns the decoded package of a version, from the cache or by

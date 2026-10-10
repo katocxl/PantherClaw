@@ -131,8 +131,14 @@ func TestHR186_TheHookAllowsOnlyWhatPantherClawAllowed(t *testing.T) {
 			t.Errorf("%s: %d %q %q", name, code, out, errs)
 		}
 	}
+	// The cases run in map order: find the PowerShell call by its command.
+	ps := "not sent"
 	f.mu.Lock()
-	ps := f.body[1]["input"].(map[string]string)["shell"]
+	for _, b := range f.body {
+		if in := b["input"].(map[string]string); in["command"] == "rm -Recurse x" {
+			ps = in["shell"]
+		}
+	}
 	f.mu.Unlock()
 	if ps != "powershell" {
 		t.Fatalf("PowerShell sent as %q", ps)

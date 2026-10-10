@@ -162,14 +162,23 @@ func (s *Store) Put(ctx context.Context, org ids.OrgID, f domain.Fact) (bool, er
 // Catalog returns the active fact names and their types (what policies
 // compile against).
 func (s *Store) Catalog(ctx context.Context, org ids.OrgID) (map[string]domain.Type, error) {
-	out := map[string]domain.Type{}
+	var out map[string]domain.Type
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
-		rows, err := dbq.New(tx).ListActiveFactCatalog(ctx, org)
-		for _, r := range rows {
-			out[r.Name] = domain.Type(r.ValueType)
-		}
+		var err error
+		out, err = s.CatalogInTx(ctx, tx, org)
 		return err
 	})
+	return out, err
+}
+
+// CatalogInTx is Catalog inside the caller's transaction (the Authority's
+// one-snapshot read).
+func (s *Store) CatalogInTx(ctx context.Context, tx db.TenantTx, org ids.OrgID) (map[string]domain.Type, error) {
+	out := map[string]domain.Type{}
+	rows, err := dbq.New(tx).ListActiveFactCatalog(ctx, org)
+	for _, r := range rows {
+		out[r.Name] = domain.Type(r.ValueType)
+	}
 	return out, err
 }
 
