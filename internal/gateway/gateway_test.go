@@ -375,7 +375,9 @@ type harness struct {
 	authorityURL string
 	// mutatePkg edits the mock-payments package before it is compiled.
 	mutatePkg func([]byte) []byte
-	broker    *Broker
+	// pkgFile, when set, is the package compiled instead of mock-payments.
+	pkgFile string
+	broker  *Broker
 	// circuits records the gateway's circuit reports.
 	circuitMu sync.Mutex
 	circuits  []string
@@ -385,10 +387,13 @@ type harness struct {
 	url    string
 }
 
-// compile decodes and compiles the mock-payments package.
-func compile(t *testing.T, mutate func([]byte) []byte) (*control.Connection, error) {
+// compile decodes and compiles a package file (mock-payments when empty).
+func compile(t *testing.T, file string, mutate func([]byte) []byte) (*control.Connection, error) {
 	t.Helper()
-	raw, err := os.ReadFile("../../packages/mock-payments/package.yaml")
+	if file == "" {
+		file = "../../packages/mock-payments/package.yaml"
+	}
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +427,7 @@ func setup(t *testing.T, opts ...func(*harness)) *harness {
 	for _, o := range opts {
 		o(h)
 	}
-	c, err := compile(t, h.mutatePkg)
+	c, err := compile(t, h.pkgFile, h.mutatePkg)
 	if err != nil {
 		t.Fatal(err)
 	}
