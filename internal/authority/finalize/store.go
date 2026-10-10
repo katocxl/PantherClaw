@@ -44,6 +44,11 @@ var (
 	// eligible (HR-170). The Authority revalidates the request and
 	// evaluates again.
 	ErrApprovalNotMet = errors.New("finalize: the approval is no longer met")
+	// ErrBusy: a budget account or counter row could not be locked within
+	// the store's lock timeout (ADR-0015). The Authority answers
+	// CANNOT_AUTHORIZE BUDGET_BUSY at once instead of queueing towards the
+	// caller's timeout.
+	ErrBusy = errors.New("finalize: budget busy")
 )
 
 // MaxEvaluations caps how often one OPEN transaction is evaluated (T-023);
@@ -213,6 +218,11 @@ type Store interface {
 	// Sweep releases expired ISSUED permits (and their claims) and marks
 	// stale DISPATCHING ones UNKNOWN, never releasing them (HR-003).
 	Sweep(ctx context.Context, org ids.OrgID, staleAfter time.Duration) (released, unknown int, err error)
+	// ApplySettlements applies the outcomes RecordExecution and Sweep
+	// recorded to the budget account and counter rows, in batches, off the
+	// decision path (ADR-0015), and returns how many it applied. A store
+	// that settles the rows at once applies nothing.
+	ApplySettlements(ctx context.Context, org ids.OrgID) (int, error)
 	// Revalidate voids the responses of an approval request whose people
 	// are no longer eligible and returns an approved request that is no
 	// longer met to PENDING (HR-170), in its own transaction.

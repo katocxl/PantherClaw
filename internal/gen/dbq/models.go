@@ -945,6 +945,7 @@ type PcReservation struct {
 	State         string
 	CreatedAt     time.Time
 	SettledAt     *time.Time
+	Pending       bool
 }
 
 type PcRoleBinding struct {

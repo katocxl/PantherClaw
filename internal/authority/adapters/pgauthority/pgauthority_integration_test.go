@@ -388,6 +388,18 @@ func (w *world) budget() (reserved, spent string) {
 	return money.MustParse(reserved).String(), money.MustParse(spent).String()
 }
 
+// settle applies the outcomes recorded so far to the budget rows, as the
+// sweep job does (ADR-0015), and checks that none is left pending.
+func (w *world) settle() {
+	w.t.Helper()
+	if _, err := w.auth.Store.ApplySettlements(context.Background(), w.org); err != nil {
+		w.t.Fatal(err)
+	}
+	if n := w.count("SELECT count(*) FROM pc.reservations WHERE pending"); n != 0 {
+		w.t.Fatalf("%d reservations still pending after the settlement", n)
+	}
+}
+
 // waitExpired waits until the database clock, which BeginDispatch and the
 // sweep use, is past the permit's expiry.
 func (w *world) waitExpired(permit ids.UUID) {
@@ -439,6 +451,12 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 		t.Fatalf("an ALLOW reserves and spends nothing: reserved %s spent %s", res, sp)
 	}
 	dispatch(first, finalize.Failed)
+	// The outcome reaches the budget row with the settlement (ADR-0015);
+	// until then the row still counts it reserved, never less.
+	if res, sp := w.budget(); res != "30" || sp != "0" {
+		t.Fatalf("before the settlement: reserved %s spent %s, want the release still counted", res, sp)
+	}
+	w.settle()
 	if res, sp := w.budget(); res != "0" || sp != "0" {
 		t.Fatalf("a failed outcome releases: reserved %s spent %s", res, sp)
 	}
@@ -448,6 +466,7 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 		t.Fatalf("after a failure the same refund may be tried again: %s %s", second.Decision, decisive(second))
 	}
 	dispatch(second, finalize.Unknown)
+	w.settle()
 	if res, sp := w.budget(); res != "30" || sp != "0" {
 		t.Fatalf("an unknown outcome holds the reservation: reserved %s spent %s", res, sp)
 	}
@@ -473,11 +492,13 @@ func TestINV07_SettlementOnPostgres(t *testing.T) {
 	if _, err := w.auth.BeginDispatch(ctx, w.gw, expiring.PermitID, expiring.Epoch, finalize.Outbound{}); err == nil {
 		t.Fatal("a released permit was dispatched")
 	}
+	w.settle()
 	if res, sp := w.budget(); res != "35" || sp != "0" {
 		t.Fatalf("after the sweep: reserved %s spent %s, want the unknown 30 and 5 held", res, sp)
 	}
 	again := w.authorize(w.request(run, ids.NewV7(), "ch_2", "20.00"))
 	dispatch(again, finalize.Accepted)
+	w.settle()
 	if res, sp := w.budget(); res != "35" || sp != "20" {
 		t.Fatalf("an accepted outcome spends: reserved %s spent %s", res, sp)
 	}
