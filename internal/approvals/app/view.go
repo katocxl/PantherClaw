@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/katocxl/pantherclaw/internal/actionir"
 	pgapprovals "github.com/katocxl/pantherclaw/internal/approvals/adapters/pgapprovals"
 	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
 	"github.com/katocxl/pantherclaw/internal/gen/dbq"
@@ -173,6 +174,21 @@ type View struct {
 	// narrower action while the request waits. MayApprove: the caller may
 	// approve or step up now.
 	MayRespond, MayApprove bool
+	// Params are the held action's parameters, cleaned, for a narrower
+	// proposal; empty when the request cannot take one.
+	Params apdomain.Untrusted
+}
+
+// maxParams caps the held parameters shown for a narrower proposal.
+const maxParams = 16384
+
+// heldParams is the held action's canonical parameters, cleaned.
+func heldParams(row dbq.PcApprovalRequest) apdomain.Untrusted {
+	var a actionir.ActionIR
+	if row.SubjectKind != "ACTION" || json.Unmarshal(row.ActionIr, &a) != nil || len(a.Params) == 0 {
+		return apdomain.Untrusted{}
+	}
+	return apdomain.Clean("params", string(a.Params), maxParams)
 }
 
 // View reads one request for the calling person.
@@ -212,6 +228,9 @@ func (s *Service) View(ctx context.Context, id ids.UUID) (View, error) {
 		}, out.Now)
 		if c.Human() && l.mayRespond(c.Principal.ID) {
 			out.MayRespond = out.State == apdomain.StatePending || out.State == apdomain.StateEvidenceRequested
+			if out.MayRespond {
+				out.Params = heldParams(row)
+			}
 			err := approvable(ctx, q, c.Org, row, c.Principal.ID)
 			switch {
 			case err == nil:

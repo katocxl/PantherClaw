@@ -51,7 +51,7 @@ const (
 )
 
 // CredBrowserSession marks a caller authenticated by a browser session.
-const CredBrowserSession tapp.Credential = "browser_session"
+const CredBrowserSession = tapp.CredBrowserSession
 
 // Browser sign-in errors.
 var (
@@ -405,8 +405,10 @@ func (b *Browser) Authenticate(ctx context.Context, cookie string) (BrowserSessi
 			return err
 		}
 		out = BrowserSession{
-			Caller: tapp.Caller{Subject: td.Subject{Org: org, Principal: p, Bindings: bs}, Credential: CredBrowserSession},
-			ID:     s.ID, Now: s.DbNow,
+			Caller: tapp.Caller{
+				Subject: td.Subject{Org: org, Principal: p, Bindings: bs}, Credential: CredBrowserSession, Session: s.ID,
+			},
+			ID: s.ID, Now: s.DbNow,
 		}
 		if s.AuthTime != nil {
 			out.AuthTime = *s.AuthTime

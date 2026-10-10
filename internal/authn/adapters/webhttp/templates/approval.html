@@ -93,4 +93,43 @@
 {{else}}
 <p class="note">No responses yet.</p>
 {{end}}
+{{if .MayApprove}}
+<h2>Approve</h2>
+<p class="note">Your security key signs exactly what this page shows. Nothing else can approve: no link, command or message.</p>
+<p><button type="button" id="approve" data-id="{{.Request.ID}}">Approve with your security key</button></p>
+{{end}}
+{{if .MayRespond}}
+<h2>Decline</h2>
+<p><label for="decline-reason">Reason</label>
+<select id="decline-reason">{{range .Reasons}}<option value="{{.}}">{{.}}</option>{{end}}</select></p>
+<p><label for="decline-alternative">Suggest instead</label>
+<select id="decline-alternative"><option value="">(nothing)</option>{{range .Alternatives}}<option value="{{.}}">{{.}}</option>{{end}}</select></p>
+<p><label for="decline-note">Note for people (never sent to the agent)</label>
+<input id="decline-note" type="text" maxlength="500"></p>
+<p><button type="button" id="decline" data-id="{{.Request.ID}}">Decline</button></p>
+{{if eq .State "PENDING"}}
+<h2>Ask for evidence</h2>
+<p><label for="evidence-question">Question</label>
+<select id="evidence-question">{{range .Questions}}<option value="{{.}}">{{.}}</option>{{end}}</select></p>
+<p><label for="evidence-note">Note</label>
+<input id="evidence-note" type="text" maxlength="500"></p>
+<p><label for="evidence-minutes">Evidence due within</label>
+<select id="evidence-minutes"><option value="10">10 minutes</option><option value="30" selected>30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option></select>
+<span class="note">(it must come before the request's deadline)</span></p>
+<p><button type="button" id="request-evidence" data-id="{{.Request.ID}}">Ask for evidence</button></p>
+{{end}}
+{{if .Params.Text}}
+<h2>Propose a narrower action</h2>
+<p class="note">Change only amounts, integers and lists, to values no larger. The agent must submit the proposal as a new action, which gets its own decision. The parameters below are the held action's, as the agent sent them.</p>
+<p><label for="narrower-params">Parameters</label></p>
+<p><textarea id="narrower-params" rows="8" cols="72" spellcheck="false">{{.Params.Text}}</textarea></p>
+<p><label for="narrower-note">Note for people</label>
+<input id="narrower-note" type="text" maxlength="500"></p>
+<p><button type="button" id="narrower-check" data-id="{{.Request.ID}}">Check the proposal</button>
+<button type="button" id="narrower-propose" data-id="{{.Request.ID}}">Propose and end this request</button></p>
+<pre id="narrower-result" class="untrusted"></pre>
+{{end}}
+{{end}}
+<p id="status" role="status"></p>
+<script src="/static/approvals.js"></script>
 {{template "foot" .}}

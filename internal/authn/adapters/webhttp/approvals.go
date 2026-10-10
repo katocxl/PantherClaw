@@ -24,20 +24,39 @@ import (
 type Approvals interface {
 	Inbox(ctx context.Context) (apapp.Inbox, error)
 	View(ctx context.Context, id ids.UUID) (apapp.View, error)
+	BeginApproval(ctx context.Context, org ids.OrgID, r apapp.Responder, id ids.UUID) ([32]byte, error)
+	Approve(ctx context.Context, org ids.OrgID, r apapp.Responder, id ids.UUID, a apapp.Assertion) (apapp.Request, error)
+	Decline(ctx context.Context, id ids.UUID, reason, alternative, note string) (apapp.Request, error)
+	RequestEvidence(ctx context.Context, id ids.UUID, question, note string, deadline time.Time) (apapp.Request, error)
+	ProposeNarrower(ctx context.Context, id ids.UUID, params []byte, note string, validateOnly bool) (apapp.Proposal, error)
+}
+
+// Bindings is the BINDING ceremony (authn/app.WebAuthn): a security-key
+// assertion whose challenge is the request's binding (HR-033).
+type Bindings interface {
+	BeginBinding(ctx context.Context, s authnapp.BrowserSession, subject authnapp.BindingSubject, challenge [32]byte) (authnapp.Ceremony, error)
+	VerifyBinding(ctx context.Context, s authnapp.BrowserSession, ceremony ids.UUID, response []byte) (authnapp.BindingAssertion, error)
+	SpendBinding(ctx context.Context, s authnapp.BrowserSession, ceremony ids.UUID)
 }
 
 // WithApprovals adds the approval page; call it before Mount.
-func (h *Handler) WithApprovals(a Approvals) *Handler {
-	h.approvals = a
+func (h *Handler) WithApprovals(a Approvals, b Bindings) *Handler {
+	h.approvals, h.bindings = a, b
 	return h
 }
 
 func (h *Handler) mountApprovals(m *http.ServeMux) {
-	if h.approvals == nil {
+	if h.approvals == nil || h.bindings == nil {
 		return
 	}
-	h.withSession(m, http.MethodGet, authnapp.ApprovalsPath, h.approvalsPage)
-	h.withSession(m, http.MethodGet, authnapp.ApprovalsPath+"/{id}", h.approvalPage)
+	p := authnapp.ApprovalsPath
+	h.withSession(m, http.MethodGet, p, h.approvalsPage)
+	h.withSession(m, http.MethodGet, p+"/{id}", h.approvalPage)
+	h.withSession(m, http.MethodPost, p+"/{id}/approve-options", h.approveOptions)
+	h.withSession(m, http.MethodPost, p+"/{id}/approve", h.approve)
+	h.withSession(m, http.MethodPost, p+"/{id}/decline", h.decline)
+	h.withSession(m, http.MethodPost, p+"/{id}/evidence-request", h.requestEvidence)
+	h.withSession(m, http.MethodPost, p+"/{id}/narrower", h.proposeNarrower)
 }
 
 // inboxPage is the data of approvals.html.
@@ -53,6 +72,8 @@ type approvalView struct {
 	page
 	apapp.View
 	Facts []factRow
+	// The fixed codes of the page's actions (HR-172).
+	Reasons, Alternatives, Questions []string
 }
 
 type factRow struct {
@@ -98,7 +119,10 @@ func (h *Handler) approvalPage(w http.ResponseWriter, r *http.Request, s authnap
 		h.fail(w, r, err)
 		return
 	}
-	p := approvalView{page: page{Title: "Approval", Session: s}, View: v}
+	p := approvalView{
+		page: page{Title: "Approval", Session: s}, View: v,
+		Reasons: apdomain.DeclineReasons, Alternatives: apdomain.Alternatives, Questions: apdomain.Questions,
+	}
 	for _, f := range v.Display.Facts {
 		p.Facts = append(p.Facts, factRow{FactLine: f, Age: age(f.ObservedAt, v.Now)})
 	}
