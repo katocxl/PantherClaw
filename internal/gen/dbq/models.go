@@ -473,6 +473,19 @@ type PcDpopNonce struct {
 	CreatedAt time.Time
 }
 
+type PcEffectReceipt struct {
+	OrgID         ids.OrgID
+	TransactionID ids.UUID
+	Seq           int32
+	State         string
+	LevelRequired string
+	LevelAchieved *string
+	Basis         string
+	ReceiptJws    string
+	LedgerEntryID ids.UUID
+	CreatedAt     time.Time
+}
+
 type PcEnrollmentToken struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -549,6 +562,18 @@ type PcExecutionAttempt struct {
 	DispatchMs     *int32
 	RecordedAt     time.Time
 	AccessMode     *string
+	RecordedBy     string
+	TargetRef      *string
+}
+
+type PcExecutionReceipt struct {
+	OrgID         ids.OrgID
+	AttemptID     ids.UUID
+	TransactionID ids.UUID
+	PermitID      ids.UUID
+	ReceiptJws    string
+	LedgerEntryID ids.UUID
+	CreatedAt     time.Time
 }
 
 type PcFact struct {
@@ -827,6 +852,23 @@ type PcNotificationChannel struct {
 	UpdatedAt           time.Time
 }
 
+type PcObservation struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	Source         string
+	TransactionID  *ids.UUID
+	VerificationID *ids.UUID
+	GatewayID      ids.UUID
+	Attempt        *int32
+	HttpStatus     *int32
+	Outcome        *string
+	Found          pgtype.Bool
+	Complete       pgtype.Bool
+	Fields         []byte
+	ResponseDigest []byte
+	ObservedAt     time.Time
+}
+
 type PcOrg struct {
 	ID        ids.OrgID
 	Name      string
@@ -933,6 +975,27 @@ type PcPolicyVersion struct {
 	PublishedAt *time.Time
 }
 
+type PcReconciliationTask struct {
+	OrgID             ids.OrgID
+	ID                ids.UUID
+	TransactionID     ids.UUID
+	Kind              string
+	State             string
+	ResolvedVia       *string
+	ObservationID     *ids.UUID
+	UserID            *ids.UUID
+	SessionID         *ids.UUID
+	CredentialID      *ids.UUID
+	AuthenticatorData []byte
+	ClientDataJson    []byte
+	Signature         []byte
+	Basis             *string
+	Evidence          []ids.UUID
+	WaitlistEntryID   *ids.UUID
+	OpenedAt          time.Time
+	ResolvedAt        *time.Time
+}
+
 type PcReservation struct {
 	OrgID         ids.OrgID
 	ID            ids.UUID
@@ -1034,6 +1097,19 @@ type PcSession struct {
 	EndedAt            *time.Time
 }
 
+type PcTargetLogRun struct {
+	OrgID          ids.OrgID
+	VerificationID ids.UUID
+	ConnectionID   ids.UUID
+	WindowStart    time.Time
+	WindowEnd      time.Time
+	ItemsSeen      int32
+	Matched        int32
+	Unmatched      int32
+	Complete       bool
+	FinishedAt     time.Time
+}
+
 type PcTeam struct {
 	OrgID          ids.OrgID
 	ID             ids.UUID
@@ -1054,31 +1130,43 @@ type PcToolPackage struct {
 }
 
 type PcTransaction struct {
-	OrgID         ids.OrgID
-	ID            ids.UUID
-	RunID         ids.UUID
-	ActionID      ids.UUID
-	ActionHash    []byte
-	Operation     string
-	Decision      string
-	ReasonCode    string
-	BudgetID      *ids.UUID
-	Amount        *money.Decimal
-	Currency      *string
-	GatewayID     string
-	CreatedAt     time.Time
-	State         string
-	Evaluations   int32
-	GrantID       *ids.UUID
-	GrantRevision *int32
-	BasisDigest   *string
-	EffectiveHash []byte
-	DedupeKey     *string
-	Mode          string
-	ConnectionID  *ids.UUID
-	Channel       *string
-	TargetType    *string
-	TargetID      *string
+	OrgID               ids.OrgID
+	ID                  ids.UUID
+	RunID               ids.UUID
+	ActionID            ids.UUID
+	ActionHash          []byte
+	Operation           string
+	Decision            string
+	ReasonCode          string
+	BudgetID            *ids.UUID
+	Amount              *money.Decimal
+	Currency            *string
+	GatewayID           string
+	CreatedAt           time.Time
+	State               string
+	Evaluations         int32
+	GrantID             *ids.UUID
+	GrantRevision       *int32
+	BasisDigest         *string
+	EffectiveHash       []byte
+	DedupeKey           *string
+	Mode                string
+	ConnectionID        *ids.UUID
+	Channel             *string
+	TargetType          *string
+	TargetID            *string
+	EffectState         *string
+	EffectLevelRequired *string
+	EffectLevelAchieved *string
+}
+
+type PcTransactionLink struct {
+	OrgID             ids.OrgID
+	FromTransactionID ids.UUID
+	ToTransactionID   ids.UUID
+	Kind              string
+	CreatedBy         string
+	CreatedAt         time.Time
 }
 
 type PcTrustedIssuer struct {
@@ -1103,6 +1191,21 @@ type PcTrustedIssuer struct {
 	ClosedAt    *time.Time
 }
 
+type PcUnreceiptedEffect struct {
+	OrgID           ids.OrgID
+	ID              ids.UUID
+	ConnectionID    ids.UUID
+	Operation       string
+	ObjectRef       string
+	Correlation     *string
+	TargetCreatedAt *time.Time
+	VerificationID  ids.UUID
+	State           string
+	AcknowledgedBy  *string
+	AcknowledgedAt  *time.Time
+	FirstSeenAt     time.Time
+}
+
 type PcUser struct {
 	OrgID       ids.OrgID
 	ID          ids.UUID
@@ -1114,6 +1217,28 @@ type PcUser struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	LastLoginAt *time.Time
+}
+
+type PcVerification struct {
+	OrgID          ids.OrgID
+	ID             ids.UUID
+	Purpose        string
+	TransactionID  *ids.UUID
+	ConnectionID   ids.UUID
+	Operation      string
+	Request        []byte
+	State          string
+	Attempts       int32
+	NextAt         time.Time
+	DeadlineAt     time.Time
+	WindowStart    *time.Time
+	WindowEnd      *time.Time
+	LeaseHash      []byte
+	LeasedBy       *ids.UUID
+	LeasedAt       *time.Time
+	LeaseExpiresAt *time.Time
+	CreatedAt      time.Time
+	FinishedAt     *time.Time
 }
 
 type PcWaitlistEntry struct {
