@@ -105,6 +105,19 @@ type fakeAuthority struct {
 	creds    *pb.WorkloadCredentials
 	reports  []*pb.ReportUnknownWorkloadRequest
 	actions  []actionir.Parsed
+	verifies int
+}
+
+// VerifyWorkload verifies every workload unless identity is set.
+func (f *fakeAuthority) VerifyWorkload(_ context.Context, req *pb.VerifyWorkloadRequest) (*pb.VerifyWorkloadResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verifies++
+	f.creds = req.GetWorkload()
+	if f.identity != "" {
+		return &pb.VerifyWorkloadResponse{ErrorCode: f.identity, Nonce: "nonce-2"}, nil
+	}
+	return &pb.VerifyWorkloadResponse{Verified: true, InstanceId: testAgent, EnvironmentId: testEnv, Nonce: "nonce-4"}, nil
 }
 
 func newFakeAuthority(t *testing.T) *fakeAuthority {
