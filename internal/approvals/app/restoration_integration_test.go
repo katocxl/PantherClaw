@@ -39,24 +39,24 @@ func (f *fx) owner(p person) context.Context {
 // suspended from in the same transaction.
 func TestHR176_ARestorationNeedsAnotherRestorersKey(t *testing.T) {
 	f := newFx(t, 1)
-	if _, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "fixed"); !errors.Is(err, approvals.ErrNotSuspended) {
+	if _, _, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "fixed"); !errors.Is(err, approvals.ErrNotSuspended) {
 		t.Fatalf("an agent that is not suspended: %v", err)
 	}
 	f.suspended()
-	if _, err := f.svc.RequestRestoration(f.as(f.bob), f.agent, "fixed"); err == nil {
+	if _, _, err := f.svc.RequestRestoration(f.as(f.bob), f.agent, "fixed"); err == nil {
 		t.Fatal("a caller without agent.manage asked for a restoration")
 	}
-	if _, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, ""); !errors.Is(err, approvals.ErrBadReason) {
+	if _, _, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, ""); !errors.Is(err, approvals.ErrBadReason) {
 		t.Fatalf("no reason: %v", err)
 	}
-	r, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "the leaked key was rotated")
+	r, entry, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "the leaked key was rotated")
 	if err != nil || r.SubjectKind != "RESTORATION" || r.State != "PENDING" || r.RequestedBy == nil || *r.RequestedBy != f.alice.id {
 		t.Fatalf("request: %+v, %v", r, err)
 	}
 	if hours := time.Until(r.DeadlineAt).Hours(); hours < 23 || hours > 24 {
 		t.Fatalf("deadline in %.1f hours", hours)
 	}
-	if again, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "again"); err != nil || again.ID != r.ID {
+	if again, againEntry, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "again"); err != nil || again.ID != r.ID || entry.IsZero() || againEntry != entry {
 		t.Fatalf("a second request: %v, %v", again.ID, err)
 	}
 	if s := f.str(`SELECT state || ' ' || requested_by || ' ' || (deadline_at = $2)::text FROM pc.waitlist_entries
@@ -96,7 +96,7 @@ func TestHR176_ARestorationNeedsAnotherRestorersKey(t *testing.T) {
 func TestHR176_AChangedAgentIsNotRestored(t *testing.T) {
 	f := newFx(t, 1)
 	f.suspended()
-	r, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "fixed")
+	r, _, err := f.svc.RequestRestoration(f.owner(f.alice), f.agent, "fixed")
 	if err != nil {
 		t.Fatal(err)
 	}

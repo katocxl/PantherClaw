@@ -110,6 +110,12 @@ type Reason struct {
 type Service struct {
 	Pool      *db.Pool
 	Simulator Simulator
+	// Defs reads pinned definitions for batch approval.
+	Defs Definitions
+	// Ents gates batch review (Team edition); nil fails closed.
+	Ents Entitlements
+	// Notify sends outcome notices (slice 211); nil sends none.
+	Notify Notifier
 }
 
 // Request is an approval request as the use cases return it.
