@@ -322,3 +322,42 @@ JOIN pc.approval_responses x ON x.org_id = r.org_id AND x.request_id = r.id
 WHERE r.org_id = sqlc.arg(org_id) AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED', 'APPROVED')
   AND x.kind IN ('APPROVE', 'STEP_UP') AND x.voided_at IS NULL
 LIMIT 500;
+
+-- The approval page (G0 M5 part 2 slice 209). The list reads the most
+-- urgent waiting requests, by their entry's priority and then deadline;
+-- eligibility is checked per request in Go (HR-170).
+-- name: WaitingApprovalRequests :many
+SELECT r.*, coalesce(e.priority, 4)::integer AS priority
+FROM pc.approval_requests r
+LEFT JOIN pc.waitlist_entries e
+  ON e.org_id = r.org_id AND e.subject_type = 'approval_request' AND e.subject_id = r.id AND e.state = 'OPEN'
+WHERE r.org_id = sqlc.arg(org_id) AND r.state IN ('PENDING', 'EVIDENCE_REQUESTED') AND r.deadline_at > now()
+  AND (r.evidence_deadline_at IS NULL OR r.evidence_deadline_at > now())
+ORDER BY priority, r.deadline_at, r.id
+LIMIT sqlc.arg(lim);
+
+-- name: RespondedRequests :many
+SELECT DISTINCT request_id FROM pc.approval_responses
+WHERE org_id = sqlc.arg(org_id) AND user_id = sqlc.arg(user_id) AND voided_at IS NULL AND kind IN ('APPROVE', 'STEP_UP')
+  AND request_id = ANY(sqlc.arg(request_ids)::uuid[]);
+
+-- name: RecentResponsesBy :many
+SELECT p.request_id, p.kind, p.created_at, (p.voided_at IS NOT NULL)::boolean AS voided, r.operation, r.state
+FROM pc.approval_responses p
+JOIN pc.approval_requests r ON r.org_id = p.org_id AND r.id = p.request_id
+WHERE p.org_id = sqlc.arg(org_id) AND p.user_id = sqlc.arg(user_id)
+ORDER BY p.created_at DESC, p.id
+LIMIT sqlc.arg(lim);
+
+-- name: RequestResponses :many
+SELECT id, user_id, kind, requirement, reason_code, alternative_code, note, proposed_params, created_at, voided_at,
+       void_reason
+FROM pc.approval_responses
+WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
+ORDER BY created_at, id;
+
+-- name: RequestEvidence :many
+SELECT id, author_kind, author_user_id, author_instance_id, note, created_at
+FROM pc.approval_evidence
+WHERE org_id = sqlc.arg(org_id) AND request_id = sqlc.arg(request_id)
+ORDER BY created_at, id;

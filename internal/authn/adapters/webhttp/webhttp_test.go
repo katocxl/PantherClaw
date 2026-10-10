@@ -84,7 +84,7 @@ func newHandler(t *testing.T, publicURL string) (*webhttp.Handler, *fakeBrowser,
 	fb := &fakeBrowser{}
 	h, err := webhttp.New(fb, publicURL, nil, nil)
 	if err == nil {
-		h.WithKeys(&fakeKeys{}).WithContainment(&fakeContainment{})
+		h.WithKeys(&fakeKeys{}).WithContainment(&fakeContainment{}).WithApprovals(&fakeApprovals{})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +180,7 @@ func TestHR151_RouteTable(t *testing.T) {
 	h, _, mux := newHandler(t, origin)
 	for _, rt := range h.Routes() {
 		private := strings.HasPrefix(rt.Path, authnapp.AccountPath) || strings.HasPrefix(rt.Path, authnapp.ContainmentPath) ||
+			strings.HasPrefix(rt.Path, authnapp.ApprovalsPath) ||
 			rt.Path == authnapp.LogoutPath
 		if private != rt.Session {
 			t.Errorf("%s %s: session=%v, want %v", rt.Method, rt.Path, rt.Session, private)
@@ -198,6 +199,9 @@ func TestHR151_RouteTable(t *testing.T) {
 		{Method: http.MethodPost, Path: "/containment/kill-switch/restore", Session: true, CSRF: true},
 		{Method: http.MethodPost, Path: "/containment/kill-switch/restore/{id}/confirm", Session: true, CSRF: true},
 		{Method: http.MethodPost, Path: "/containment/kill-switch/restore/{id}/cancel", Session: true, CSRF: true},
+		// The approval page (G0 M5 part 2).
+		{Method: http.MethodGet, Path: "/approvals", Session: true},
+		{Method: http.MethodGet, Path: "/approvals/{id}", Session: true},
 	} {
 		if !slices.Contains(h.Routes(), want) {
 			t.Errorf("route %+v is not mounted", want)
