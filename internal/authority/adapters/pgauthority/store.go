@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	pgapprovals "github.com/katocxl/pantherclaw/internal/approvals/adapters/pgapprovals"
 	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
 	"github.com/katocxl/pantherclaw/internal/authority/finalize"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
@@ -91,7 +92,11 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 	ev := w.Eval
 	err := s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
 		q := dbq.New(tx)
-		if w.Permit != nil {
+		holds := finalize.Holds(ev)
+		if w.Permit != nil || holds {
+			// A hold takes the same containment and chain check as a permit:
+			// no request is recorded under the kill switch or on authority
+			// that changed (HR-171).
 			check := checkAuthority
 			if ev.MonitorPermit() {
 				check = checkContainment // a monitor permit binds no authority (HR-184)
@@ -102,6 +107,17 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 		}
 		if err := s.idempotency(ctx, q, org, w); err != nil {
 			return err
+		}
+		actor := evdomain.Actor{Type: "gateway", ID: w.GatewayID}
+		if holds && !w.HoldRequest.IsZero() {
+			if err := approvals(pgapprovals.RecordHold(ctx, tx, org, holdOf(w, ev, actor))); err != nil {
+				return err
+			}
+		}
+		if h := ev.Hold; h != nil && h.Expire && h.Request != nil && ev.Decision == adomain.Deny {
+			if err := pgapprovals.Expire(ctx, tx, org, h.Request.ID, actor); err != nil {
+				return err
+			}
 		}
 		if w.Permit != nil && w.Claim != nil {
 			if err := claim(ctx, q, org, w, ev); err != nil {
@@ -141,6 +157,13 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 			}); err != nil {
 				return err
 			}
+			// The permit consumes the approval it rests on, once, after every
+			// approver's eligibility is checked again (HR-031, HR-170, HR-171).
+			if h := ev.Hold; h != nil && h.Satisfied && h.Request != nil && !ev.MonitorPermit() {
+				if err := approvals(pgapprovals.Consume(ctx, tx, org, h.Request.ID, h.Binding.Hash, w.Permit.ID, actor)); err != nil {
+					return err
+				}
+			}
 			// Record locks no budget row: its keys are checked at COMMIT.
 			if err := pgbudgets.Record(ctx, q, org, w.TransactionID, w.Permit.ID, lines); err != nil {
 				return err
@@ -159,6 +182,45 @@ func (s *Store) Finalize(ctx context.Context, org ids.OrgID, w finalize.Write) e
 		return finalize.ErrDuplicate
 	}
 	return err
+}
+
+// approvals maps the approvals adapter's errors onto the finalization's.
+func approvals(err error) error {
+	switch {
+	case errors.Is(err, pgapprovals.ErrHoldLimit):
+		return finalize.ErrHoldLimit
+	case errors.Is(err, pgapprovals.ErrNotMet):
+		return finalize.ErrApprovalNotMet
+	case errors.Is(err, pgapprovals.ErrChanged):
+		return finalize.ErrConflict
+	}
+	return err
+}
+
+// holdOf is the hold a finalization records for ev.
+func holdOf(w finalize.Write, ev *pipeline.Evaluation, actor evdomain.Actor) pgapprovals.Hold {
+	h := ev.Hold
+	leaf, _ := ev.Chain.Leaf()
+	agent, _ := ids.ParseUUID(ev.Identity.Agent)
+	out := pgapprovals.Hold{
+		RequestID: w.HoldRequest, TransactionID: w.TransactionID, Evaluation: w.Evaluation, AgentID: agent, RunID: ev.RunID,
+		GrantID: leaf.ID.UUID(), GrantRevision: leaf.Revision, Operation: ev.Operation,
+		Reversibility: h.Display.Consequence.Reversibility, VariantKey: h.VariantKey, First: h.Request == nil,
+		Binding: h.Binding, Requirements: h.Requirements, Display: h.Display, DisplayHash: h.DisplayHash,
+		Deadline: h.Deadline, Actor: actor,
+	}
+	if r := h.Request; r != nil && r.State.Live() {
+		id := r.ID
+		out.Previous = &id
+	}
+	return out
+}
+
+// Revalidate implements finalize.Store (HR-170).
+func (s *Store) Revalidate(ctx context.Context, org ids.OrgID, request ids.UUID) error {
+	return s.Pool.InTenantTx(ctx, org, func(ctx context.Context, tx db.TenantTx) error {
+		return pgapprovals.Revalidate(ctx, tx, org, request)
+	})
 }
 
 // checkAuthority takes the containment row FOR SHARE first and then checks

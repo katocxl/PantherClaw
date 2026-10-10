@@ -65,7 +65,16 @@ type DecisionPAP struct {
 	Connection string `json:"connection,omitzero"`
 	// DestinationClass is the connection's class, from its record (HR-079).
 	DestinationClass string `json:"destination_class,omitzero"`
-	Simulated        bool   `json:"simulated"`
+	// Approval is the approval request this decision consumes and its
+	// binding (G0 M5 part 2; M6 adds the assertion to the permit, HR-038).
+	Approval  *ReceiptApproval `json:"approval,omitzero"`
+	Simulated bool             `json:"simulated"`
+}
+
+// ReceiptApproval names a consumed approval request and its binding.
+type ReceiptApproval struct {
+	Request string `json:"request"`
+	Binding string `json:"binding"`
 }
 
 // receipt builds, fits and signs the decision receipt of one evaluation.
@@ -82,6 +91,9 @@ func (a *Authority) receipt(gw Gateway, ev *pipeline.Evaluation, txn ids.UUID, e
 	}
 	if ev.Connection != nil {
 		pap.Connection, pap.DestinationClass = ev.Connection.ID.String(), ev.Connection.DestinationClass
+	}
+	if h := ev.Hold; h != nil && h.Satisfied && h.Request != nil && ev.Permits() {
+		pap.Approval = &ReceiptApproval{Request: h.Request.ID.String(), Binding: h.Binding.String()}
 	}
 	r := DecisionReceipt{Iss: a.issuer(), Jti: txn.String() + "/" + strconv.Itoa(evaluation), Iat: ev.Now.Unix(), Pap: pap}
 	payload, err := fit(r)

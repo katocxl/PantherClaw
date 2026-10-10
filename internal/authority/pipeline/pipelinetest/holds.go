@@ -9,6 +9,8 @@ import (
 
 	"github.com/katocxl/pantherclaw/internal/actionir"
 	apdomain "github.com/katocxl/pantherclaw/internal/approvals/domain"
+	adomain "github.com/katocxl/pantherclaw/internal/authority/domain"
+	"github.com/katocxl/pantherclaw/internal/authority/finalize"
 	"github.com/katocxl/pantherclaw/internal/authority/pipeline"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 )
@@ -93,3 +95,39 @@ func (w *World) HoldSettings(context.Context, ids.OrgID) (pipeline.HoldSettings,
 	defer w.mu.Unlock()
 	return w.holds().settings, nil
 }
+
+// holdWrite applies a finalization's approval writes (w.mu held): a hold
+// supersedes the live request and records a new PENDING one, a permit
+// consumes the approved request it rests on, and a DENY by expiry records
+// the expiry.
+func (w *World) holdWrite(wr finalize.Write) error {
+	ev := wr.Eval
+	h := ev.Hold
+	if h == nil {
+		return nil
+	}
+	key := holdKey{ev.RunID, ev.ActionID}
+	latest := w.holds().latest[key]
+	switch {
+	case finalize.Holds(ev) && !wr.HoldRequest.IsZero():
+		if latest != nil && latest.State.Live() && h.Request != nil && latest.ID != h.Request.ID {
+			return finalize.ErrConflict
+		}
+		w.holds().latest[key] = &pipeline.HoldRequest{
+			ID: wr.HoldRequest, State: apdomain.StatePending, Binding: h.Binding.Hash, Deadline: h.Deadline,
+			Variants: h.Display.Variants, Context: h.Display.Context,
+		}
+	case wr.Permit != nil && h.Satisfied:
+		if latest == nil || latest.State != apdomain.StateApproved || latest.Binding != h.Binding.Hash {
+			return finalize.ErrConflict
+		}
+		latest.State = apdomain.StateConsumed
+	case ev.Decision == adomain.Deny && h.Expire && latest != nil && latest.State.Live():
+		latest.State, latest.EndReason = apdomain.StateExpired, apdomain.EndExpired
+	}
+	return nil
+}
+
+// Revalidate implements finalize.Store: the world has no responses, so
+// nothing is ever voided.
+func (w *World) Revalidate(context.Context, ids.OrgID, ids.UUID) error { return nil }
