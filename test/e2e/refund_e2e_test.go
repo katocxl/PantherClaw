@@ -33,9 +33,11 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/katocxl/pantherclaw/internal/gateway"
+	"github.com/katocxl/pantherclaw/internal/gateway/broker"
 	pantherclawv1 "github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1"
 	"github.com/katocxl/pantherclaw/internal/gen/pantherclaw/v1/pantherclawv1connect"
 	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
+	"github.com/katocxl/pantherclaw/internal/platform/config"
 	"github.com/katocxl/pantherclaw/internal/platform/db"
 	"github.com/katocxl/pantherclaw/internal/platform/db/dbtest"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
@@ -50,16 +52,22 @@ func noEnv(string) (string, bool) { return "", false }
 // stack is one running skeleton bound to one seeded org.
 type stack struct {
 	db       *dbtest.DB
+	pool     *db.Pool // the app role's pool, for the test's own queries
 	org      ids.OrgID
 	gateway  string
 	sim      *payments.Server
+	simURL   string
 	simCalls *atomic.Int64
 	stop     context.CancelFunc
 	done     chan struct{} // closed when the server has stopped
+	apiURL   string
 
-	// The gateway's configuration and its enrollment file (mTLS, M6).
+	// The gateway's configuration and its enrollment file (mTLS, M6), the
+	// running gateway and the seeded payments connection.
 	gatewayCfg    gateway.Config
 	gatewayEnroll string
+	gw            *gateway.Gateway
+	conn          ids.UUID
 
 	// The seeded PAP/1 workload: its key, its workload token and its run.
 	key   ed25519.PrivateKey
@@ -72,6 +80,15 @@ type options struct {
 	maxCount int
 	faults   payments.Faults
 	timeout  time.Duration
+	// access is the payments connection's access mode (dev seed
+	// --access-mode); empty is none.
+	access string
+	// token is the bearer token the target requires, and the credential a
+	// pantherclaw_held connection gets sealed (HR-061).
+	token string
+	// actionTokens makes the target require an action token for the
+	// payments connection (target_enforced, PAP-1 §10).
+	actionTokens bool
 }
 
 func freeAddr(t *testing.T) string {
@@ -94,7 +111,10 @@ func writeFile(t *testing.T, dir, name string, b []byte) string {
 	return p
 }
 
-var seededOrg = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+var (
+	seededOrg        = regexp.MustCompile(`seeded org ([0-9a-f-]{36}) `)
+	seededConnection = regexp.MustCompile(`seeded connection ([0-9a-f-]{36}) `)
+)
 
 func start(t *testing.T, o options) *stack {
 	t.Helper()
@@ -127,33 +147,45 @@ func start(t *testing.T, o options) *stack {
 		return writeFile(t, dir, name, b)
 	}
 
-	// The payments simulator runs first: dev seed points the "payments"
-	// connection at it.
-	s.sim = payments.New(o.faults, pclog.Discard())
-	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.simCalls.Add(1)
-		s.sim.Handler().ServeHTTP(w, r)
-	})
-	simSrv := httptest.NewServer(counted)
+	// dev seed points the "payments" connection at the simulator's address;
+	// the simulator starts once the connection exists, because a
+	// target-enforced target checks that its action tokens name it.
+	simSrv := httptest.NewUnstartedServer(nil)
 	t.Cleanup(simSrv.Close)
+	s.simURL, s.apiURL = "http://"+simSrv.Listener.Addr().String(), "http://"+apiAddr
 
 	enrollFile, keyFile, factsFile := filepath.Join(dir, "gateway.json"), filepath.Join(dir, "workload.json"), filepath.Join(dir, "facts.key")
 	args := []string{
 		"dev", "seed", "--config", write("seed.json"), "--org-name", "e2e", "--budget-limit", o.budget, "--gateway-out", enrollFile,
-		"--target-url", simSrv.URL, "--workload-out", keyFile, "--facts-key-out", factsFile,
+		"--target-url", s.simURL, "--workload-out", keyFile, "--facts-key-out", factsFile,
 	}
 	if o.maxCount > 0 {
 		args = append(args, "--max-count", fmt.Sprint(o.maxCount))
+	}
+	if o.access != "" {
+		args = append(args, "--access-mode", o.access)
 	}
 	var out, errb bytes.Buffer
 	if code := server.Run(context.Background(), args, &out, &errb, noEnv); code != 0 {
 		t.Fatalf("dev seed: %d %s", code, errb.String())
 	}
-	m := seededOrg.FindStringSubmatch(out.String())
-	if m == nil {
+	m, c := seededOrg.FindStringSubmatch(out.String()), seededConnection.FindStringSubmatch(out.String())
+	if m == nil || c == nil {
 		t.Fatalf("dev seed output %q", out.String())
 	}
-	s.org = ids.MustParse[ids.Org](m[1])
+	s.org, s.conn = ids.MustParse[ids.Org](m[1]), mustUUID(t, c[1])
+	s.pool = s.db.AppPool(t)
+
+	require := payments.Require{Token: o.token}
+	if o.actionTokens {
+		require.ActionTokens = &payments.ActionVerifier{JWKSURL: s.apiURL + "/.well-known/pantherclaw/jwks.json", Audience: s.conn.String()}
+	}
+	s.sim = payments.New(o.faults, pclog.Discard()).WithRequire(require)
+	simSrv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.simCalls.Add(1)
+		s.sim.Handler().ServeHTTP(w, r)
+	})
+	simSrv.Start()
 	if o.timeout > 0 {
 		// The connection's dispatch timeout; the gateway reads it with its
 		// first configuration.
@@ -194,13 +226,31 @@ func start(t *testing.T, o options) *stack {
 	gc.Control.IdentityDir = filepath.Join(dir, "gateway-identity")
 	// The operator lets the gateway reach the local simulator (HR-077).
 	gc.Egress.AllowedPrefixes = []string{"127.0.0.1/32"}
+	// Several sessions' suites share one test database on a laptop; a slow
+	// Authorize there is not the Authority being down (S09 stops it).
+	gc.Control.Timeout = config.Duration(10 * time.Second)
+	if o.access == "pantherclaw_held" {
+		// The gateway's broker key, which only it can open credentials with
+		// (HR-061); it registers the public half when it starts.
+		gc.Broker.KEKFiles = []string{filepath.Join(dir, "gateway-kek")}
+		gc.Broker.KeyFile = filepath.Join(dir, "broker.json")
+		if err := keys.GenerateKEKFile(gc.Broker.KEKFiles[0]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := broker.Generate(context.Background(), gc.Broker.KeyFile, gc.Broker.KEKFiles); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s.gatewayCfg = gc
 	s.gatewayEnroll = enrollFile
-	g := s.startGateway(t)
-	gs.Config.Handler = g.Handler()
+	s.gw = s.startGateway(t)
+	gs.Config.Handler = s.gw.Handler()
 	gs.Start()
 	t.Cleanup(gs.Close)
 	s.gateway = gs.URL
+	if o.access == "pantherclaw_held" {
+		s.waitConfig(t, s.sealCredential(t, o.token))
+	}
 	return s
 }
 
@@ -288,11 +338,17 @@ func (s *stack) refund(t *testing.T, act ids.UUID, amount string) (int, reply) {
 	return code, r
 }
 
-// tryRefund sends a refund as the seeded workload, in its run, signed with
-// PAP/1. It is safe to call from any goroutine.
+// tryRefund sends a refund through the payments connection as the seeded
+// workload, in its run, signed with PAP/1. It is safe to call from any
+// goroutine.
 func (s *stack) tryRefund(act ids.UUID, amount string) (int, reply, error) {
+	return s.tryRefundVia("payments", act, amount)
+}
+
+// tryRefundVia is tryRefund through the connection named conn.
+func (s *stack) tryRefundVia(conn string, act ids.UUID, amount string) (int, reply, error) {
 	body := `{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}`
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/payments/v1/refunds", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/"+conn+"/v1/refunds", strings.NewReader(body))
 	req.Header.Set(gateway.HeaderRunID, s.run)
 	req.Header.Set(gateway.HeaderActionID, act.String())
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{

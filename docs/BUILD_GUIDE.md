@@ -204,6 +204,13 @@ Since M4 (slice 214) `dev seed` imports and activates the reference package (sig
 
 Since M6 the gateway serves the routes of its connections at `/{connection}/…`: `--target-url` creates the connection `payments` to the simulator, in enforce mode, so a refund is `POST /payments/v1/refunds` (`dev connection --org ID --target-url URL` adds one to an existing org). The gateway maps the request through the connection's reviewed package to ActionIR, asks the Authority, verifies the permit, builds the request from the package's dispatch template, commits it with `BeginDispatch`, sends that **re-serialized** request to the target with `Idempotency-Key: pc-<transaction id>`, and records the outcome. The agent gets the target's answer with `PC-Transaction-Id`, `PC-Outcome` and `PC-Receipt` headers, or a JSON refusal with an `error_class`. Its `Server-Timing` header breaks down where the time went. Since M3 every request is PAP/1-signed: the workload sends its workload token (`Authorization: PAP …`), a `PAP-Proof` over the method, the gateway's `public_url`, the body hash and a server nonce, its run in `PAP-Run-Id` and its action in `PC-Action-Id`; the gateway forwards them and the Authority verifies them. `curl` cannot sign, so the example uses `pantherclaw-sim load`, which reads the key file, gets a workload token from the server and signs every request.
 
+**Credential custody and action tokens (M6):** `--access-mode` sets how the target holds agents to the gateway. The default `none` leaves the target open to direct calls.
+- `pantherclaw_held`: the gateway places a sealed credential as `Authorization: Bearer`.
+  1. Give the gateway a broker key (`pantherclaw-gateway broker-key generate`, then `broker.key_file` and `broker.kek_files`) and start it, so that it registers the key.
+  2. Seal the credential with `pclaw seal --connection ID --from-file FILE`.
+  3. Run the simulator with `--token-file FILE`, so it refuses calls without the credential.
+- `target_enforced`: every dispatch carries a PAP-Action token. Run the simulator with `--require-action-tokens --jwks-url http://127.0.0.1:8080/.well-known/pantherclaw/jwks.json --audience <connection id>`.
+
 **MCP and the Claude Code hook (M6):** the same gateway serves MCP at `/mcp/{connection}` (2026-07-28, and 2025-11-25 with sessions) and cooperative hooks at `/hook/{connection}`.
 
 - **An MCP client** reaches a connection through `pclaw mcp proxy --gateway URL --connection NAME --key-file FILE`, a stdio shim that signs every request. The [workload-identity runbook](runbooks/workload-identity.md) shows a client configuration.

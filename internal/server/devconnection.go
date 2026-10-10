@@ -25,14 +25,20 @@ import (
 // gateway at /payments/… (G0 M6, PN-003.5).
 const devConnectionName = "payments"
 
+// devAccessModes are the access modes a development connection takes
+// (--access-mode). A pantherclaw_held connection places its credential as
+// "Authorization: Bearer …"; nothing is sealed until a person seals one
+// (pclaw seal) after the gateway registered its broker key.
+var devAccessModes = []string{capp.AccessNone, capp.AccessHeld, capp.AccessTargetEnforced}
+
 // seedConnection creates a development connection to the reference
 // payments package's target, as the operator but through every check the
 // connection use cases make (HR-077). Its routes take mode, enforce unless
 // asked otherwise, so the refund scenarios decide for real; a connection a
 // person creates starts in monitor mode (PN-013). The destination class is
-// internal for a private or loopback address. No credential is sealed:
-// access mode none. DEVELOPMENT ONLY.
-func seedConnection(ctx context.Context, cfg *Config, pool *db.Pool, org ids.OrgID, gateway ids.UUID, name, targetURL, mode string,
+// internal for a private or loopback address. access is one of
+// devAccessModes. DEVELOPMENT ONLY.
+func seedConnection(ctx context.Context, cfg *Config, pool *db.Pool, org ids.OrgID, gateway ids.UUID, name, targetURL, mode, access string,
 ) (capp.Connection, error) {
 	class := capp.ClassPublic
 	if u, err := url.Parse(targetURL); err == nil {
@@ -40,10 +46,14 @@ func seedConnection(ctx context.Context, cfg *Config, pool *db.Pool, org ids.Org
 			class = capp.ClassInternal
 		}
 	}
-	c, err := capp.New(pool, nil, cfg.Auth.PublicURL, cfg.GatewayAPI.URL).Seed(ctx, org, "dev-seed", capp.CreateInput{
+	in := capp.CreateInput{
 		Name: name, Kind: capp.KindHTTP, Package: mockpayments.Name, BaseURL: targetURL, Gateway: gateway,
-		DestinationClass: class, AccessMode: capp.AccessNone, DefaultMode: mode,
-	})
+		DestinationClass: class, AccessMode: access, DefaultMode: mode,
+	}
+	if access == capp.AccessHeld {
+		in.CredentialHeader, in.CredentialScheme = "Authorization", "Bearer"
+	}
+	c, err := capp.New(pool, nil, cfg.Auth.PublicURL, cfg.GatewayAPI.URL).Seed(ctx, org, "dev-seed", in)
 	if err != nil {
 		return capp.Connection{}, fmt.Errorf("dev: connection: %w", err)
 	}
@@ -95,8 +105,13 @@ func gatewayByName(ctx context.Context, pool *db.Pool, org ids.OrgID, name strin
 	return out, err
 }
 
+// accessUsage describes --access-mode.
+const accessUsage = "the connection's access mode: none, pantherclaw_held (the gateway places a sealed credential as " +
+	"\"Authorization: Bearer\"; seal it with pclaw seal once the gateway registered its broker key) or " +
+	"target_enforced (the target checks PantherClaw action tokens)"
+
 // cmdDevConnection implements `dev connection --org ID --target-url URL
-// [--gateway NAME] [--name NAME] [--mode enforce|monitor]`.
+// [--gateway NAME] [--name NAME] [--mode enforce|monitor] [--access-mode MODE]`.
 func cmdDevConnection(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) error {
 	fs := flag.NewFlagSet("dev connection", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -106,11 +121,12 @@ func cmdDevConnection(ctx context.Context, args []string, stdout, stderr io.Writ
 	gwName := fs.String("gateway", "dev-gateway", "name of the gateway that serves the connection")
 	name := fs.String("name", devConnectionName, "connection name (the first path segment at the gateway)")
 	mode := fs.String("mode", capp.ModeEnforce, "route mode: enforce or monitor")
+	access := fs.String("access-mode", capp.AccessNone, accessUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	org, err := ids.Parse[ids.Org](*orgFlag)
-	if err != nil || *target == "" || fs.NArg() != 0 {
+	if err != nil || *target == "" || fs.NArg() != 0 || !slices.Contains(devAccessModes, *access) {
 		fs.Usage()
 		return errUsage
 	}
@@ -131,15 +147,18 @@ func cmdDevConnection(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err != nil {
 		return err
 	}
-	c, err := seedConnection(ctx, cfg, pool, org, gw, *name, *target, *mode)
+	c, err := seedConnection(ctx, cfg, pool, org, gw, *name, *target, *mode, *access)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s) to %s through gateway %s; agents call the gateway at /%s/v1/refunds\n",
-		c.ID, c.Name, *target, *gwName, c.Name)
+	_, _ = fmt.Fprintf(stdout, "seeded connection %s (%s, access %s) to %s through gateway %s; agents call the gateway at /%s/v1/refunds\n",
+		c.ID, c.Name, *access, *target, *gwName, c.Name)
 	return nil
 }
 
 // errTargetNeedsGateway: a development connection needs the gateway that
 // serves it.
 var errTargetNeedsGateway = errors.New("dev seed: --target-url and --shell need --gateway-out (the connection's gateway)")
+
+// errAccessMode: --access-mode names a mode of the --target-url connection.
+var errAccessMode = errors.New("dev seed: --access-mode is none, pantherclaw_held or target_enforced, and needs --target-url")
