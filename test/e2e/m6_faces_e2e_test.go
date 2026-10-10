@@ -38,7 +38,7 @@ import (
 // one: the target sees exactly two.
 func TestE2E_M6_MCPBothVersions(t *testing.T) {
 	s := start(t, options{budget: "1000.00"})
-	call := func(id int, amount string, meta string) string {
+	call := func(id int, amount, meta string) string {
 		return `{"jsonrpc":"2.0","id":` + itoa(int64(id)) + `,"method":"tools/call","params":{"name":"create_refund","arguments":` +
 			`{"charge":"ch_1","amount":"` + amount + `","currency":"USD","reason":"duplicate"}` + meta + `}}`
 	}
