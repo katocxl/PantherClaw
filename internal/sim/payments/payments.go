@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Joshua Kato. See LICENSE and NOTICE.
 
 // Package payments is a simulated payments API for tests and demos
-// (pantherclaw-sim payments). It refunds charges and reads refunds back,
-// requires an idempotency key, detects replays, and can inject latency,
-// declines, hangs and redirects so that ALLOW, FAILED and UNKNOWN paths
-// can be exercised. Like a real target it can require a credential (the
+// (pantherclaw-sim payments). It refunds charges, reads refunds back one at
+// a time or as a listing (by charge, or created since a time: the target
+// log of G0 M7), requires an idempotency key and keeps it on the refund,
+// detects replays, and can inject latency, declines, hangs, lost responses,
+// slow settlement and redirects so that ALLOW, FAILED, UNKNOWN and every
+// effect state can be exercised. Like a real target it can require a credential (the
 // one PantherClaw holds in custody) or a PantherClaw action token, so a
 // request that bypasses the gateway is refused (S11). Every response is
 // marked SIMULATED; nothing here moves real money.
@@ -21,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,8 +35,14 @@ import (
 type Faults struct {
 	Latency     time.Duration
 	DeclineRate float64 // respond 402 card_declined (no effect)
-	HangRate    float64 // never answer within the client's timeout (unknown outcome)
+	HangRate    float64 // never answer within the client's timeout, and refund nothing (unknown outcome, no effect)
 	HangFor     time.Duration
+	// LoseRate is the probability of refunding and then never answering:
+	// an unknown outcome whose effect happened (G0 M7, S07).
+	LoseRate float64
+	// SettleAfter keeps a new refund "pending" for this long before it is
+	// "succeeded" (propagation pending, F483); zero settles at once.
+	SettleAfter time.Duration
 	// RedirectTo, when set, answers every refund with a 307 redirect to
 	// it, which a client must not follow (S12).
 	RedirectTo string
@@ -56,6 +65,21 @@ type Refund struct {
 	Amount   money.Money
 	Reason   string
 	BodyHash [32]byte
+	// Key is the idempotency key it was created with, which a reconciler
+	// correlates with its transaction (HR-008).
+	Key     string
+	Created time.Time
+	// Initial is the status the creating response reported, so that a
+	// replay answers byte for byte the same.
+	Initial string
+}
+
+// status returns the refund's status at now.
+func (r Refund) status(now time.Time, settle time.Duration) string {
+	if settle > 0 && now.Before(r.Created.Add(settle)) {
+		return "pending"
+	}
+	return "succeeded"
 }
 
 // Server is the simulated payments API.
@@ -67,6 +91,8 @@ type Server struct {
 	mu        sync.Mutex
 	byKey     map[string]Refund
 	byID      map[string]Refund
+	order     []string // refund ids in creation order
+	now       func() time.Time
 	total     money.Decimal
 	count     int
 	replays   int
@@ -79,7 +105,24 @@ func New(f Faults, log *slog.Logger) *Server {
 	if f.HangFor == 0 {
 		f.HangFor = 30 * time.Second
 	}
-	return &Server{faults: f, log: log, byKey: map[string]Refund{}, byID: map[string]Refund{}}
+	return &Server{faults: f, log: log, byKey: map[string]Refund{}, byID: map[string]Refund{}, now: time.Now}
+}
+
+// WithClock replaces the simulator's clock (tests), and returns it.
+func (s *Server) WithClock(now func() time.Time) *Server {
+	s.now = now
+	return s
+}
+
+// Refunds returns every refund in creation order.
+func (s *Server) Refunds() []Refund {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Refund, len(s.order))
+	for i, id := range s.order {
+		out[i] = s.byID[id]
+	}
+	return out
 }
 
 // WithRequire makes the simulator require what r names, and returns it.
@@ -97,13 +140,18 @@ type refundRequest struct {
 
 var (
 	chargePattern = regexp.MustCompile(`^ch_[A-Za-z0-9]{1,64}$`)
+	refundPattern = regexp.MustCompile(`^re_[A-Za-z0-9-]{1,64}$`)
 	keyPattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
 )
+
+// pageSize is the most refunds one listing answers.
+const pageSize = 100
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/refunds", s.refund)
+	mux.HandleFunc("GET /v1/refunds", s.listRefunds)
 	mux.HandleFunc("GET /v1/refunds/{id}", s.getRefund)
 	mux.HandleFunc("GET /v1/stats", s.stats)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,10 +182,80 @@ func (s *Server) getRefund(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "refund_not_found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": ref.ID, "charge": ref.Charge, "amount": ref.Amount.Amount.String(), "currency": string(ref.Amount.Currency),
-		"reason": ref.Reason, "status": "succeeded", "simulated": true,
-	})
+	writeJSON(w, http.StatusOK, s.object(ref))
+}
+
+// amountText writes an amount with exactly its currency's minor-unit
+// digits (30.00 USD), as a payments API reports it.
+func amountText(m money.Money) string {
+	if n, err := m.Currency.MinorUnits(); err == nil {
+		if s, err := m.Amount.StringFixed(n); err == nil {
+			return s
+		}
+	}
+	return m.Amount.String()
+}
+
+// object is a refund as the API shows it.
+func (s *Server) object(ref Refund) map[string]any {
+	return map[string]any{
+		"id": ref.ID, "charge": ref.Charge, "amount": amountText(ref.Amount), "currency": string(ref.Amount.Currency),
+		"reason": ref.Reason, "status": ref.status(s.now(), s.faults.SettleAfter), "idempotency_key": ref.Key,
+		"created": ref.Created.Unix(), "simulated": true,
+	}
+}
+
+// listRefunds lists refunds in creation order (payments.refund.list and the
+// target log payments.refund.recent): those of one charge, those created at
+// or after created_gte (unix seconds), or both; starting_after continues
+// after a refund id; at most 100 per page, with has_more.
+func (s *Server) listRefunds(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for k, v := range q {
+		if len(v) != 1 || (k != "charge" && k != "created_gte" && k != "starting_after") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_query"})
+			return
+		}
+	}
+	charge, after := q.Get("charge"), q.Get("starting_after")
+	var since int64 = -1
+	if v := q.Get("created_gte"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_query"})
+			return
+		}
+		since = n
+	}
+	if (charge == "" && since < 0) || (charge != "" && !chargePattern.MatchString(charge)) ||
+		(after != "" && !refundPattern.MatchString(after)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_query"})
+		return
+	}
+	s.mu.Lock()
+	var page []Refund
+	more, started := false, after == ""
+	for _, id := range s.order {
+		ref := s.byID[id]
+		if !started {
+			started = id == after
+			continue
+		}
+		if (charge != "" && ref.Charge != charge) || (since >= 0 && ref.Created.Unix() < since) {
+			continue
+		}
+		if len(page) == pageSize {
+			more = true
+			break
+		}
+		page = append(page, ref)
+	}
+	s.mu.Unlock()
+	data := make([]map[string]any, len(page))
+	for i, ref := range page {
+		data[i] = s.object(ref)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data, "has_more": more, "simulated": true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -192,20 +310,28 @@ func (s *Server) refund(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if chance(s.faults.HangRate) {
-		select {
-		case <-time.After(s.faults.HangFor):
-		case <-r.Context().Done():
-		}
-		// Drop the connection without a response: an empty 200 would look
-		// like success to the caller.
-		panic(http.ErrAbortHandler)
+		s.hang(r)
 	}
 
 	status, resp, replayed := s.apply(key, req, amount, hash)
+	if status == http.StatusOK && !replayed && chance(s.faults.LoseRate) {
+		s.hang(r) // the refund happened; its answer never arrives
+	}
 	if replayed {
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
 	writeJSON(w, status, resp)
+}
+
+// hang waits for HangFor or the client to give up, then drops the
+// connection without a response: an empty 200 would look like success to
+// the caller.
+func (s *Server) hang(r *http.Request) {
+	select {
+	case <-time.After(s.faults.HangFor):
+	case <-r.Context().Done():
+	}
+	panic(http.ErrAbortHandler)
 }
 
 // apply records the refund under the lock and returns the response to
@@ -218,18 +344,24 @@ func (s *Server) apply(key string, req refundRequest, amount money.Money, hash [
 			return http.StatusConflict, map[string]string{"error": "idempotency_key_reused_with_different_request"}, false
 		}
 		s.replays++
-		return http.StatusOK, refundResponse{ID: prev.ID, Status: "succeeded", Simulated: true}, true
+		return http.StatusOK, refundResponse{ID: prev.ID, Status: prev.Initial, Simulated: true}, true
 	}
 	if chance(s.faults.DeclineRate) {
 		return http.StatusPaymentRequired, map[string]string{"error": "card_declined"}, false
 	}
-	ref := Refund{ID: "re_" + ids.NewV7().String(), Charge: req.Charge, Amount: amount, Reason: req.Reason, BodyHash: hash}
+	now := s.now()
+	ref := Refund{
+		ID: "re_" + ids.NewV7().String(), Charge: req.Charge, Amount: amount, Reason: req.Reason, BodyHash: hash,
+		Key: key, Created: now,
+	}
+	ref.Initial = ref.status(now, s.faults.SettleAfter)
 	s.byKey[key], s.byID[ref.ID] = ref, ref
+	s.order = append(s.order, ref.ID)
 	s.count++
 	if t, err := s.total.Add(amount.Amount); err == nil {
 		s.total = t
 	}
-	return http.StatusOK, refundResponse{ID: ref.ID, Status: "succeeded", Simulated: true}, false
+	return http.StatusOK, refundResponse{ID: ref.ID, Status: ref.Initial, Simulated: true}, false
 }
 
 // Stats summarizes what the simulator has done.
