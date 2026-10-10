@@ -9,18 +9,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	defspg "github.com/katocxl/pantherclaw/internal/definitions/adapters/pgstore"
+	factspg "github.com/katocxl/pantherclaw/internal/facts/adapters/pgstore"
 	"github.com/katocxl/pantherclaw/internal/gateway"
 	"github.com/katocxl/pantherclaw/internal/gateway/control"
 	gapp "github.com/katocxl/pantherclaw/internal/gateways/app"
+	grantsapp "github.com/katocxl/pantherclaw/internal/grants/app"
+	"github.com/katocxl/pantherclaw/internal/identity/workloadclient"
 	"github.com/katocxl/pantherclaw/internal/pclaw"
+	"github.com/katocxl/pantherclaw/internal/platform/celenv"
 	"github.com/katocxl/pantherclaw/internal/platform/ids"
 	pclog "github.com/katocxl/pantherclaw/internal/platform/log"
+	polpg "github.com/katocxl/pantherclaw/internal/policy/adapters/pgstore"
+	policyapp "github.com/katocxl/pantherclaw/internal/policy/app"
 	rapp "github.com/katocxl/pantherclaw/internal/response/app"
 	td "github.com/katocxl/pantherclaw/internal/tenancy/domain"
 )
@@ -72,23 +80,69 @@ func TestE2E_M6_MCPBothVersions(t *testing.T) {
 	if st := s.sim.Stats(); st.Refunds != 2 {
 		t.Fatalf("target %+v, want the two refunds", st)
 	}
+
+	// A signed client that names another tool in Mcp-Name than in the body
+	// is refused before anything is decided, and so is a batch: the gateway
+	// takes one request per POST.
+	mismatched := call(6, "32.00", modern)
+	if status, body := s.mcpPost(t, mismatched, map[string]string{"Mcp-Method": "tools/call", "Mcp-Name": "get_refund"}); status != http.StatusBadRequest ||
+		!strings.Contains(body, `"code":-32020`) {
+		t.Fatalf("header mismatch: %d %s", status, body)
+	}
+	if status, body := s.mcpPost(t, "["+call(7, "33.00", modern)+"]", nil); status != http.StatusBadRequest || !strings.Contains(body, "batches") {
+		t.Fatalf("batch: %d %s", status, body)
+	}
+	if st := s.sim.Stats(); st.Refunds != 2 {
+		t.Fatalf("target %+v after the refused requests, want the two refunds", st)
+	}
+}
+
+// mcpPost sends one PAP/1-signed 2026-07-28 MCP request straight to the
+// gateway, with the protocol header and extra headers, and returns the
+// status and the body.
+func (s *stack) mcpPost(t *testing.T, body string, headers map[string]string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, s.gateway+"/mcp/payments", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set(gateway.HeaderRunID, s.run)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &workloadclient.Transport{
+		Key: s.key, Token: func() string { return s.token }, Base: http.DefaultTransport,
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
 }
 
 // TestE2E_M6_ClaudeCodeHook: Claude Code asks pclaw hook claude-code before
 // a shell command (HR-186). The seeded grant allows shell commands, so the
 // hook answers allow with exit code 0; the decision is recorded as
 // delegated, because the command runs on the developer's machine, not
-// through the gateway. Once the kill switch is engaged the same command is
-// blocked with exit code 2, and the hook never asks the local user.
+// through the gateway. A command the org's published policy forbids is
+// blocked with exit code 2 and the policy's reason, and so is every command
+// when the gateway is down or once the kill switch is engaged; the hook
+// never asks the local user.
 func TestE2E_M6_ClaudeCodeHook(t *testing.T) {
 	s := start(t, options{budget: "1000.00", shell: true})
 	dir := t.TempDir()
-	event := func(id string) string {
+	eventFor := func(id, command string) string {
 		b, _ := json.Marshal(map[string]any{
 			"session_id": "e2e", "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": dir, "tool_use_id": id,
-			"tool_input": map[string]any{"command": "ls -la", "description": "list"},
+			"tool_input": map[string]any{"command": command, "description": "e2e"},
 		})
 		return string(b)
+	}
+	event := func(id string) string { return eventFor(id, "ls -la") }
+	blocked := func(code int, out, errs, want string) bool {
+		return code == 2 && out == "" && strings.Contains(errs, want) && !strings.Contains(errs, `"ask"`)
 	}
 	code, out, errs := s.hook(t, event("toolu_e2e1"))
 	if code != 0 || !strings.Contains(out, `"permissionDecision":"allow"`) {
@@ -100,14 +154,30 @@ func TestE2E_M6_ClaudeCodeHook(t *testing.T) {
 		t.Fatalf("recorded outcome %q, want delegated", outcome)
 	}
 
+	s.publishPolicy(t, `{"id": "shell", "rules": [{"id": "no-rm", "kind": "FORBID", "summary": "destructive commands",
+		"operations": ["shell.command.run"], "when": "action.params.command.startsWith(\"rm \")", "reason": "SHELL_DESTRUCTIVE"}]}`)
+	if code, out, errs := s.hook(t, eventFor("toolu_e2e2", "rm -rf build")); !blocked(code, out, errs, "SHELL_DESTRUCTIVE") {
+		t.Fatalf("forbidden command: %d %s %s", code, out, errs)
+	}
+	if code, out, errs := s.hook(t, event("toolu_e2e3")); code != 0 {
+		t.Fatalf("allowed command after the policy: %d %s %s", code, out, errs)
+	}
+
+	up := s.gateway
+	s.gateway = "http://" + freeAddr(t) // nothing listens there
+	if code, out, errs := s.hook(t, event("toolu_e2e4")); !blocked(code, out, errs, "") {
+		t.Fatalf("gateway down: %d %s %s", code, out, errs)
+	}
+	s.gateway = up
+
 	alice := s.person(t, "alice", td.RoleEmergency)
 	if _, err := rapp.New(s.pool, nil, s.apiURL).Engage(alice.ctx, rapp.StepUp{Credential: alice.key, At: time.Now()}, "e2e"); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
 	for {
-		code, out, errs = s.hook(t, event("toolu_e2e2"))
-		if code == 2 && out == "" && strings.Contains(errs, "kill_switch") && !strings.Contains(errs, `"ask"`) {
+		code, out, errs = s.hook(t, event("toolu_e2e5"))
+		if blocked(code, out, errs, "kill_switch") {
 			break
 		}
 		if code == 0 || time.Since(start) > 2*time.Second {
@@ -197,6 +267,23 @@ func (s *stack) mcpProxy(t *testing.T, messages ...string) map[int]string {
 		}
 	}
 	return answers
+}
+
+// publishPolicy creates a policy bundle as a policy author and publishes it
+// as a publisher, as pclaw policy create and publish do.
+func (s *stack) publishPolicy(t *testing.T, bundle string) {
+	t.Helper()
+	v := &policyapp.Versions{
+		Store: &polpg.Store{Pool: s.pool}, Facts: &factspg.Store{Pool: s.pool}, Definitions: &defspg.Store{Pool: s.pool},
+		Authz: grantsapp.SubjectAuthorizer{}, Limits: celenv.DefaultLimits,
+	}
+	draft, err := v.Create(s.person(t, "policy-author", td.RolePolicyAuthor).ctx, []byte(bundle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Publish(s.person(t, "policy-publisher", td.RolePolicyPublisher).ctx, draft.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // hook runs pclaw hook claude-code with a PreToolUse event on stdin.
