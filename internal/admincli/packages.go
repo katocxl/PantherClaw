@@ -40,7 +40,9 @@ func signPackages(args []string, stdout, stderr io.Writer, now func() time.Time)
 	if *days < 1 || *days > maxExpiryDays {
 		return fmt.Errorf("--expires-days must be between 1 and %d", maxExpiryDays)
 	}
-	signer, err := loadSigner(*keyFile, *ppFile, rootkey.PurposePackages)
+	// The development package key `dev seed` keeps signs the same way; only
+	// local servers trust it (HR-163).
+	signer, err := loadSigner(*keyFile, *ppFile, rootkey.PurposePackages, rootkey.PurposeDevPackages)
 	if err != nil {
 		return err
 	}
@@ -75,6 +77,9 @@ func signPackages(args []string, stdout, stderr io.Writer, now func() time.Time)
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "Signed package targets version %d with %s, expires %s → %s\n", t.Version, signer.KeyID(), t.Expires, *out)
+	if trust.IsDevKID(signer.KeyID()) {
+		_, _ = fmt.Fprint(stdout, "This is the development package key: only a local server with dev.package_key_file trusts it.\n")
+	}
 	for _, l := range listed {
 		_, _ = fmt.Fprint(stdout, l)
 	}

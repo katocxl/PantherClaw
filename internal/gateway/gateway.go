@@ -165,6 +165,10 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	if d.Broker != nil {
 		o.Broker = d.Broker
 	}
+	var g *Gateway
+	// A call's own check reports drift at once, as the loop's does. Calls
+	// start only once g is set.
+	o.OnDrift = func(ctx context.Context, connection string, dr dispatch.Drift) { g.drifted(ctx, connection, dr) }
 	engine, err := dispatch.New(o)
 	if err != nil {
 		return nil, err
@@ -172,13 +176,14 @@ func newGateway(cfg *Config, d Deps, log *slog.Logger) (*Gateway, error) {
 	if log == nil {
 		log = pclog.Discard()
 	}
-	return &Gateway{
+	g = &Gateway{
 		run: d.Run, containment: d.Containment, config: d.Configuration, broker: d.Broker, engine: engine,
 		http: httpproxy.New(engine, d.Configuration, cfg.PublicURL, log),
 		mcp:  mcp.New(engine, d.Configuration, cfg.PublicURL, log),
 		hook: hook.New(engine, d.Configuration, cfg.PublicURL, log),
 		log:  log, reportDrift: d.ReportDrift, driftEvery: DriftEvery, driftPoll: driftPoll,
-	}, nil
+	}
+	return g, nil
 }
 
 // Run does the gateway's background work until ctx ends.
