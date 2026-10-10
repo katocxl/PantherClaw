@@ -83,6 +83,19 @@ func Build(baseURL string, d *defs.Definition, a actionir.ActionIR, transaction 
 		!strings.HasPrefix(u.EscapedPath(), strings.TrimSuffix(base.EscapedPath(), "/")+"/") {
 		return Request{}, fmt.Errorf("%w: the built URL leaves the connection", ErrBuild)
 	}
+	if len(t.Query) > 0 {
+		q := url.Values{}
+		for name, ref := range t.Query {
+			v, err := r.queryValue(ref)
+			if err != nil {
+				return Request{}, err
+			}
+			if v != nil {
+				q.Set(name, *v)
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
 	out := Request{Method: t.Method, URL: u}
 	if len(t.Body) > 0 {
 		obj := make(map[string]any, len(t.Body))
@@ -164,6 +177,29 @@ func (r refs) segment(ref string) (string, error) {
 		return "", fmt.Errorf("%w: %s would change the path", ErrBuild, ref)
 	}
 	return s, nil
+}
+
+// queryValue is a reference substituted into one query parameter: nil for
+// an absent optional param, otherwise its text, which url.Values encodes.
+// Control characters are refused, as they are in a path (HR-073).
+func (r refs) queryValue(ref string) (*string, error) {
+	v, err := r.value(ref)
+	if err != nil || v == nil {
+		return nil, err
+	}
+	var s string
+	switch x := v.(type) {
+	case string:
+		s = x
+	case jsontext.Value:
+		s = string(x)
+	default:
+		return nil, fmt.Errorf("%w: %s is not a query value", ErrBuild, ref)
+	}
+	if strings.ContainsFunc(s, func(c rune) bool { return c < 0x20 || c == 0x7f }) {
+		return nil, fmt.Errorf("%w: %s holds a control character", ErrBuild, ref)
+	}
+	return &s, nil
 }
 
 // value resolves one template reference to its JSON value: strings for
