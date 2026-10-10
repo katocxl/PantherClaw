@@ -299,3 +299,26 @@ func (s *Approvals) SubmitApprovalEvidence(ctx context.Context, req *pantherclaw
 		Request: RequestProto(r, nil),
 	}, nil
 }
+
+// DeclineApprovalBatch implements ApprovalServiceHandler: up to 25 waiting
+// requests for one operation, each with its own response and audit event
+// (HR-175, Team edition).
+func (s *Approvals) DeclineApprovalBatch(ctx context.Context, req *pantherclawv1.DeclineApprovalBatchRequest) (*pantherclawv1.DeclineApprovalBatchResponse, error) {
+	var list []ids.UUID
+	for _, x := range req.GetIds() {
+		id, err := parseID(x)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, id)
+	}
+	batch, rows, err := s.svc.DeclineBatch(ctx, list, code(req.GetReason().String(), "DECLINE_REASON_"), req.GetNote())
+	if err != nil {
+		return nil, err
+	}
+	out := &pantherclawv1.DeclineApprovalBatchResponse{BatchId: batch.String()}
+	for _, r := range rows {
+		out.Requests = append(out.Requests, RequestProto(r, nil))
+	}
+	return out, nil
+}

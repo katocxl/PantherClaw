@@ -82,7 +82,10 @@ type Filter struct {
 }
 
 // Reader serves the waitlist reads.
-type Reader struct{ pool *db.Pool }
+type Reader struct {
+	pool *db.Pool
+	ents Entitlements
+}
 
 // NewReader returns the waitlist reads.
 func NewReader(pool *db.Pool) *Reader { return &Reader{pool: pool} }

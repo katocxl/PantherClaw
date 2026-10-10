@@ -173,7 +173,7 @@ func TestHR172_ADeclineEndsTheRequestAndGrantsNothing(t *testing.T) {
 	if s := f.str("SELECT cli_session_id::text FROM pc.approval_responses WHERE request_id = $1", req); s != f.bob.cli.String() {
 		t.Fatalf("response session %s", s)
 	}
-	if s := f.str("SELECT state FROM pc.waitlist_entries WHERE subject_id = $1", req); s != "REJECTED" {
+	if s := f.str("SELECT state || ' ' || (first_response_at IS NOT NULL) FROM pc.waitlist_entries WHERE subject_id = $1", req); s != "REJECTED true" {
 		t.Fatalf("entry %s", s)
 	}
 	if s := f.str("SELECT sum(pending)::text FROM pc.hold_slots"); s != "0" {

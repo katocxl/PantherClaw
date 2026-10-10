@@ -76,6 +76,8 @@ func (s *Workload) WaitStream(w http.ResponseWriter, r *http.Request) {
 		s.papHTTPError(w, r, org, err)
 		return
 	}
+	// The stream outlives the server's write timeout.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(approvals.StreamLifetime + time.Minute))
 	flusher, _ := w.(http.Flusher)
 	started := false
 	err = s.waits.Stream(r.Context(), org, tok.Instance.Instance, txn, func(v approvals.WaitView, heartbeat bool) error {

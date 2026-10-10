@@ -4,11 +4,13 @@
 {{if .Waiting}}
 <p class="note">Requests waiting for your decision, the most urgent first.</p>
 <table>
-<thead><tr><th>Priority</th><th>Request</th><th>Operation</th><th>State</th><th>Deadline</th></tr></thead>
+<thead><tr><th></th><th>Priority</th><th>Request</th><th>Operation</th><th>State</th><th>Deadline</th></tr></thead>
 <tbody>
-{{range .Waiting}}<tr><td>P{{.Priority}}</td><td><a href="/approvals/{{.ID}}">{{.Title}}</a></td><td><code>{{.Operation}}</code></td><td>{{.State}}</td><td>{{.Deadline.UTC.Format "2006-01-02 15:04 UTC"}}</td></tr>
+{{range .Waiting}}<tr><td><input type="checkbox" class="batch" value="{{.ID}}" aria-label="Select for a batch"></td><td>P{{.Priority}}</td><td><a href="/approvals/{{.ID}}">{{.Title}}</a></td><td><code>{{.Operation}}</code></td><td>{{.State}}</td><td>{{.Deadline.UTC.Format "2006-01-02 15:04 UTC"}}</td></tr>
 {{end}}</tbody>
 </table>
+<p><button type="button" id="approve-batch">Approve the selected requests with your security key</button></p>
+<p class="note">Batch approval (Team edition) takes up to 25 reversible, single-approver requests of one operation, each at or below your organization's ceiling. Anything else is reviewed on its own page.</p>
 {{else}}
 <p class="ok">Nothing is waiting for your decision.</p>
 {{end}}
@@ -32,4 +34,6 @@
 <p class="note">You have not responded to any request.</p>
 {{end}}
 {{end}}
+<p id="status" role="status"></p>
+<script src="/static/approvals.js"></script>
 {{template "foot" .}}
