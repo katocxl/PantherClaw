@@ -220,7 +220,7 @@ func TestRequirementsAccumulateDownTheChain(t *testing.T) {
 	root.Requirements = []Requirement{{
 		Operations: Ops{"payments.refund.create"}, Param: "amount",
 		Unless:   &ParamBound{Max: Amounts{"USD": "50.00"}},
-		Approval: &pdomain.ApprovalRequirement{Role: "refund_approver", Count: 1}, Reason: "REFUND_OVER_50",
+		Approval: &pdomain.ApprovalRequirement{Role: "approver", Count: 1}, Reason: "REFUND_OVER_50",
 	}}
 	child := childOf(t, root, `{}`)
 	child.Requirements = nil // a child cannot drop its parent's requirement

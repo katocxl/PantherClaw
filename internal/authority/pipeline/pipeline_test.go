@@ -44,7 +44,7 @@ func TestF193_3_ApprovalThresholdHolds(t *testing.T) {
 	expect(t, f.call(f.run, "create_refund", refund("ch_1", "50.00")), adomain.Allow, pipeline.ReasonGrantCovers)
 	ev := f.call(f.run, "create_refund", refund("ch_1", "85.00"))
 	expect(t, ev, adomain.RequireApproval, "REFUND_OVER_50")
-	if len(ev.Approvals) != 1 || ev.Approvals[0].Role != "finance.approver" {
+	if len(ev.Approvals) != 1 || ev.Approvals[0].Role != "approver" {
 		t.Fatalf("approvals %+v", ev.Approvals)
 	}
 }

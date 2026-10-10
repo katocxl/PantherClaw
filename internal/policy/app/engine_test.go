@@ -97,7 +97,7 @@ func refundRule(id string, k domain.Kind, when string) domain.Rule {
 	r := domain.Rule{ID: id, Kind: k, Summary: id, Operations: []string{"payments.refund.create"}, When: when, Reason: "R_" + string(k)}
 	switch k { //nolint:exhaustive // FORBID and CONSTRAIN are set by the callers
 	case domain.RequireApproval:
-		r.Approval = &domain.ApprovalRequirement{Role: "finance.approver", Count: 1}
+		r.Approval = &domain.ApprovalRequirement{Role: "approver", Count: 1}
 	case domain.RequireStepUp:
 		r.StepUp = &domain.StepUpRequirement{Subject: "launcher", Method: "webauthn"}
 	case domain.Annotate:

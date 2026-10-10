@@ -33,7 +33,7 @@ func holdOver50(t *testing.T, s *pipelinetest.Scenario) {
 	if err := s.W.SetPolicy([]pdomain.Rule{{
 		ID: "hold", Kind: pdomain.RequireApproval, Summary: "over 50 needs approval",
 		Operations: []string{"payments.refund.create"}, When: `action.params.amount > money("50", "USD")`, Reason: "REFUND_OVER_50",
-		Approval: &pdomain.ApprovalRequirement{Role: "finance.approver", Count: 1},
+		Approval: &pdomain.ApprovalRequirement{Role: "approver", Count: 1},
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}

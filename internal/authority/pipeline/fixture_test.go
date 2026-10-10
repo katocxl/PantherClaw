@@ -180,7 +180,7 @@ func approvalOver50() pdomain.Rule {
 	return pdomain.Rule{
 		ID: "approve-over-50", Kind: pdomain.RequireApproval, Summary: "refunds over 50 USD need an approver",
 		Operations: []string{"payments.refund.create"}, When: `action.params.amount > money("50.00", "USD")`,
-		Reason: "REFUND_OVER_50", Approval: &pdomain.ApprovalRequirement{Role: "finance.approver", Count: 1},
+		Reason: "REFUND_OVER_50", Approval: &pdomain.ApprovalRequirement{Role: "approver", Count: 1},
 	}
 }
 
