@@ -281,6 +281,41 @@ func (s *Service) identify(ctx context.Context, gw Gateway, p actionir.Parsed, c
 	return id, domain.Outcome{}, true, nil
 }
 
+// Verified is a workload whose credentials verified for a request that
+// decides nothing (VerifyWorkload).
+type Verified struct {
+	Instance, Environment ids.UUID
+}
+
+// ErrAgentUnusable reports a verified workload whose agent is suspended or
+// retired.
+var ErrAgentUnusable = errors.New("authority: the agent is suspended or retired")
+
+// Verify checks a workload's PAP/1 credentials for a request that decides
+// nothing, such as an MCP tools/list (HR-021): the token, the proof over
+// this request (consumed, so it cannot be replayed into an action), and
+// that the agent is usable. It records nothing. A failed proof is a
+// *pap.Error; a suspended or retired agent is ErrAgentUnusable.
+func (s *Service) Verify(ctx context.Context, gw Gateway, c *Credentials) (Verified, error) {
+	if c == nil {
+		return Verified{}, &pap.Error{Code: pap.CodeInvalidToken}
+	}
+	if s.workloads == nil {
+		return Verified{}, errors.New("authority: workload identity is not configured")
+	}
+	id, err := s.workloads.Identify(ctx, gw.Org, iapp.IdentifyInput{
+		Request: pap.Request{Method: c.Method, URL: c.URL, BodySHA256: c.BodySHA256, Token: c.Token},
+		Proof:   c.Proof, ClientAddress: c.ClientAddress,
+	})
+	if err != nil {
+		return Verified{}, err
+	}
+	if !adomain.State(id.AgentState).Usable() {
+		return Verified{}, ErrAgentUnusable
+	}
+	return Verified{Instance: id.Instance.Instance, Environment: id.Environment}, nil
+}
+
 // Nonce returns the org's current PAP/1 nonce and its expiry, or "" when
 // workload identity is not configured.
 func (s *Service) Nonce(ctx context.Context, gw Gateway) (string, time.Time, error) {

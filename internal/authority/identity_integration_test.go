@@ -346,3 +346,51 @@ func TestHR148_ReportUnknownWorkloadVerifiesTheReport(t *testing.T) {
 		t.Errorf("discoveries %d, want 1", n)
 	}
 }
+
+// TestHR021_VerifyWorkloadChecksCredentialsAndDecidesNothing: a request
+// that decides nothing (an MCP tools/list) is still verified by the
+// Authority. An admitted instance verifies with its environment; a
+// replayed proof, a key-only proof, missing credentials and a suspended
+// agent do not, with their codes; nothing is decided or recorded.
+func TestHR021_VerifyWorkloadChecksCredentialsAndDecidesNothing(t *testing.T) {
+	f := setupIdentity(t)
+	agent := f.agent(t)
+	wl := f.admitted(t, agent)
+	h := authority.NewHandler(f.svc)
+	ctx := authority.WithGateway(context.Background(), f.gw)
+	verify := func(c *authority.Credentials) *pantherclawv1.VerifyWorkloadResponse {
+		t.Helper()
+		var w *pantherclawv1.WorkloadCredentials
+		if c != nil {
+			w = &pantherclawv1.WorkloadCredentials{WorkloadToken: c.Token, Proof: c.Proof, BodySha256: c.BodySHA256[:], Htm: c.Method, Htu: c.URL}
+		}
+		res, err := h.VerifyWorkload(ctx, &pantherclawv1.VerifyWorkloadRequest{Workload: w})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	ok := f.creds(t, wl, wl.token)
+	if r := verify(ok); !r.GetVerified() || r.GetInstanceId() != wl.inst.Instance.String() || r.GetEnvironmentId() == "" || r.GetNonce() == "" {
+		t.Fatalf("admitted instance: %+v", r)
+	}
+	for name, tc := range map[string]struct {
+		c    *authority.Credentials
+		code string
+	}{
+		"replayed proof": {ok, string(pap.CodeProofReplay)},
+		"key-only proof": {f.creds(t, wl, ""), string(pap.CodeInvalidToken)},
+		"no credentials": {nil, string(pap.CodeInvalidToken)},
+	} {
+		if r := verify(tc.c); r.GetVerified() || r.GetErrorCode() != tc.code || r.GetNonce() == "" {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	f.exec(t, "UPDATE pc.agents SET suspended_from = state, state = 'SUSPENDED' WHERE org_id = $1 AND id = $2", f.gw.Org, agent)
+	if r := verify(f.creds(t, wl, wl.token)); r.GetVerified() || r.GetErrorCode() != "agent_unusable" {
+		t.Errorf("suspended agent: %+v", r)
+	}
+	if n := f.count(t, "SELECT count(*) FROM pc.transactions WHERE org_id = $1"); n != 0 {
+		t.Errorf("verifying recorded %d transactions", n)
+	}
+}

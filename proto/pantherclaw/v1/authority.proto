@@ -33,6 +33,12 @@ service AuthorityService {
   // (HR-148). The request itself is refused.
   // permission: gateway.observe
   rpc ReportUnknownWorkload(ReportUnknownWorkloadRequest) returns (ReportUnknownWorkloadResponse);
+  // VerifyWorkload checks a workload's PAP/1 credentials for a request
+  // that decides nothing, such as an MCP `tools/list` or `server/discover`
+  // (HR-021: the gateway never verifies a workload itself). The proof is
+  // consumed like any other; nothing is decided or recorded.
+  // permission: gateway.authorize
+  rpc VerifyWorkload(VerifyWorkloadRequest) returns (VerifyWorkloadResponse);
 }
 
 // Decision is an authorization decision (PAP-1 §7.1).
@@ -311,4 +317,25 @@ message ReportUnknownWorkloadResponse {
   string discovery_id = 1;
   // Current nonce, for the PAP-Nonce response header.
   string nonce = 2;
+}
+
+// VerifyWorkloadRequest carries a request's PAP/1 credentials.
+message VerifyWorkloadRequest {
+  // The request's credentials, as for Authorize.
+  WorkloadCredentials workload = 1 [(buf.validate.field).required = true];
+}
+
+// VerifyWorkloadResponse says whether the workload is an admitted instance
+// of a usable agent.
+message VerifyWorkloadResponse {
+  // Whether the credentials verified and the agent is usable.
+  bool verified = 1;
+  // When not verified: the PAP-Error code (PAP-1 §12), or `agent_unusable`
+  // for a suspended or retired agent.
+  string error_code = 2;
+  // The verified instance and its environment.
+  string instance_id = 3;
+  string environment_id = 4;
+  // Current nonce, for the PAP-Nonce response header.
+  string nonce = 5;
 }
